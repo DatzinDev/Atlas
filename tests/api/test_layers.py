@@ -1,6 +1,8 @@
 """Public catalog and details expose only enabled layer metadata."""
 
-from httpx import AsyncClient
+import pytest
+from fastapi import FastAPI, Header
+from httpx import ASGITransport, AsyncClient
 
 from atlas import Atlas
 
@@ -72,3 +74,45 @@ async def test_disabled_layer_is_not_served(client: AsyncClient, atlas: Atlas) -
 async def test_catalog_openapi(client: AsyncClient) -> None:
     schemas = (await client.get("/openapi.json")).json()["components"]["schemas"]
     assert "LayerSummary" in schemas and "LayerDetailResponse" in schemas
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_host_principal_filters_catalog_and_direct_access(atlas: Atlas, asynchronous: bool):
+    def principal(x_user: str = Header(default="anonymous")):
+        return x_user
+
+    def checker(layer, op, user):
+        return user == "allowed" and layer.name == "municipios" and op in ("view", "query")
+
+    async def async_checker(layer, op, user):
+        return checker(layer, op, user)
+
+    atlas.context.permission_checker = async_checker if asynchronous else checker
+    atlas.context.principal_dependency = principal
+    app = FastAPI()
+    app.include_router(atlas.router)
+    async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+        assert (await client.get("/atlas/layers")).json() == {"layers": []}
+        denied = await client.get("/atlas/layers/municipios")
+        assert denied.status_code == 403
+        assert denied.json()["error"]["code"] == "permission_denied"
+        headers = {"x-user": "allowed"}
+        listing = (await client.get("/atlas/layers", headers=headers)).json()
+        assert [layer["name"] for layer in listing["layers"]] == ["municipios"]
+        assert (await client.get("/atlas/layers/municipios", headers=headers)).status_code == 200
+
+
+async def test_checker_failure_is_closed_over_http(client: AsyncClient, atlas: Atlas) -> None:
+    def broken(*args):
+        raise RuntimeError("secret database password")
+
+    atlas.context.permission_checker = broken
+    assert (await client.get("/atlas/layers")).json() == {"layers": []}
+    response = await client.get("/atlas/layers/municipios")
+    assert response.status_code == 403 and "secret" not in response.text
+
+
+async def test_detail_checks_query_independently_of_catalog_view(client: AsyncClient, atlas: Atlas):
+    atlas.context.permission_checker = lambda layer, op, principal: op == "query"
+    assert (await client.get("/atlas/layers")).json() == {"layers": []}
+    assert (await client.get("/atlas/layers/municipios")).status_code == 200

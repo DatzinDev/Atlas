@@ -1,16 +1,14 @@
 """Per-instance state passed to Atlas routers, never stored globally."""
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
 from atlas.core.config import AtlasConfig
-from atlas.layers.models import Layer
+from atlas.layers.permissions import PermissionChecker
 from atlas.layers.registry import LayerRegistry
 from atlas.postgis.connection import Database
-
-PermissionChecker = Callable[[Layer, str, Any], bool | Awaitable[bool]]
 
 
 class AtlasContext(BaseModel):

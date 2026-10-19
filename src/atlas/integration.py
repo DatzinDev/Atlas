@@ -7,10 +7,11 @@ from typing import Any
 from fastapi import APIRouter, FastAPI
 
 from atlas.api.layers import create_router
-from atlas.context import AtlasContext, PermissionChecker
+from atlas.context import AtlasContext
 from atlas.core.config import AtlasConfig
 from atlas.layers.metadata import build_layer
 from atlas.layers.models import Layer
+from atlas.layers.permissions import PermissionChecker
 from atlas.layers.registry import LayerRegistry
 from atlas.postgis.connection import Database
 

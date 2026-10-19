@@ -61,6 +61,7 @@ Operation = Literal["view", "query", "download", "admin"]
 PermissionChecker = Callable[[Layer, Operation, Any], bool | Awaitable[bool]]
 def default_permission_name(layer: Layer, op: Operation) -> str   # "atlas.municipios.view"
 async def check_permission(checker, layer, op, principal) -> None  # lanza PermissionDenied
+async def visible_layers(registry, checker, op, principal) -> list[Layer]
 ```
 
 ## Invariantes
@@ -86,6 +87,10 @@ async def check_permission(checker, layer, op, principal) -> None  # lanza Permi
 - Atlas no decide si un usuario tiene un permiso: llama al `PermissionChecker` que provee la app
   host y respeta su respuesta (§17). Si no hay checker configurado, todo se permite.
 - Las cuatro operaciones (`view`, `query`, `download`, `admin`) se comprueban por separado (§18).
+- Solo el booleano `True` del checker concede acceso; un error sync/async se transforma en
+  `PermissionDenied` sin exponer su mensaje. Sin checker no se imponen restricciones por permisos.
+- El catálogo comprueba `view` y el detalle `query`, independientemente. `principal_dependency`
+  se configura antes de montar el router y FastAPI resuelve la dependencia de la app host.
 
 ## Dependencias
 
