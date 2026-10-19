@@ -5,6 +5,7 @@ from typing import Self
 from pydantic import BaseModel, Field, model_validator
 
 from atlas.postgis.introspection import BBox, ColumnInfo, GeometryType, TableInfo
+from atlas.styles.models import Style
 
 
 class LayerServices(BaseModel):
@@ -32,8 +33,7 @@ class Layer(BaseModel):
     downloadable: bool = True
     public: bool = True
     services: LayerServices = Field(default_factory=LayerServices)
-    # shortcut: styles are unavailable until issue #28 supplies the validated Style models.
-    style: None = None
+    style: Style | None = None
     permissions: list[str] = Field(default_factory=list)
     min_zoom: int | None = None
     max_zoom: int | None = None

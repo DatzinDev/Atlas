@@ -29,7 +29,7 @@ class Layer(BaseModel):
     downloadable: bool = True
     public: bool = True
     services: LayerServices = LayerServices()
-    style: None = None              # Style | None se habilita con el issue #28
+    style: Style | None = None
     permissions: list[str] = []     # ver permissions.py
     min_zoom: int | None = None; max_zoom: int | None = None
 
@@ -73,8 +73,9 @@ async def check_permission(checker, layer, op, principal) -> None  # lanza Permi
 - `name` acepta solo `[a-z0-9_-]`, sin cadena vacía. Si se omite `title`, usa `name.capitalize()`.
 - `supports` requiere la capa habilitada y el servicio activado; un servicio desconocido devuelve
   `False`. WMS y WFS están activos por defecto, WMTS y WCS no.
-- Hasta implementar los modelos del #28, `style` solo acepta `None`; no se admiten estilos sin
-  validar ni se adelanta la implementación de rendering.
+- `build_layer` descubre metadatos y extent, asigna el estilo por geometría y aplica overrides.
+  Un campo desconocido lanza `TypeError`; `style=None` y `extent=None` explícitos se conservan.
+  La llave primaria también permanece en los atributos descubiertos; la geometría se excluye.
 - El registry es un `dict` en memoria y no persiste nada. La persistencia llega en v0.2 y se
   construirá **encima** de esta interfaz, sin cambiarla.
 - `register` reemplaza por nombre y devuelve la nueva capa. `list` ordena por nombre y excluye
