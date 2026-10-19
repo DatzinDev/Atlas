@@ -13,6 +13,7 @@ y vistas, y compone el SQL espacial parametrizado que consumen `wfs/`, `wms/` y 
 # postgis/connection.py
 class Database:
     def __init__(self, config: AtlasConfig) -> None
+    pool: AsyncConnectionPool | None        # None mientras está cerrada
     async def open(self) -> None
     async def close(self) -> None
     @asynccontextmanager
@@ -65,6 +66,12 @@ def to_geojson_feature(row: dict, id_column: str | None) -> dict
 - `inspect_table` funciona igual para tablas y para vistas; si `geometry_columns` no resuelve, cae
   a inspeccionar el tipo real de la columna.
 - El `query_timeout` de `AtlasConfig` se aplica como `statement_timeout` en la conexión.
+- `open()` y `close()` son idempotentes: abrir dos veces no crea dos pools y cerrar dos veces no
+  falla. El ciclo de vida del pool lo marca la app host, y puede repetir la llamada.
+- **Ninguna excepción de psycopg sale de `postgis/`**, incluida la espera por un pool saturado
+  (`psycopg_pool.PoolTimeout` hereda de `psycopg.Error`). Una consulta cancelada por el
+  `statement_timeout` es `QueryTimeout`; cualquier otro fallo del driver es `DatabaseError`, con el
+  mensaje real en `technical_message` y fuera de la respuesta.
 
 ## Dependencias
 
