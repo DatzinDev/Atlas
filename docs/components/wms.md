@@ -22,7 +22,7 @@ class GetMapParams(BaseModel):
     bgcolor: str = "#FFFFFF"
 
     @field_validator("width", "height")   # 1..MAX_IMAGE_SIZE
-async def get_map(ctx: AtlasContext, params: GetMapParams, principal: Any) -> bytes
+async def get_map(ctx: AtlasContext, params: GetMapParams, principal: Any = None) -> Response
 
 # wms/feature_info.py
 class FeatureInfoParams(BaseModel):
@@ -48,6 +48,11 @@ def capabilities_xml(layers: list[Layer], base_url: str) -> str
 - `GetFeatureInfo` convierte el píxel `(i, j)` en un punto del mundo y consulta con un buffer de
   tolerancia en píxeles, no en unidades del CRS.
 - `image/jpeg` ignora `TRANSPARENT=TRUE` (JPEG no tiene alfa): se compone sobre `BGCOLOR`.
+- `GetMapParams` recibe el bbox en el orden del protocolo y lo normaliza una sola vez al
+  construir el modelo. `CRS:84` conserva ejes longitud/latitud.
+- `GetMap` comprueba permisos de todas las capas antes de consultar, usa los límites de features
+  por capa de `AtlasConfig` y ejecuta el renderer en un thread para no bloquear el event loop.
+  Los nombres de `STYLES` se aceptan sin sustituir el estilo configurado en la capa.
 - `wms/` no dibuja nada por sí mismo: llama a `MapRenderer.render()`.
 - Se comprueba el permiso `view` para `GetMap` y `query` para `GetFeatureInfo`, por capa.
 
