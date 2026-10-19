@@ -1,25 +1,16 @@
 """Discover spatial relation metadata without reading its dataset into memory."""
 
-from typing import Literal, cast, get_args
+from typing import cast, get_args
 
 from psycopg import sql
 from pydantic import BaseModel
 
 from atlas.core.exceptions import InvalidGeometry, InvalidParameter, LayerNotFound
+from atlas.core.types import BBox as BBox
+from atlas.core.types import GeometryType as GeometryType
 from atlas.postgis.connection import Database
 
-GeometryType = Literal[
-    "Point",
-    "LineString",
-    "Polygon",
-    "MultiPoint",
-    "MultiLineString",
-    "MultiPolygon",
-    "GeometryCollection",
-    "Geometry",
-]
 _GEOMETRY_TYPES = {name.upper(): name for name in get_args(GeometryType)}
-BBox = tuple[float, float, float, float]
 
 
 class ColumnInfo(BaseModel):
