@@ -80,3 +80,27 @@ Al preparar un release desde `develop` hacia `main`:
 4. Etiqueta el merge en `main` como `vX.Y.Z`.
 
 El alcance previsto de cada versión está en [`roadmap.md`](roadmap.md).
+
+## Publicación automática en PyPI
+
+Cada push a `main` ejecuta `.github/workflows/publish.yml`: reutiliza el CI completo con
+PostGIS, construye wheel y sdist, valida sus metadatos y publica ambos en PyPI mediante OIDC.
+La construcción y la publicación usan jobs separados; solo el de publicación puede obtener
+el token OIDC. No se guardan tokens de PyPI en GitHub.
+
+Configuración inicial, una sola vez:
+
+1. En GitHub, crea el environment `pypi` y limita sus ramas de despliegue a `main`.
+2. En PyPI, registra un Trusted Publisher para `atlas-geo` con owner `DatzinDev`, repository
+   `Atlas`, workflow `publish.yml` y environment `pypi`. Si el proyecto no existe, usa
+   [un pending publisher](https://pypi.org/manage/account/publishing/).
+3. Integra este workflow siguiendo `feature → develop → main` después de registrar el publisher.
+
+Antes de cada promoción, incrementa la versión en `pyproject.toml` y prepara el changelog.
+La primera publicación puede usar `0.1.0` si todavía no existe en PyPI. Las versiones ya
+publicadas no se sobrescriben: si se repite una versión, la publicación falla.
+
+Para reintentar un fallo transitorio, ejecuta manualmente `Publish to PyPI` seleccionando
+`main`; otras ramas no publican. El workflow no crea tags ni releases en GitHub: esos pasos
+siguen el procedimiento anterior. Documentación oficial:
+[Trusted Publishing](https://docs.pypi.org/trusted-publishers/using-a-publisher/).
