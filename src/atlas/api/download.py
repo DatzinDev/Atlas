@@ -1,6 +1,6 @@
 """Filtered downloads use a server-side cursor and never the default page limit."""
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 from typing import Annotated, Any, Literal, cast
 
 from anyio import CancelScope
@@ -19,23 +19,33 @@ from atlas.wfs.filters import compile_filters, parse_filters
 from atlas.wfs.get_feature import parse_property_names
 
 
+async def _close(rows: AsyncGenerator[dict[str, Any], None], content: AsyncIterator[bytes]) -> None:
+    with CancelScope(shield=True):
+        try:
+            close = getattr(content, "aclose", None)
+            if close is not None:
+                await close()
+        finally:
+            await rows.aclose()
+
+
 class _DownloadResponse(StreamingResponse):
     def __init__(
         self,
         body: AsyncGenerator[bytes, None],
         rows: AsyncGenerator[dict[str, Any], None],
+        content: AsyncIterator[bytes],
         **kwargs: Any,
     ) -> None:
         super().__init__(body, **kwargs)
-        self.rows = rows
+        self.rows, self.content = rows, content
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         try:
             await super().__call__(scope, receive, send)
         finally:
             # Headers may fail before the body starts its cleanup.
-            with CancelScope(shield=True):
-                await self.rows.aclose()
+            await _close(self.rows, self.content)
 
 
 def build_router(ctx: AtlasContext) -> APIRouter:
@@ -108,18 +118,29 @@ def build_router(ctx: AtlasContext) -> APIRouter:
             async for row in rows:
                 yield row
 
+        content = exporter.export(remaining(), metadata)
+        first_chunk = None
+        if not exporter.streaming:
+            try:
+                first_chunk = await anext(content, None)
+            except BaseException:
+                await _close(rows, content)
+                raise
+
         async def body() -> AsyncGenerator[bytes, None]:
             try:
-                async for chunk in exporter.export(remaining(), metadata):
+                if first_chunk is not None:
+                    yield first_chunk
+                async for chunk in content:
                     yield chunk
             finally:
-                with CancelScope(shield=True):
-                    await rows.aclose()
+                await _close(rows, content)
 
         filename = download_filename(layer, exporter)
         return _DownloadResponse(
             body(),
             rows,
+            content,
             media_type=exporter.media_type,
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )

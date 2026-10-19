@@ -5,7 +5,7 @@
 ## Propósito
 
 Serializa el resultado de una consulta a formatos descargables. GeoJSON y CSV en el MVP;
-GeoPackage y Shapefile ZIP después (§15.1).
+GeoPackage y Shapefile ZIP requieren el extra opcional `atlas-geo[export]` (§15.1).
 
 ## Contrato público
 
@@ -33,6 +33,10 @@ def download_filename(layer: Layer, exporter: Exporter) -> str
 
 - GeoJSON y CSV **se emiten en streaming**: se abre el `FeatureCollection`, se van escribiendo
   features desde un cursor server-side y se cierra. Nunca se acumula el dataset en memoria (§24).
+- GeoPackage conserva el nombre de capa, SRID y los tipos compatibles (enteros de 32/64 bits,
+  reales, booleanos, fecha, datetime y binarios). Numeric exacto y tipos no portables se guardan
+  como texto, sin redondear su contenido; JSON y arrays se representan como JSON. El FID interno
+  tiene un nombre separado para no perder atributos llamados `fid`.
 - GeoPackage y Shapefile necesitan archivo en disco: se escriben a un temporal y se sirven; el
   temporal se borra siempre, incluso si el cliente aborta la descarga.
 - Shapefile tiene límites del formato que no se pueden ocultar: nombres de campo truncados a 10

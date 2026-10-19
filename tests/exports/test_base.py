@@ -23,8 +23,9 @@ def test_registry_and_optional_dependency(registry, monkeypatch):
     with pytest.raises(UnsupportedFormat) as error:
         base.get_exporter("xml")
     assert error.value.status_code == 400 and error.value.details["formats"] == ["csv"]
-    with pytest.raises(UnsupportedFormat):
+    with pytest.raises(UnsupportedFormat) as missing:
         base.get_exporter("gpkg")
+    assert "atlas-geo[export]" in missing.value.message
     monkeypatch.setattr(base, "find_spec", lambda name: object())
     assert base.available_formats() == ["csv", "gpkg", "shp"]
 
@@ -41,3 +42,24 @@ def test_filename_is_safe(registry):
     hostile = layer.model_copy(update={"name": "../../datos de salud/.."})
     name = base.download_filename(hostile, registry)
     assert name == "datos_de_salud.csv" and "/" not in name and ".." not in name and " " not in name
+
+
+def test_import_without_fiona():
+    import subprocess
+    import sys
+
+    script = """
+import sys
+sys.modules["fiona"] = None
+import atlas.exports
+from atlas.exports.base import available_formats, get_exporter
+from atlas.core.exceptions import UnsupportedFormat
+assert "gpkg" not in available_formats() and "shp" not in available_formats()
+try:
+    get_exporter("gpkg")
+except UnsupportedFormat as error:
+    assert "atlas-geo[export]" in error.message
+else:
+    raise AssertionError("optional driver was not rejected")
+"""
+    subprocess.run([sys.executable, "-c", script], check=True, capture_output=True)

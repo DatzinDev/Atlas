@@ -32,6 +32,11 @@ def available_formats() -> list[str]:
 
 
 def get_exporter(format: str) -> Exporter:
+    if format in ("gpkg", "shp") and find_spec("fiona") is None:
+        raise UnsupportedFormat(
+            "install atlas-geo[export] to download GeoPackage or Shapefile",
+            formats=available_formats(),
+        )
     if format not in available_formats():
         raise UnsupportedFormat("unsupported download format", formats=available_formats())
     return EXPORTERS[format]
