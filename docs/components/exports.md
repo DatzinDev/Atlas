@@ -20,6 +20,8 @@ class Exporter(Protocol):
 
 EXPORTERS: dict[str, Exporter]
 def get_exporter(format: str) -> Exporter      # lanza UnsupportedFormat
+def available_formats() -> list[str]
+def download_filename(layer: Layer, exporter: Exporter) -> str
 
 # exports/geojson.py   GeoJSONExporter   streaming=True
 # exports/csv_export.py CSVExporter      streaming=True   (geometría como WKT)
@@ -39,6 +41,9 @@ def get_exporter(format: str) -> Exporter      # lanza UnsupportedFormat
 - Todo exportador declara su `media_type` y `extension`; el `Content-Disposition` se construye
   desde ahí, con el nombre de la capa saneado.
 - El módulo se llama `csv_export.py`, no `csv.py`, para no sombrear el módulo estándar.
+- Las filas reciben geometría como objeto GeoJSON bajo `layer.geometry_column`; la metadata
+  indica el SRID de salida y los atributos seleccionados. GeoJSON usa `default=str` para fechas
+  y Decimal; CSV escribe BOM UTF-8 y permite WKT, centroide o ninguna geometría.
 - Los exportadores no consultan la base de datos: reciben un `AsyncIterator[dict]` ya construido
   por `postgis/`.
 
