@@ -163,3 +163,35 @@ async def test_geopackage_download_and_header_disconnect_cleanup(
     with pytest.raises((ClientDisconnect, ExceptionGroup)):
         await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
     assert list(scratch.iterdir()) == []
+
+
+async def test_shapefile_download_warning_limits_and_cleanup(client, atlas, monkeypatch, tmp_path):
+    pytest.importorskip("fiona")
+    from io import BytesIO
+    from tempfile import TemporaryDirectory
+    from zipfile import ZipFile
+
+    monkeypatch.setattr(
+        "atlas.exports.shapefile.TemporaryDirectory",
+        lambda **kwargs: TemporaryDirectory(dir=tmp_path, **kwargs),
+    )
+    response = await client.get("/atlas/layers/municipios/download?format=shp")
+    assert response.status_code == 200 and response.headers["content-type"] == "application/zip"
+    assert response.headers["content-disposition"].endswith('municipios.zip"')
+    assert "README.txt" in response.headers["warning"]
+    with ZipFile(BytesIO(response.content)) as archive:
+        assert "municipios.shp" in archive.namelist() and "README.txt" in archive.namelist()
+    assert list(tmp_path.iterdir()) == []
+    route = next(
+        r for r in build_router(atlas.context).routes if r.path == "/layers/{name}/download"
+    )
+    request = Request({"type": "http", "query_string": b"format=shp", "headers": []})
+    response = await route.endpoint("municipios", request, None)
+    await anext(response.body_iterator)
+    assert list(tmp_path.iterdir())
+    await response.body_iterator.aclose()
+    assert list(tmp_path.iterdir()) == []
+    monkeypatch.setattr("atlas.exports.shapefile.MAX_BYTES", 10)
+    response = await client.get("/atlas/layers/municipios/download?format=shp")
+    assert response.status_code == 413 and response.json()["error"]["code"] == "query_too_large"
+    assert list(tmp_path.iterdir()) == []

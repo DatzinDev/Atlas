@@ -137,12 +137,15 @@ def build_router(ctx: AtlasContext) -> APIRouter:
                 await _close(rows, content)
 
         filename = download_filename(layer, exporter)
+        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+        if exporter.format == "shp":
+            headers["Warning"] = '299 Atlas "Shapefile field limits apply; see README.txt in ZIP"'
         return _DownloadResponse(
             body(),
             rows,
             content,
             media_type=exporter.media_type,
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            headers=headers,
         )
 
     return router
