@@ -16,6 +16,7 @@ listed here; see [docs/changelog.md](docs/changelog.md) for when and how to upda
 
 ### Features
 
+* **wfs:** describe feature types with JSON Schema metadata ([aec0445](https://github.com/DatzinDev/Atlas/commit/aec0445))
 * **wfs:** select validated properties while preserving feature ids ([65aeeca](https://github.com/DatzinDev/Atlas/commit/65aeeca))
 * **wfs:** stream bounded GeoJSON feature collections ([33f8abc](https://github.com/DatzinDev/Atlas/commit/33f8abc))
 * **wfs:** enforce bounded pagination and request aliases ([3dc5058](https://github.com/DatzinDev/Atlas/commit/3dc5058))
