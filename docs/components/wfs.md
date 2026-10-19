@@ -62,6 +62,9 @@ def capabilities_xml(layers: list[Layer], base_url: str) -> str
   `numberReturned` se escribe al final del JSON y cuenta los elementos emitidos. Un error posterior
   a los headers interrumpe el stream; no puede reemplazar una respuesta HTTP ya iniciada.
 - El CRS de salida se resuelve con `core.crs.require_crs`; un CRS no soportado es 400, no 500.
+- Capabilities anuncia EPSG:4326 como CRS de salida por defecto, incluso si la tabla usa UTM;
+  `OtherCRS` se deriva del registro soportado. Recibe capas ya filtradas por permiso `view` y
+  excluye las que no ofrecen WFS. Las URLs se toman del request, incluyendo su prefijo.
 - `describe_feature_type(layer, output_format="application/json")` publica tipos JSON Schema,
   nulabilidad, campo geométrico y SRID. Tipos PostgreSQL desconocidos se describen como `string`;
   cualquier formato de salida distinto de JSON lanza `UnsupportedFormat`.
