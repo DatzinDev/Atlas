@@ -16,6 +16,12 @@ listed here; see [docs/changelog.md](docs/changelog.md) for when and how to upda
 
 ### Features
 
+* **wfs:** enforce bounded pagination and request aliases ([3dc5058](https://github.com/DatzinDev/Atlas/commit/3dc5058))
+* **postgis:** filter bounding boxes without wrapping indexed geometry ([0611a89](https://github.com/DatzinDev/Atlas/commit/0611a89))
+* **wfs:** validate typed filters and compile whitelisted predicates ([56114e0](https://github.com/DatzinDev/Atlas/commit/56114e0))
+* **postgis:** compose bounded feature queries with column whitelists ([f9a6a32](https://github.com/DatzinDev/Atlas/commit/f9a6a32))
+* **core:** report operation timing through an isolated logging hook ([102a664](https://github.com/DatzinDev/Atlas/commit/102a664))
+* **core:** add the supported CRS registry and axis aliases ([0811462](https://github.com/DatzinDev/Atlas/commit/0811462))
 * **layers:** enforce host permissions on layer metadata ([cec04ac](https://github.com/DatzinDev/Atlas/commit/cec04ac))
 * **api:** expose layer catalog and metadata endpoints ([ff4b569](https://github.com/DatzinDev/Atlas/commit/ff4b569))
 * **integration:** embed Atlas in FastAPI with managed lifecycle ([8bdf9da](https://github.com/DatzinDev/Atlas/commit/8bdf9da))

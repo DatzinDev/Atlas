@@ -137,11 +137,16 @@ LogHook = Callable[[OperationLog], None]
 **CRS**
 
 - Los CRS soportados viven en un único diccionario. Añadir uno es añadir una entrada, no un `if`.
+- `require_crs` también admite texto: `require_crs("CRS:84")` conserva el SRID 4326 con ejes `xy`,
+  sin mutar el registro de EPSG:4326 (`yx`). `parse_crs` devuelve solo el SRID y no retiene el alias.
 
 **Logging**
 
 - El logging es un hook opcional que la app host provee. Atlas nunca configura `logging.basicConfig`
   ni escribe a stdout por su cuenta.
+- `log_operation` cede un `OperationLog` mutable, mide con reloj monotónico y notifica al hook al
+  terminar. Registra códigos de Atlas o nombres de excepción; un fallo del hook se ignora.
+  Sin hook se omiten medición y notificación.
 
 ## Dependencias
 

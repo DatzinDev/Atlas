@@ -9,6 +9,7 @@ from fastapi import APIRouter, FastAPI
 from atlas.api.layers import create_router
 from atlas.context import AtlasContext
 from atlas.core.config import AtlasConfig
+from atlas.core.logging import LogHook
 from atlas.layers.metadata import build_layer
 from atlas.layers.models import Layer
 from atlas.layers.permissions import PermissionChecker
@@ -26,7 +27,7 @@ class Atlas:
         renderer: Any = None,
         permission_checker: PermissionChecker | None = None,
         principal_dependency: Callable[..., Any] | None = None,
-        log_hook: Callable[[Any], None] | None = None,
+        log_hook: LogHook | None = None,
     ) -> None:
         if config is not None and config.database_url != database_url:
             raise ValueError("database_url must match the supplied config")
