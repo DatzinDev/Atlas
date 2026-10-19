@@ -47,6 +47,7 @@ class LayerRegistry:
     def list(self, *, enabled_only: bool = True) -> list[Layer]
     def remove(self, name: str) -> None
     def __contains__(self, name: str) -> bool
+    def __len__(self) -> int
 
 # layers/metadata.py
 async def build_layer(
@@ -76,6 +77,11 @@ async def check_permission(checker, layer, op, principal) -> None  # lanza Permi
   validar ni se adelanta la implementación de rendering.
 - El registry es un `dict` en memoria y no persiste nada. La persistencia llega en v0.2 y se
   construirá **encima** de esta interfaz, sin cambiarla.
+- `register` reemplaza por nombre y devuelve la nueva capa. `list` ordena por nombre y excluye
+  deshabilitadas salvo `enabled_only=False`; devuelve una lista nueva con las capas originales.
+- `get` permite consultar metadatos de capas deshabilitadas; `require_service` impide servirlas.
+  `get`, `remove` y `require_service` lanzan `LayerNotFound` con `details.name` si no existe la capa.
+  Un servicio desconocido o deshabilitado lanza `ServiceDisabled`.
 - Atlas no decide si un usuario tiene un permiso: llama al `PermissionChecker` que provee la app
   host y respeta su respuesta (§17). Si no hay checker configurado, todo se permite.
 - Las cuatro operaciones (`view`, `query`, `download`, `admin`) se comprueban por separado (§18).
