@@ -15,7 +15,10 @@ from atlas.layers.models import Layer
 from atlas.layers.permissions import PermissionChecker
 from atlas.layers.registry import LayerRegistry
 from atlas.postgis.connection import Database
-from atlas.wfs.router import build_router
+from atlas.rendering.base import MapRenderer
+from atlas.rendering.pillow import PillowRenderer
+from atlas.wfs.router import build_router as build_wfs_router
+from atlas.wms.router import build_router as build_wms_router
 
 
 class Atlas:
@@ -25,7 +28,7 @@ class Atlas:
         *,
         prefix: str = "/atlas",
         config: AtlasConfig | None = None,
-        renderer: Any = None,
+        renderer: MapRenderer | None = None,
         permission_checker: PermissionChecker | None = None,
         principal_dependency: Callable[..., Any] | None = None,
         log_hook: LogHook | None = None,
@@ -37,7 +40,7 @@ class Atlas:
             config=config,
             db=Database(config),
             registry=LayerRegistry(),
-            renderer=renderer,
+            renderer=renderer if renderer is not None else PillowRenderer(),
             permission_checker=permission_checker,
             principal_dependency=principal_dependency,
             log_hook=log_hook,
@@ -56,7 +59,8 @@ class Atlas:
         if self._router is None:
             self._router = APIRouter(prefix=self._prefix)
             self._router.include_router(create_router(self.context))
-            self._router.include_router(build_router(self.context))
+            self._router.include_router(build_wfs_router(self.context))
+            self._router.include_router(build_wms_router(self.context))
         return self._router
 
     async def startup(self) -> None:

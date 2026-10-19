@@ -46,6 +46,7 @@ def build_feature_query(
 ) -> tuple[sql.Composed, list]
 
 def bbox_predicate(info: TableInfo, bbox: BBox, bbox_srid: int) -> tuple[sql.Composed, list]
+def intersects_bbox_predicate(info: TableInfo, bbox: BBox, bbox_srid: int) -> tuple[sql.Composed, list]
 def parse_bbox(value: str) -> tuple[BBox, int | None]
 def count_query(info: TableInfo, where, params) -> tuple[sql.Composed, list]
 async def fetch_render_geometries(
