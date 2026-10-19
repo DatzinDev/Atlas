@@ -144,6 +144,9 @@ LogHook = Callable[[OperationLog], None]
 
 - El logging es un hook opcional que la app host provee. Atlas nunca configura `logging.basicConfig`
   ni escribe a stdout por su cuenta.
+- `log_operation` cede un `OperationLog` mutable, mide con reloj monotónico y notifica al hook al
+  terminar. Registra códigos de Atlas o nombres de excepción; un fallo del hook se ignora.
+  Sin hook se omiten medición y notificación.
 
 ## Dependencias
 
