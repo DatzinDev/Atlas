@@ -57,6 +57,10 @@ def capabilities_xml(layers: list[Layer], base_url: str) -> str
 - Se responde con `PermissionDenied` si el checker rechaza la operación `query`, y con
   `ServiceDisabled` si `layer.services.wfs` es `False`.
 - La salida es `application/geo+json` en streaming; no se construye la lista completa en memoria.
+- `get_feature` cuenta coincidencias y abre un cursor acotado. Prefetch de una fila detecta errores
+  iniciales antes de enviar headers; el cursor se cierra al terminar o cancelar el iterador.
+  `numberReturned` se escribe al final del JSON y cuenta los elementos emitidos. Un error posterior
+  a los headers interrumpe el stream; no puede reemplazar una respuesta HTTP ya iniciada.
 - El CRS de salida se resuelve con `core.crs.require_crs`; un CRS no soportado es 400, no 500.
 
 ## Dependencias
