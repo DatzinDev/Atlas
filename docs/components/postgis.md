@@ -48,6 +48,10 @@ def build_feature_query(
 def bbox_predicate(info: TableInfo, bbox: BBox, bbox_srid: int) -> tuple[sql.Composed, list]
 def parse_bbox(value: str) -> tuple[BBox, int | None]
 def count_query(info: TableInfo, where, params) -> tuple[sql.Composed, list]
+async def fetch_render_geometries(
+    db: Database, info: TableInfo, *, bbox: BBox, bbox_srid: int, target_srid: int,
+    where: Sequence[sql.Composed] = (), params: Sequence = (), limit: int | None = None,
+) -> list[BaseGeometry]
 
 # postgis/geometry.py
 def to_geojson_feature(row: dict, id_column: str | None) -> dict
@@ -68,6 +72,9 @@ def to_geojson_feature(row: dict, id_column: str | None) -> dict
   límites invertidos y valores no finitos. El CRS opcional se valida con el registro compartido.
 - La reproyección de salida (`ST_Transform` sobre el SELECT) es lo único que sí envuelve la
   geometría, y va después del filtrado.
+- `fetch_render_geometries` aplica `default_limit` / `max_limit` de la configuración del pool,
+  filtra con el bbox en el SRID nativo y transforma solo el SELECT. Devuelve Shapely desde WKB
+  y descarta geometrías nulas; no simplifica ni recorta las geometrías.
 - `stream()` usa cursor con nombre. Ninguna consulta de descarga materializa el dataset completo.
 - `inspect_table` funciona igual para tablas y para vistas; si `geometry_columns` no resuelve, cae
   a inspeccionar el tipo real de la columna.
