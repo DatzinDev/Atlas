@@ -21,6 +21,7 @@ class Layer(BaseModel):
     schema_name: str; table_name: str
     geometry_column: str; geometry_type: GeometryType; srid: int
     id_column: str | None = None
+    is_view: bool = False           # conserva el tipo de relación al reconstruir TableInfo
     attributes: list[ColumnInfo]
     extent: BBox | None = None      # en EPSG:4326
     enabled: bool = True
@@ -28,7 +29,7 @@ class Layer(BaseModel):
     downloadable: bool = True
     public: bool = True
     services: LayerServices = LayerServices()
-    style: Style | None = None
+    style: None = None              # Style | None se habilita con el issue #28
     permissions: list[str] = []     # ver permissions.py
     min_zoom: int | None = None; max_zoom: int | None = None
 
@@ -36,6 +37,7 @@ class Layer(BaseModel):
     def table_info(self) -> TableInfo    # lo que consume postgis/
     @property
     def attribute_names(self) -> list[str]   # whitelist de columnas
+    def supports(self, service: str) -> bool
 
 # layers/registry.py
 class LayerRegistry:
@@ -65,6 +67,13 @@ async def check_permission(checker, layer, op, principal) -> None  # lanza Permi
 - `Layer.name` es único en el registry y es lo que aparece en URLs y en `GetCapabilities`.
 - Una capa con `enabled=False` no aparece en ningún capabilities ni responde a ninguna operación.
 - `attributes` **nunca** incluye la columna de geometría: es la whitelist que protege el SQL.
+- El modelo elimina la geometría de `attributes` al construirlo. `attribute_names` y `table_info`
+  también la excluyen si luego se modifica la lista. `table_info` conserva `is_view` e `id_column`.
+- `name` acepta solo `[a-z0-9_-]`, sin cadena vacía. Si se omite `title`, usa `name.capitalize()`.
+- `supports` requiere la capa habilitada y el servicio activado; un servicio desconocido devuelve
+  `False`. WMS y WFS están activos por defecto, WMTS y WCS no.
+- Hasta implementar los modelos del #28, `style` solo acepta `None`; no se admiten estilos sin
+  validar ni se adelanta la implementación de rendering.
 - El registry es un `dict` en memoria y no persiste nada. La persistencia llega en v0.2 y se
   construirá **encima** de esta interfaz, sin cambiarla.
 - Atlas no decide si un usuario tiene un permiso: llama al `PermissionChecker` que provee la app
