@@ -16,6 +16,7 @@ listed here; see [docs/changelog.md](docs/changelog.md) for when and how to upda
 
 ### Features
 
+* **wfs:** stream bounded GeoJSON feature collections ([33f8abc](https://github.com/DatzinDev/Atlas/commit/33f8abc))
 * **wfs:** enforce bounded pagination and request aliases ([3dc5058](https://github.com/DatzinDev/Atlas/commit/3dc5058))
 * **postgis:** filter bounding boxes without wrapping indexed geometry ([0611a89](https://github.com/DatzinDev/Atlas/commit/0611a89))
 * **wfs:** validate typed filters and compile whitelisted predicates ([56114e0](https://github.com/DatzinDev/Atlas/commit/56114e0))
