@@ -137,6 +137,8 @@ LogHook = Callable[[OperationLog], None]
 **CRS**
 
 - Los CRS soportados viven en un único diccionario. Añadir uno es añadir una entrada, no un `if`.
+- `require_crs` también admite texto: `require_crs("CRS:84")` conserva el SRID 4326 con ejes `xy`,
+  sin mutar el registro de EPSG:4326 (`yx`). `parse_crs` devuelve solo el SRID y no retiene el alias.
 
 **Logging**
 
