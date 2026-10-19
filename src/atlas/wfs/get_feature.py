@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from atlas.context import AtlasContext
 from atlas.core.crs import require_crs
 from atlas.core.exceptions import InvalidFilter
+from atlas.core.logging import OperationLog
 from atlas.core.types import BBox
 from atlas.layers.models import Layer
 from atlas.layers.permissions import check_permission
@@ -42,6 +43,7 @@ async def get_feature(
     count: int | None = None,
     start_index: int = 0,
     principal: Any = None,
+    report: OperationLog | None = None,
 ) -> StreamingResponse:
     layer = ctx.registry.require_service(type_names, "wfs")
     await check_permission(ctx.permission_checker, layer, "query", principal)
@@ -89,15 +91,21 @@ async def get_feature(
             if first_json is not None:
                 yield first_json
                 returned += 1
+                if report is not None:
+                    report.feature_count = returned
             async for row in rows:
                 yield ("," if returned else "") + encode(row)
                 returned += 1
+                if report is not None:
+                    report.feature_count = returned
             metadata = {
                 "numberMatched": matched["count"] if matched is not None else 0,
                 "numberReturned": returned,
                 "startIndex": page.offset,
                 "crs": {"type": "name", "properties": {"name": f"EPSG:{output_srid}"}},
             }
+            if report is not None:
+                report.feature_count = returned
             yield "]," + json.dumps(metadata)[1:]
         finally:
             await rows.aclose()
