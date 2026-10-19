@@ -8,6 +8,36 @@ from psycopg import sql
 from atlas.core.exceptions import InvalidFilter
 from atlas.postgis.introspection import TableInfo
 
+FILTER_OPERATORS = {
+    "eq": "=",
+    "ne": "!=",
+    "gt": ">",
+    "gte": ">=",
+    "lt": "<",
+    "lte": "<=",
+    "in": "IN",
+    "like": "LIKE",
+}
+
+
+def attribute_predicate(
+    info: TableInfo, column: str, operator: str, value: Any
+) -> tuple[sql.Composed, list[Any]]:
+    if column not in {c.name for c in info.columns} or column == info.geometry_column:
+        raise InvalidFilter("unknown attribute", column=column)
+    if operator not in FILTER_OPERATORS:
+        raise InvalidFilter("unknown filter operator", operator=operator)
+    if operator == "in":
+        if not isinstance(value, list) or not value:
+            raise InvalidFilter("IN requires a non-empty list")
+        predicate = sql.SQL("{} IN ({})").format(
+            sql.Identifier(column), sql.SQL(", ").join(sql.Placeholder() for _ in value)
+        )
+        return predicate, value
+    return sql.SQL("{} {} %s").format(
+        sql.Identifier(column), sql.SQL(FILTER_OPERATORS[operator])
+    ), [value]
+
 
 def _where_sql(where: Sequence[sql.Composed]) -> sql.Composed:
     return sql.SQL(" WHERE {}").format(sql.SQL(" AND ").join(where)) if where else sql.Composed([])

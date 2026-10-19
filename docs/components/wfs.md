@@ -48,6 +48,8 @@ def capabilities_xml(layers: list[Layer], base_url: str) -> str
 - Los valores se castean al tipo de la columna antes de ejecutarse; un `poblacion__gt=abc` es un
   `InvalidFilter` 400, nunca un error 500 de PostgreSQL.
 - `LIKE` recibe el patrón del usuario tal cual como parámetro; no se concatena `%` en el SQL.
+- `compile_filters` revalida filtros creados por código y delega la composición SQL en
+  `postgis.attribute_predicate`. `IN` usa una lista no vacía; los enteros respetan su ancho PostgreSQL.
 - El número de features devueltos es `min(count solicitado, config.max_limit)` y por defecto
   `config.default_limit` (§23). Nunca ilimitado.
 - Se responde con `PermissionDenied` si el checker rechaza la operación `query`, y con
