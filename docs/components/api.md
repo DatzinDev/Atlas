@@ -50,6 +50,11 @@ class MapExportRequest(BaseModel):
 - `POST /maps/export` reutiliza `wms.get_map`, no reimplementa el pipeline de render.
 - Todas las rutas de este paquete cuelgan del prefijo configurado en `Atlas` (por defecto `/atlas`).
 - Los errores salen con la forma de `core.exceptions.error_response`, iguales que en WMS/WFS.
+- Catálogo y detalle tienen modelos de respuesta explícitos en OpenAPI; el catálogo no incluye
+  atributos ni nombres internos de esquema/tabla. El detalle publica atributos `{name, type}`,
+  conserva la llave primaria y excluye la geometría. Una capa deshabilitada responde 404.
+- `download_formats` permanece vacío hasta conectar el registro de exportadores (#37); no se
+  anuncian formatos que aún no se pueden descargar. También será vacío si `downloadable=False`.
 
 ## Dependencias
 

@@ -29,7 +29,7 @@ class Layer(BaseModel):
     downloadable: bool = True
     public: bool = True
     services: LayerServices = LayerServices()
-    style: None = None              # Style | None se habilita con el issue #28
+    style: Style | None = None
     permissions: list[str] = []     # ver permissions.py
     min_zoom: int | None = None; max_zoom: int | None = None
 
@@ -61,6 +61,7 @@ Operation = Literal["view", "query", "download", "admin"]
 PermissionChecker = Callable[[Layer, Operation, Any], bool | Awaitable[bool]]
 def default_permission_name(layer: Layer, op: Operation) -> str   # "atlas.municipios.view"
 async def check_permission(checker, layer, op, principal) -> None  # lanza PermissionDenied
+async def visible_layers(registry, checker, op, principal) -> list[Layer]
 ```
 
 ## Invariantes
@@ -73,8 +74,9 @@ async def check_permission(checker, layer, op, principal) -> None  # lanza Permi
 - `name` acepta solo `[a-z0-9_-]`, sin cadena vacía. Si se omite `title`, usa `name.capitalize()`.
 - `supports` requiere la capa habilitada y el servicio activado; un servicio desconocido devuelve
   `False`. WMS y WFS están activos por defecto, WMTS y WCS no.
-- Hasta implementar los modelos del #28, `style` solo acepta `None`; no se admiten estilos sin
-  validar ni se adelanta la implementación de rendering.
+- `build_layer` descubre metadatos y extent, asigna el estilo por geometría y aplica overrides.
+  Un campo desconocido lanza `TypeError`; `style=None` y `extent=None` explícitos se conservan.
+  La llave primaria también permanece en los atributos descubiertos; la geometría se excluye.
 - El registry es un `dict` en memoria y no persiste nada. La persistencia llega en v0.2 y se
   construirá **encima** de esta interfaz, sin cambiarla.
 - `register` reemplaza por nombre y devuelve la nueva capa. `list` ordena por nombre y excluye
@@ -85,6 +87,10 @@ async def check_permission(checker, layer, op, principal) -> None  # lanza Permi
 - Atlas no decide si un usuario tiene un permiso: llama al `PermissionChecker` que provee la app
   host y respeta su respuesta (§17). Si no hay checker configurado, todo se permite.
 - Las cuatro operaciones (`view`, `query`, `download`, `admin`) se comprueban por separado (§18).
+- Solo el booleano `True` del checker concede acceso; un error sync/async se transforma en
+  `PermissionDenied` sin exponer su mensaje. Sin checker no se imponen restricciones por permisos.
+- El catálogo comprueba `view` y el detalle `query`, independientemente. `principal_dependency`
+  se configura antes de montar el router y FastAPI resuelve la dependencia de la app host.
 
 ## Dependencias
 

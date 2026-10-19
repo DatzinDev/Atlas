@@ -98,6 +98,7 @@ def test_unknown_geometry_is_rejected() -> None:
         make_layer(geometry_type="NotAGeometry")
 
 
-def test_styles_are_rejected_until_the_style_models_exist() -> None:
+def test_styles_are_validated() -> None:
+    assert make_layer(style={"fill": "#ffffff"}).style.fill == "#ffffff"
     with pytest.raises(ValidationError):
-        make_layer(style={"fill": "#ffffff"})
+        make_layer(style={"fill": "not a color"})
