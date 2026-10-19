@@ -15,7 +15,7 @@ from atlas.layers.permissions import check_permission
 from atlas.postgis.queries import fetch_render_geometries
 from atlas.rendering.base import MapRenderer, RenderLayer
 from atlas.rendering.pillow import PillowRenderer
-from atlas.styles.models import Color, default_style
+from atlas.styles.models import Color, Style, default_style
 
 
 class GetMapParams(BaseModel):
@@ -87,6 +87,7 @@ async def get_map(
     principal: Any = None,
     *,
     report: OperationLog | None = None,
+    styles: dict[str, Style] | None = None,
 ) -> Response:
     params.validate_size(ctx.config.max_image_size)
     layers = [ctx.registry.require_service(name, "wms") for name in params.layers]
@@ -103,7 +104,10 @@ async def get_map(
         )
         render_layers.append(
             RenderLayer(
-                geometries=geometries, style=layer.style or default_style(layer.geometry_type)
+                geometries=geometries,
+                style=(styles or {}).get(layer.name)
+                or layer.style
+                or default_style(layer.geometry_type),
             )
         )
     if report is not None:

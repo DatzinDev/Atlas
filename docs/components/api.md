@@ -47,7 +47,8 @@ class MapExportRequest(BaseModel):
   seguridad en solo uno de los dos.
 - `/download` requiere `layer.downloadable` y permiso `download`. Un `format` desconocido es un
   `UnsupportedFormat` 400.
-- `POST /maps/export` reutiliza `wms.get_map`, no reimplementa el pipeline de render.
+- `POST /maps/export` reutiliza `wms.get_map`, con overrides de estilo locales a la petición,
+  bbox siempre `minx,miny,maxx,maxy` y descarga PNG/JPEG con nombre UTC. No muta el registry.
 - Todas las rutas de este paquete cuelgan del prefijo configurado en `Atlas` (por defecto `/atlas`).
 - Los errores salen con la forma de `core.exceptions.error_response`, iguales que en WMS/WFS.
 - Catálogo y detalle tienen modelos de respuesta explícitos en OpenAPI; el catálogo no incluye
