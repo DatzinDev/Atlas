@@ -16,6 +16,7 @@ listed here; see [docs/changelog.md](docs/changelog.md) for when and how to upda
 
 ### Features
 
+* **layers:** add the in-memory layer registry ([adbe68f](https://github.com/DatzinDev/Atlas/commit/adbe68f))
 * **layers:** add the layer model and service flags ([2d04e54](https://github.com/DatzinDev/Atlas/commit/2d04e54))
 * **postgis:** add estimated layer extents with exact fallback ([d9e528a](https://github.com/DatzinDev/Atlas/commit/d9e528a))
 * **postgis:** add spatial table and view introspection ([85a5125](https://github.com/DatzinDev/Atlas/commit/85a5125))
