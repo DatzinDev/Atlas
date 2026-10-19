@@ -9,12 +9,24 @@ from fastapi.responses import StreamingResponse
 
 from atlas.context import AtlasContext
 from atlas.core.crs import require_crs
+from atlas.core.exceptions import InvalidFilter
 from atlas.core.types import BBox
+from atlas.layers.models import Layer
 from atlas.layers.permissions import check_permission
 from atlas.postgis.geometry import to_geojson_feature
 from atlas.postgis.queries import bbox_predicate, build_feature_query, count_query
 from atlas.wfs.filters import Filter, compile_filters
 from atlas.wfs.pagination import resolve_pagination
+
+
+def parse_property_names(value: str | None, layer: Layer) -> list[str] | None:
+    if value is None or not value.strip():
+        return None
+    names = list(dict.fromkeys(name.strip() for name in value.split(",")))
+    for name in names:
+        if name not in layer.attribute_names:
+            raise InvalidFilter("unknown attribute", column=name)
+    return names
 
 
 async def get_feature(
@@ -26,6 +38,7 @@ async def get_feature(
     output_srid: int = 4326,
     filters: list[Filter] | None = None,
     property_names: list[str] | None = None,
+    include_geometry: bool = True,
     count: int | None = None,
     start_index: int = 0,
     principal: Any = None,
@@ -45,9 +58,11 @@ async def get_feature(
     matched = await ctx.db.fetch_one(query, values)
     query, values = build_feature_query(
         layer.table_info,
+        columns=property_names,
         where=where,
         params=params,
         target_srid=output_srid,
+        geometry_as="geojson" if include_geometry else "none",
         limit=page.limit,
         offset=page.offset,
     )
