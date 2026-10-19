@@ -15,6 +15,7 @@ from atlas.layers.models import Layer
 from atlas.layers.permissions import PermissionChecker
 from atlas.layers.registry import LayerRegistry
 from atlas.postgis.connection import Database
+from atlas.wfs.router import build_router
 
 
 class Atlas:
@@ -55,6 +56,7 @@ class Atlas:
         if self._router is None:
             self._router = APIRouter(prefix=self._prefix)
             self._router.include_router(create_router(self.context))
+            self._router.include_router(build_router(self.context))
         return self._router
 
     async def startup(self) -> None:

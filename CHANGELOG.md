@@ -16,6 +16,11 @@ listed here; see [docs/changelog.md](docs/changelog.md) for when and how to upda
 
 ### Features
 
+* **wfs:** dispatch read-only requests with permissions and operation logs ([7328c65](https://github.com/DatzinDev/Atlas/commit/7328c65))
+* **wfs:** publish escaped read-only capabilities metadata ([c664b25](https://github.com/DatzinDev/Atlas/commit/c664b25))
+* **wfs:** describe feature types with JSON Schema metadata ([aec0445](https://github.com/DatzinDev/Atlas/commit/aec0445))
+* **wfs:** select validated properties while preserving feature ids ([65aeeca](https://github.com/DatzinDev/Atlas/commit/65aeeca))
+* **wfs:** stream bounded GeoJSON feature collections ([33f8abc](https://github.com/DatzinDev/Atlas/commit/33f8abc))
 * **wfs:** enforce bounded pagination and request aliases ([3dc5058](https://github.com/DatzinDev/Atlas/commit/3dc5058))
 * **postgis:** filter bounding boxes without wrapping indexed geometry ([0611a89](https://github.com/DatzinDev/Atlas/commit/0611a89))
 * **wfs:** validate typed filters and compile whitelisted predicates ([56114e0](https://github.com/DatzinDev/Atlas/commit/56114e0))
@@ -39,5 +44,6 @@ listed here; see [docs/changelog.md](docs/changelog.md) for when and how to upda
 
 ### Bug Fixes
 
+* **wfs:** release prefetched cursors when clients disconnect ([389673b](https://github.com/DatzinDev/Atlas/commit/389673b))
 * **dev:** make the seeded layers overlap and look like a real network ([218a849](https://github.com/zamax14/Atlas/commit/218a849))
 * **ci:** skip install, lint, types and tests while pyproject.toml does not exist ([7e64c12](https://github.com/zamax14/Atlas/commit/7e64c12))

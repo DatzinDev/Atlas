@@ -29,9 +29,11 @@ def parse_filters(params: Mapping[str, str], layer: Layer) -> list[Filter]
 def compile_filters(filters: list[Filter], layer: Layer) -> tuple[list[sql.Composed], list]
 
 # wfs/get_feature.py
-async def get_feature(ctx, *, type_names: str, bbox: BBox | None, bbox_crs: int,
-                      output_crs: int, filters: list[Filter], property_names: list[str] | None,
-                      count: int | None, start_index: int) -> FeatureCollection
+async def get_feature(ctx, *, type_names: str, bbox: BBox | None = None, bbox_srid: int | None = None,
+                      output_srid: int = 4326, filters: list[Filter] | None = None,
+                      property_names: list[str] | None = None, include_geometry: bool = True,
+                      count: int | None = None, start_index: int = 0, principal=None,
+                      report: OperationLog | None = None) -> StreamingResponse
 
 # wfs/describe.py
 def describe_feature_type(layer: Layer) -> dict     # JSON schema de la capa
@@ -57,7 +59,27 @@ def capabilities_xml(layers: list[Layer], base_url: str) -> str
 - Se responde con `PermissionDenied` si el checker rechaza la operación `query`, y con
   `ServiceDisabled` si `layer.services.wfs` es `False`.
 - La salida es `application/geo+json` en streaming; no se construye la lista completa en memoria.
+- GET y POST form-encoded comparten validación; no se admite XML. Los parámetros OGC son
+  case-insensitive, los nombres de atributos conservan el caso de PostgreSQL. Parámetros
+  duplicados se rechazan para evitar interpretaciones ambiguas. Solo se consulta una capa por vez.
+- El router registra las tres operaciones durante toda su respuesta, incluido el stream; captura
+  errores previos a los headers y registra errores tardíos sin cambiar un HTTP ya iniciado.
+- `get_feature` cuenta coincidencias y abre un cursor acotado. Prefetch de una fila detecta errores
+  iniciales antes de enviar headers; el cursor se cierra al terminar o cancelar el iterador.
+- La respuesta también cierra el cursor si el envío de headers falla antes de iniciar el cuerpo;
+  la limpieza queda protegida contra la cancelación de la petición.
+  `numberReturned` se escribe al final del JSON y cuenta los elementos emitidos. Un error posterior
+  a los headers interrumpe el stream; no puede reemplazar una respuesta HTTP ya iniciada.
 - El CRS de salida se resuelve con `core.crs.require_crs`; un CRS no soportado es 400, no 500.
+- Capabilities anuncia EPSG:4326 como CRS de salida por defecto, incluso si la tabla usa UTM;
+  `OtherCRS` se deriva del registro soportado. Recibe capas ya filtradas por permiso `view` y
+  excluye las que no ofrecen WFS. Las URLs se toman del request, incluyendo su prefijo.
+- `describe_feature_type(layer, output_format="application/json")` publica tipos JSON Schema,
+  nulabilidad, campo geométrico y SRID. Tipos PostgreSQL desconocidos se describen como `string`;
+  cualquier formato de salida distinto de JSON lanza `UnsupportedFormat`.
+- `propertyName` admite atributos separados por comas con espacios; vacío significa todos. La
+  llave primaria siempre se selecciona. `geometry=false` evita consultar la geometría y produce
+  `geometry: null` para conservar la estructura GeoJSON del feature.
 
 ## Dependencias
 
