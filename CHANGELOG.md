@@ -16,6 +16,7 @@ listed here; see [docs/changelog.md](docs/changelog.md) for when and how to upda
 
 ### Features
 
+* **core:** report operation timing through an isolated logging hook ([102a664](https://github.com/DatzinDev/Atlas/commit/102a664))
 * **core:** add the supported CRS registry and axis aliases ([0811462](https://github.com/DatzinDev/Atlas/commit/0811462))
 * **layers:** enforce host permissions on layer metadata ([cec04ac](https://github.com/DatzinDev/Atlas/commit/cec04ac))
 * **api:** expose layer catalog and metadata endpoints ([ff4b569](https://github.com/DatzinDev/Atlas/commit/ff4b569))
