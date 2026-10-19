@@ -34,6 +34,7 @@ class TableInfo(BaseModel):
     is_view: bool
 
 async def inspect_table(db: Database, schema: str, table: str) -> TableInfo
+def parse_source(source: str, default_schema: str = "public") -> tuple[str, str]
 async def table_extent(db: Database, info: TableInfo, srid: int = 4326) -> BBox | None
 
 # postgis/queries.py
@@ -65,6 +66,14 @@ def to_geojson_feature(row: dict, id_column: str | None) -> dict
 - `stream()` usa cursor con nombre. Ninguna consulta de descarga materializa el dataset completo.
 - `inspect_table` funciona igual para tablas y para vistas; si `geometry_columns` no resuelve, cae
   a inspeccionar el tipo real de la columna.
+- Se elige la primera columna `geometry` por orden de declaración y se excluyen todas las
+  geometrías de `columns`. `data_type` conserva el nombre de tipo PostgreSQL (`int4`, `text`, etc.).
+- Las geometrías genéricas se deducen de la primera fila no nula. Sin metadatos concretos ni una
+  fila disponible se lanza `InvalidGeometry`; una tabla vacía con geometría tipada sí funciona.
+  La muestra no garantiza homogeneidad geométrica en columnas sin restricciones.
+- Una llave primaria compuesta se informa como `None`: no hay una sola columna identificadora.
+- `parse_source` acepta `tabla` o `esquema.tabla`, sin sintaxis SQL de identificadores entrecomillados;
+  los nombres conservan mayúsculas. Un nombre vacío o con más de un punto es `InvalidParameter`.
 - El `query_timeout` de `AtlasConfig` se aplica como `statement_timeout` en la conexión.
 - `open()` y `close()` son idempotentes: abrir dos veces no crea dos pools y cerrar dos veces no
   falla. El ciclo de vida del pool lo marca la app host, y puede repetir la llamada.
