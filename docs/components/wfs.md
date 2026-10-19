@@ -52,6 +52,8 @@ def capabilities_xml(layers: list[Layer], base_url: str) -> str
   `postgis.attribute_predicate`. `IN` usa una lista no vacía; los enteros respetan su ancho PostgreSQL.
 - El número de features devueltos es `min(count solicitado, config.max_limit)` y por defecto
   `config.default_limit` (§23). Nunca ilimitado.
+- `resolve_pagination` admite `count`/`limit` y `start_index`/`offset`; si se envían ambos nombres,
+  tienen prioridad los de WFS. Los límites no positivos y offsets negativos son `InvalidFilter`.
 - Se responde con `PermissionDenied` si el checker rechaza la operación `query`, y con
   `ServiceDisabled` si `layer.services.wfs` es `False`.
 - La salida es `application/geo+json` en streaming; no se construye la lista completa en memoria.
