@@ -19,6 +19,7 @@ GeometryType = Literal[
     "Geometry",
 ]
 _GEOMETRY_TYPES = {name.upper(): name for name in get_args(GeometryType)}
+BBox = tuple[float, float, float, float]
 
 
 class ColumnInfo(BaseModel):
@@ -113,3 +114,47 @@ async def inspect_table(db: Database, schema: str, table: str) -> TableInfo:
         primary_key=next((a["name"] for a in attributes if a["primary_key"]), None),
         is_view=relation["is_view"],
     )
+
+
+async def table_extent(db: Database, info: TableInfo, srid: int = 4326) -> BBox | None:
+    """Return an estimated bounding box, or an exact one without statistics and for views.
+
+    Estimates inherit the accuracy and freshness of PostgreSQL statistics. Empty relations
+    return None even when old statistics remain. Reprojection is performed entirely in PostGIS.
+    """
+    if srid <= 0:
+        raise InvalidParameter("srid must be positive")
+    relation = sql.Identifier(info.schema_name, info.table_name)
+    column = sql.Identifier(info.geometry_column)
+    bounds = sql.SQL("""
+        SELECT ST_XMin(extent) AS minx, ST_YMin(extent) AS miny,
+               ST_XMax(extent) AS maxx, ST_YMax(extent) AS maxy
+        FROM ({query}) bounds
+    """)
+    if not info.is_view:
+        estimated = await db.fetch_one(
+            bounds.format(
+                query=sql.SQL("""
+                SELECT ST_Transform(ST_SetSRID(
+                    ST_EstimatedExtent(%s, %s, %s)::geometry, %s), %s) AS extent
+                WHERE EXISTS (SELECT 1 FROM {relation}
+                              WHERE {column} IS NOT NULL AND NOT ST_IsEmpty({column}))
+            """).format(relation=relation, column=column)
+            ),
+            [info.schema_name, info.table_name, info.geometry_column, info.srid, srid],
+        )
+        if estimated is None:
+            return None
+        if estimated["minx"] is not None:
+            return estimated["minx"], estimated["miny"], estimated["maxx"], estimated["maxy"]
+    row = await db.fetch_one(
+        bounds.format(
+            query=sql.SQL("""
+            SELECT ST_Extent(ST_Transform({column}, %s))::geometry AS extent FROM {relation}
+        """).format(column=column, relation=relation)
+        ),
+        [srid],
+    )
+    if row is None or row["minx"] is None:
+        return None
+    return row["minx"], row["miny"], row["maxx"], row["maxy"]
