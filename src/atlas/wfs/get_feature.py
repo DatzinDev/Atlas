@@ -4,8 +4,10 @@ import json
 from collections.abc import AsyncGenerator
 from typing import Any, cast
 
+from anyio import CancelScope
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
+from starlette.types import Receive, Scope, Send
 
 from atlas.context import AtlasContext
 from atlas.core.crs import require_crs
@@ -18,6 +20,22 @@ from atlas.postgis.geometry import to_geojson_feature
 from atlas.postgis.queries import bbox_predicate, build_feature_query, count_query
 from atlas.wfs.filters import Filter, compile_filters
 from atlas.wfs.pagination import resolve_pagination
+
+
+class _FeatureResponse(StreamingResponse):
+    def __init__(
+        self, body: AsyncGenerator[str, None], rows: AsyncGenerator[dict[str, Any], None]
+    ) -> None:
+        super().__init__(body, media_type="application/geo+json")
+        self.rows = rows
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # Sending headers may fail before the body iterator starts its own cleanup.
+            with CancelScope(shield=True):
+                await self.rows.aclose()
 
 
 def parse_property_names(value: str | None, layer: Layer) -> list[str] | None:
@@ -108,6 +126,7 @@ async def get_feature(
                 report.feature_count = returned
             yield "]," + json.dumps(metadata)[1:]
         finally:
-            await rows.aclose()
+            with CancelScope(shield=True):
+                await rows.aclose()
 
-    return StreamingResponse(body(), media_type="application/geo+json")
+    return _FeatureResponse(body(), rows)

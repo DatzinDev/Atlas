@@ -3,6 +3,7 @@
 import json
 
 import pytest
+from starlette.requests import ClientDisconnect
 
 from atlas.core.exceptions import LayerNotFound, PermissionDenied, ServiceDisabled
 from atlas.wfs.filters import parse_filters
@@ -76,3 +77,30 @@ async def test_service_permission_and_missing_layer(atlas):
     atlas.context.permission_checker = lambda *args: False
     with pytest.raises(PermissionDenied):
         await get_feature(atlas.context, type_names="municipios")
+
+
+async def test_disconnect_before_headers_releases_prefetched_cursor(atlas, monkeypatch):
+    original = atlas.context.db.stream
+    closed = []
+
+    async def observed(*args, **kwargs):
+        source = original(*args, **kwargs)
+        try:
+            async for row in source:
+                yield row
+        finally:
+            await source.aclose()
+            closed.append(True)
+
+    monkeypatch.setattr(atlas.context.db, "stream", observed)
+    response = await get_feature(atlas.context, type_names="municipios")
+
+    async def disconnected(message):
+        raise OSError("client disconnected before headers")
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    with pytest.raises((ClientDisconnect, ExceptionGroup)):
+        await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, disconnected)
+    assert closed == [True]

@@ -66,6 +66,8 @@ def capabilities_xml(layers: list[Layer], base_url: str) -> str
   errores previos a los headers y registra errores tardíos sin cambiar un HTTP ya iniciado.
 - `get_feature` cuenta coincidencias y abre un cursor acotado. Prefetch de una fila detecta errores
   iniciales antes de enviar headers; el cursor se cierra al terminar o cancelar el iterador.
+- La respuesta también cierra el cursor si el envío de headers falla antes de iniciar el cuerpo;
+  la limpieza queda protegida contra la cancelación de la petición.
   `numberReturned` se escribe al final del JSON y cuenta los elementos emitidos. Un error posterior
   a los headers interrumpe el stream; no puede reemplazar una respuesta HTTP ya iniciada.
 - El CRS de salida se resuelve con `core.crs.require_crs`; un CRS no soportado es 400, no 500.
