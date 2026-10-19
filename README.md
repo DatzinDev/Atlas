@@ -5,7 +5,7 @@ vía **WMS** y **WFS**, con API de consulta, filtrado, descarga y exportación d
 
 Sin GeoServer. Sin proceso aparte. Es una librería que vive dentro de tu aplicación.
 
-> **Estado:** en construcción (v0.1.0 / MVP). Ver [roadmap](docs/roadmap.md).
+> **Estado:** v0.1.0 — MVP disponible como release en GitHub. Ver [roadmap](docs/roadmap.md).
 
 ## Instalación
 

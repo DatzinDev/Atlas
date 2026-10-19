@@ -12,7 +12,7 @@ se mantienen pequeños.
 2. **Lee sus dos documentos**: el `docs/components/*.md` del componente y, si toca SQL, filtros o
    permisos, `docs/components/security.md`.
 3. **Crea la rama desde `develop`**: `type/nombre-corto` (`feat/wfs-get-feature`,
-   `fix/bbox-axis-order`). Nunca se commitea directo a `develop` ni a `master`.
+   `fix/bbox-axis-order`). Nunca se commitea directo a `develop` ni a `main`.
 4. **Implementa solo lo que pide el issue.** La sección *Fuera de alcance* del issue es vinculante.
    Si encuentras otra cosa que arreglar, abre otro issue.
 5. **Escribe el test.** Un módulo, un archivo de test. Sin test no está terminado.
@@ -22,13 +22,17 @@ se mantienen pequeños.
 
 ## Ramas
 
+Flujo: `feature → develop → main`. Las ramas de trabajo conservan el prefijo por tipo
+(`feat/`, `fix/`, `docs/`, etc.); los stacks pueden encadenarlas antes de integrar en `develop`.
+Los PRs a `main` deben salir de `develop`; no se publican features directamente en `main`.
+
 ```
-master   ── release ─────────────────────────────►   solo recibe releases desde develop
+main   ── release ─────────────────────────────►   solo recibe releases desde develop
               ▲
 develop  ─────┴── feat/... ── fix/... ── docs/...    integración: aquí llegan los issues
 ```
 
-- `master` — estable. Cada merge es una versión publicable, etiquetada (`v0.1.0`).
+- `main` — estable. Cada merge es una versión publicable, etiquetada (`v0.1.0`).
 - `develop` — integración. Todos los PRs de issues apuntan aquí.
 - `type/nombre-corto` — una por issue, cortada desde `develop` y borrada al mergear.
 

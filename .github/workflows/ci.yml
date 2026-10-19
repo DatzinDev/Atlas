@@ -2,10 +2,30 @@ name: CI
 
 on:
   push:
-    branches: [master, develop]
+    branches: [main, develop]
   pull_request:
 
 jobs:
+  gitflow:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate feature to develop to main
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if [ "$BASE_REF" = main ] && { [ "$HEAD_REF" != develop ] || [ "$HEAD_REPO" != "$REPOSITORY" ]; }; then
+            echo "Releases to main must come from this repository's develop branch."
+            exit 1
+          fi
+          if [ "$BASE_REF" = develop ] && { [ "$HEAD_REF" = main ] || [ "$HEAD_REF" = master ]; }; then
+            echo "Work branches must merge into develop before release."
+            exit 1
+          fi
+
   test:
     runs-on: ubuntu-latest
 

@@ -9,12 +9,24 @@ listed here; see [docs/changelog.md](docs/changelog.md) for when and how to upda
 
 ## Unreleased
 
-> Atlas has not been released yet. Everything before this section is pre-release scaffolding —
-> packaging, CI, the development PostGIS environment, tests and documentation — which the
-> convention keeps out of the changelog. The public API lands in `0.1.0`; see
-> [docs/roadmap.md](docs/roadmap.md).
+## 0.1.0 - 2026-10-19
 
 ### Features
+
+* **exports:** build Shapefile ZIP with explicit format limits ([2d8bc87](https://github.com/DatzinDev/Atlas/commit/2d8bc87))
+* **exports:** build GeoPackage downloads with temporary file cleanup ([833f7f3](https://github.com/DatzinDev/Atlas/commit/833f7f3))
+* **api:** stream filtered layer downloads with format selection ([d67f7c3](https://github.com/DatzinDev/Atlas/commit/d67f7c3))
+* **exports:** stream UTF8 CSV with geometry modes ([49bab18](https://github.com/DatzinDev/Atlas/commit/49bab18))
+* **exports:** stream GeoJSON feature collections ([f75f539](https://github.com/DatzinDev/Atlas/commit/f75f539))
+* **exports:** define exporter protocol and format registry ([df13b1a](https://github.com/DatzinDev/Atlas/commit/df13b1a))
+* **api:** export map images with request local styles ([b9381ba](https://github.com/DatzinDev/Atlas/commit/b9381ba))
+* **wms:** mount logged WMS operations in Atlas router ([68d1fe7](https://github.com/DatzinDev/Atlas/commit/68d1fe7))
+* **wms:** publish capabilities for supported map operations ([9d87b7b](https://github.com/DatzinDev/Atlas/commit/9d87b7b))
+* **wms:** query feature attributes with pixel scaled tolerance ([4170088](https://github.com/DatzinDev/Atlas/commit/4170088))
+* **wms:** add authorized GetMap with PNG and JPEG output ([fa62e14](https://github.com/DatzinDev/Atlas/commit/fa62e14))
+* **rendering:** draw styled geometries with Pillow ([c76969c](https://github.com/DatzinDev/Atlas/commit/c76969c))
+* **postgis:** fetch bounded WKB geometries for rendering ([7500f38](https://github.com/DatzinDev/Atlas/commit/7500f38))
+* **rendering:** add renderer protocol and world to pixel mapping ([569b01d](https://github.com/DatzinDev/Atlas/commit/569b01d))
 
 * **wfs:** dispatch read-only requests with permissions and operation logs ([7328c65](https://github.com/DatzinDev/Atlas/commit/7328c65))
 * **wfs:** publish escaped read-only capabilities metadata ([c664b25](https://github.com/DatzinDev/Atlas/commit/c664b25))

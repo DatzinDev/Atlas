@@ -1,6 +1,6 @@
 [project]
 name = "atlas-geo"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Publish PostGIS layers over WMS and WFS from a FastAPI application"
 readme = "README.md"
 requires-python = ">=3.11"
