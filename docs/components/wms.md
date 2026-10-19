@@ -33,11 +33,16 @@ class FeatureInfoParams(GetMapParams):
 async def get_feature_info(ctx, params, principal) -> dict
 
 # wms/capabilities.py
-def capabilities_xml(layers: list[Layer], base_url: str) -> str
+def capabilities_xml(layers: list[Layer], base_url: str, *, title: str = "Atlas WMS") -> str
 ```
 
 ## Invariantes
 
+- `capabilities_xml` recibe capas ya filtradas por permiso. Omite las capas deshabilitadas
+  o sin WMS y serializa metadatos con ElementTree. El extent geográfico alimenta EPSG:4326
+  (con ejes lat/lon); para EPSG:3857 anuncia límites globales conservadores del registro de CRS,
+  ya que el metadato no guarda extents proyectados y el serializer no consulta PostGIS.
+  Sin extent se omiten los bounding boxes.
 - `WIDTH` y `HEIGHT` están acotados por una constante de configuración. Una petición de
   20000×20000 es un 400, no un OOM.
 - Las capas se dibujan en el orden en que llegan en `LAYERS`: la primera al fondo, la última
