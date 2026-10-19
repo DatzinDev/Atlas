@@ -5,7 +5,7 @@
 ## Propósito
 
 Serializa el resultado de una consulta a formatos descargables. GeoJSON y CSV en el MVP;
-GeoPackage y Shapefile ZIP después (§15.1).
+GeoPackage y Shapefile ZIP requieren el extra opcional `atlas-geo[export]` (§15.1).
 
 ## Contrato público
 
@@ -33,11 +33,20 @@ def download_filename(layer: Layer, exporter: Exporter) -> str
 
 - GeoJSON y CSV **se emiten en streaming**: se abre el `FeatureCollection`, se van escribiendo
   features desde un cursor server-side y se cierra. Nunca se acumula el dataset en memoria (§24).
+- GeoPackage conserva el nombre de capa, SRID y los tipos compatibles (enteros de 32/64 bits,
+  reales, booleanos, fecha, datetime y binarios). Numeric exacto y tipos no portables se guardan
+  como texto, sin redondear su contenido; JSON y arrays se representan como JSON. El FID interno
+  tiene un nombre separado para no perder atributos llamados `fid`.
 - GeoPackage y Shapefile necesitan archivo en disco: se escriben a un temporal y se sirven; el
   temporal se borra siempre, incluso si el cliente aborta la descarga.
+- Shapefile produce `.shp`, `.shx`, `.dbf`, `.prj`, `.cpg` (UTF-8) y `README.txt` en un ZIP.
+  Los nombres se normalizan a ASCII, se truncan a 10 caracteres y se desambiguan sin distinguir
+  mayúsculas; el README conserva la correspondencia completa. Int8/numeric, datetime, arrays y
+  tipos no portables pasan a texto para evitar pérdida de precisión o de contenido.
+  Se rechazan textos mayores de 254 bytes UTF-8 y valores fuera del rango numérico DBF.
 - Shapefile tiene límites del formato que no se pueden ocultar: nombres de campo truncados a 10
-  caracteres y 2 GB por archivo. El exportador registra un warning en la respuesta, no falla en
-  silencio.
+  caracteres, 255 columnas y 2 GB por dataset/ZIP. Los excesos devuelven `QueryTooLarge` antes
+  de enviar headers. La respuesta HTTP incorpora `Warning` con referencia al README.
 - Todo exportador declara su `media_type` y `extension`; el `Content-Disposition` se construye
   desde ahí, con el nombre de la capa saneado.
 - El módulo se llama `csv_export.py`, no `csv.py`, para no sombrear el módulo estándar.

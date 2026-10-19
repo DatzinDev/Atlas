@@ -60,6 +60,8 @@ class MapExportRequest(BaseModel):
   No usa `default_limit`. Con `max_download_features` rechaza con 413 las consultas que exceden
   el máximo al comprobar el conteo, en vez de descargar silenciosamente una parte de la capa.
   El cursor consume lotes de 16 filas y se cierra incluso si el cliente falla antes de los headers.
+  Los formatos de archivo completan la escritura en disco antes de enviar headers; el generador
+  del exportador también se cierra explícitamente ante desconexiones para borrar el temporal.
 
 ## Dependencias
 

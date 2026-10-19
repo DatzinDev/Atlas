@@ -5,6 +5,7 @@ from fastapi import FastAPI, Header
 from httpx import ASGITransport, AsyncClient
 
 from atlas import Atlas
+from atlas.exports.base import available_formats
 
 
 async def test_catalog_excludes_attributes_and_disabled_layers(client: AsyncClient, atlas: Atlas):
@@ -34,7 +35,7 @@ async def test_layer_detail(client: AsyncClient) -> None:
             {"name": "poblacion", "type": "int4"},
         ],
         "services": {"wms": True, "wfs": True, "wmts": False, "wcs": False},
-        "download_formats": ["csv", "geojson"],
+        "download_formats": available_formats(),
         "style": {
             "fill": "#3178c6",
             "fill_opacity": 0.7,

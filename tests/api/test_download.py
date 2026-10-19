@@ -8,6 +8,7 @@ from psycopg import sql
 from starlette.requests import ClientDisconnect, Request
 
 from atlas.api.download import build_router
+from atlas.exports.base import available_formats
 
 
 async def test_full_filtered_download_and_projection(client, atlas):
@@ -60,10 +61,10 @@ async def test_permissions_formats_and_download_limit(client, atlas):
     assert (await client.get("/atlas/layers/municipios/download")).status_code == 403
     atlas.context.registry.get("municipios").downloadable = True
     unsupported = await client.get("/atlas/layers/municipios/download?format=xml")
-    assert unsupported.status_code == 400 and unsupported.json()["error"]["details"]["formats"] == [
-        "csv",
-        "geojson",
-    ]
+    assert (
+        unsupported.status_code == 400
+        and unsupported.json()["error"]["details"]["formats"] == available_formats()
+    )
     atlas.context.config = atlas.context.config.model_copy(update={"max_download_features": 2})
     assert (await client.get("/atlas/layers/municipios/download")).status_code == 413
     assert (
@@ -124,3 +125,73 @@ async def test_cursor_closed_on_early_exit_and_before_headers(atlas, monkeypatch
     with pytest.raises((ClientDisconnect, ExceptionGroup)):
         await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
     assert closed == [True, True]
+
+
+async def test_geopackage_download_and_header_disconnect_cleanup(
+    client, atlas, monkeypatch, tmp_path
+):
+    fiona = pytest.importorskip("fiona")
+    from tempfile import TemporaryDirectory
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(
+        "atlas.exports.geopackage.TemporaryDirectory",
+        lambda **kwargs: TemporaryDirectory(dir=scratch, **kwargs),
+    )
+    response = await client.get("/atlas/layers/escuelas/download?format=gpkg")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/geopackage+sqlite3"
+    path = tmp_path / "schools.gpkg"
+    path.write_bytes(response.content)
+    with fiona.open(path, layer="escuelas") as source:
+        assert len(source) == 5 and source.crs.to_epsg() == 4326
+    assert list(scratch.iterdir()) == []
+    route = next(
+        r for r in build_router(atlas.context).routes if r.path == "/layers/{name}/download"
+    )
+    request = Request({"type": "http", "query_string": b"format=gpkg", "headers": []})
+    response = await route.endpoint("escuelas", request, None)
+    assert list(scratch.iterdir())
+
+    async def send(message):
+        raise OSError("disconnected before headers")
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    with pytest.raises((ClientDisconnect, ExceptionGroup)):
+        await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
+    assert list(scratch.iterdir()) == []
+
+
+async def test_shapefile_download_warning_limits_and_cleanup(client, atlas, monkeypatch, tmp_path):
+    pytest.importorskip("fiona")
+    from io import BytesIO
+    from tempfile import TemporaryDirectory
+    from zipfile import ZipFile
+
+    monkeypatch.setattr(
+        "atlas.exports.shapefile.TemporaryDirectory",
+        lambda **kwargs: TemporaryDirectory(dir=tmp_path, **kwargs),
+    )
+    response = await client.get("/atlas/layers/municipios/download?format=shp")
+    assert response.status_code == 200 and response.headers["content-type"] == "application/zip"
+    assert response.headers["content-disposition"].endswith('municipios.zip"')
+    assert "README.txt" in response.headers["warning"]
+    with ZipFile(BytesIO(response.content)) as archive:
+        assert "municipios.shp" in archive.namelist() and "README.txt" in archive.namelist()
+    assert list(tmp_path.iterdir()) == []
+    route = next(
+        r for r in build_router(atlas.context).routes if r.path == "/layers/{name}/download"
+    )
+    request = Request({"type": "http", "query_string": b"format=shp", "headers": []})
+    response = await route.endpoint("municipios", request, None)
+    await anext(response.body_iterator)
+    assert list(tmp_path.iterdir())
+    await response.body_iterator.aclose()
+    assert list(tmp_path.iterdir()) == []
+    monkeypatch.setattr("atlas.exports.shapefile.MAX_BYTES", 10)
+    response = await client.get("/atlas/layers/municipios/download?format=shp")
+    assert response.status_code == 413 and response.json()["error"]["code"] == "query_too_large"
+    assert list(tmp_path.iterdir()) == []
