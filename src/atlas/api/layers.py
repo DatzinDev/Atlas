@@ -9,6 +9,7 @@ from atlas.api.routing import AtlasRoute
 from atlas.context import AtlasContext
 from atlas.core.exceptions import LayerNotFound
 from atlas.core.types import BBox
+from atlas.exports.base import available_formats
 from atlas.layers.permissions import check_permission, visible_layers
 from atlas.styles.models import Style
 
@@ -34,7 +35,6 @@ class AttributeInfo(BaseModel):
 
 class LayerDetailResponse(LayerSummary):
     attributes: list[AttributeInfo]
-    # shortcut: advertise formats only when issue #37 supplies the exporter registry.
     download_formats: list[str] = Field(default_factory=list)
     style: Style | None
     min_zoom: int | None
@@ -65,6 +65,7 @@ def create_router(context: AtlasContext) -> APIRouter:
             raise LayerNotFound("the requested layer is not enabled", name=name)
         await check_permission(context.permission_checker, layer, "query", principal)
         values = layer.model_dump()
+        values["download_formats"] = available_formats() if layer.downloadable else []
         values["attributes"] = [
             {"name": a.name, "type": a.data_type} for a in layer.table_info.columns
         ]

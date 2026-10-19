@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, FastAPI
 
+from atlas.api.download import build_router as build_download_router
 from atlas.api.layers import create_router
 from atlas.api.maps import build_router as build_maps_router
 from atlas.context import AtlasContext
@@ -61,6 +62,7 @@ class Atlas:
             self._router = APIRouter(prefix=self._prefix)
             self._router.include_router(create_router(self.context))
             self._router.include_router(build_maps_router(self.context))
+            self._router.include_router(build_download_router(self.context))
             self._router.include_router(build_wfs_router(self.context))
             self._router.include_router(build_wms_router(self.context))
         return self._router

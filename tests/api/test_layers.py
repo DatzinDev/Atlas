@@ -34,7 +34,7 @@ async def test_layer_detail(client: AsyncClient) -> None:
             {"name": "poblacion", "type": "int4"},
         ],
         "services": {"wms": True, "wfs": True, "wmts": False, "wcs": False},
-        "download_formats": [],
+        "download_formats": ["csv", "geojson"],
         "style": {
             "fill": "#3178c6",
             "fill_opacity": 0.7,

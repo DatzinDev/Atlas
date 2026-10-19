@@ -54,8 +54,12 @@ class MapExportRequest(BaseModel):
 - Catálogo y detalle tienen modelos de respuesta explícitos en OpenAPI; el catálogo no incluye
   atributos ni nombres internos de esquema/tabla. El detalle publica atributos `{name, type}`,
   conserva la llave primaria y excluye la geometría. Una capa deshabilitada responde 404.
-- `download_formats` permanece vacío hasta conectar el registro de exportadores (#37); no se
-  anuncian formatos que aún no se pueden descargar. También será vacío si `downloadable=False`.
+- `download_formats` usa el registro de formatos disponibles y queda vacío si `downloadable=False`.
+- `/download` exporta en EPSG:4326, conserva la llave primaria y admite `properties` y `bbox`.
+  CSV acepta `geometry=wkt|centroid|none`; `lon`/`lat` son coordenadas geográficas.
+  No usa `default_limit`. Con `max_download_features` rechaza con 413 las consultas que exceden
+  el máximo al comprobar el conteo, en vez de descargar silenciosamente una parte de la capa.
+  El cursor consume lotes de 16 filas y se cierra incluso si el cliente falla antes de los headers.
 
 ## Dependencias
 
