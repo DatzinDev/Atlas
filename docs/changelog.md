@@ -71,12 +71,12 @@ Reglas:
 
 ## Cómo se publica una versión
 
-Al preparar un release desde `develop` hacia `master`:
+Al preparar un release desde `develop` hacia `main`:
 
 1. Renombra `## Unreleased` a `## X.Y.Z - AAAA-MM-DD` (fecha ISO) y abre un `## Unreleased` vacío arriba.
 2. Elige `X.Y.Z` según SemVer: breaking sube MAJOR, `feat` sube MINOR, `fix`/`perf` suben PATCH.
    Mientras la versión sea `0.y.z` una MINOR puede romper compatibilidad, y eso se marca explícito.
 3. Actualiza la versión en `pyproject.toml` en el mismo PR.
-4. Etiqueta el merge en `master` como `vX.Y.Z`.
+4. Etiqueta el merge en `main` como `vX.Y.Z`.
 
 El alcance previsto de cada versión está en [`roadmap.md`](roadmap.md).

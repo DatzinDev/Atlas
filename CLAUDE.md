@@ -61,9 +61,9 @@ un PR que se devuelve.
 ## Git
 
 - **`develop` es la rama de integración**: todo PR de un issue va contra `develop`, nunca contra
-  `master`. `master` solo recibe releases desde `develop`.
+  `main`. `main` solo recibe releases desde `develop`.
 - Rama por issue: `type/nombre-corto` (`feat/wfs-get-feature`), cortada desde `develop`.
-- `master` y `develop` son ramas protegidas por convención: nunca commit directo a ninguna.
+- `main` y `develop` son ramas protegidas por convención: nunca commit directo a ninguna.
 - Conventional Commits de **una sola línea**, sin cuerpo y sin trailers de co-autoría:
   `feat(wfs): add GetFeature endpoint with GeoJSON output`
 - Si el commit necesita un párrafo para justificarse, pártelo en varios commits.

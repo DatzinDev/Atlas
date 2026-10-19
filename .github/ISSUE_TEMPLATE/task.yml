@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         Una tarea = un módulo + un contrato + un archivo de test. Si no cabe en 300 líneas de
-        diff, no es una tarea: son dos. Ver [CONTRIBUTING.md](../blob/master/CONTRIBUTING.md).
+        diff, no es una tarea: son dos. Ver [CONTRIBUTING.md](../blob/develop/CONTRIBUTING.md).
 
   - type: dropdown
     id: component
