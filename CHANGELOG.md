@@ -44,5 +44,6 @@ listed here; see [docs/changelog.md](docs/changelog.md) for when and how to upda
 
 ### Bug Fixes
 
+* **wfs:** release prefetched cursors when clients disconnect ([389673b](https://github.com/DatzinDev/Atlas/commit/389673b))
 * **dev:** make the seeded layers overlap and look like a real network ([218a849](https://github.com/zamax14/Atlas/commit/218a849))
 * **ci:** skip install, lint, types and tests while pyproject.toml does not exist ([7e64c12](https://github.com/zamax14/Atlas/commit/7e64c12))
