@@ -72,6 +72,12 @@ def to_geojson_feature(row: dict, id_column: str | None) -> dict
   fila disponible se lanza `InvalidGeometry`; una tabla vacía con geometría tipada sí funciona.
   La muestra no garantiza homogeneidad geométrica en columnas sin restricciones.
 - Una llave primaria compuesta se informa como `None`: no hay una sola columna identificadora.
+- `table_extent` devuelve `(minx, miny, maxx, maxy)` en el SRID solicitado (4326 por defecto).
+  Usa `ST_EstimatedExtent` con estadísticas; para vistas o estadísticas ausentes usa `ST_Extent`
+  sobre las geometrías transformadas. Un conjunto vacío, nulo o de geometrías vacías devuelve
+  `None`, incluso con estadísticas antiguas. Los SRID no positivos son `InvalidParameter`.
+  El extent estimado es aproximado y depende de la vigencia de las estadísticas de PostgreSQL;
+  no garantiza contener todos los elementos. No se recalcula ni se cachea en Atlas.
 - `parse_source` acepta `tabla` o `esquema.tabla`, sin sintaxis SQL de identificadores entrecomillados;
   los nombres conservan mayúsculas. Un nombre vacío o con más de un punto es `InvalidParameter`.
 - El `query_timeout` de `AtlasConfig` se aplica como `statement_timeout` en la conexión.

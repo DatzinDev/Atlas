@@ -16,6 +16,7 @@ listed here; see [docs/changelog.md](docs/changelog.md) for when and how to upda
 
 ### Features
 
+* **postgis:** add estimated layer extents with exact fallback ([d9e528a](https://github.com/DatzinDev/Atlas/commit/d9e528a))
 * **postgis:** add spatial table and view introspection ([85a5125](https://github.com/DatzinDev/Atlas/commit/85a5125))
 * **postgis:** add the async connection pool with statement timeout and streaming ([37ad744](https://github.com/zamax14/Atlas/commit/37ad744))
 * **core:** add the Atlas exception hierarchy and the error response format ([87464f4](https://github.com/zamax14/Atlas/commit/87464f4))
