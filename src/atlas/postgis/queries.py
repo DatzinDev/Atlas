@@ -173,3 +173,15 @@ async def fetch_render_geometries(
         for row in rows
         if row[info.geometry_column] is not None
     ]
+
+
+def intersects_bbox_predicate(
+    info: TableInfo,
+    bbox: BBox,
+    bbox_srid: int,
+) -> tuple[sql.Composed, list[Any]]:
+    """Combine the index-friendly candidate filter with an exact window intersection."""
+    candidate, values = bbox_predicate(info, bbox, bbox_srid)
+    envelope = sql.SQL("ST_Transform(ST_MakeEnvelope(%s,%s,%s,%s,%s), %s)")
+    exact = sql.SQL("ST_Intersects({}, {})").format(sql.Identifier(info.geometry_column), envelope)
+    return sql.SQL("({}) AND ({})").format(candidate, exact), [*values, *bbox, bbox_srid, info.srid]

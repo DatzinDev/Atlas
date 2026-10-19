@@ -25,10 +25,11 @@ class GetMapParams(BaseModel):
 async def get_map(ctx: AtlasContext, params: GetMapParams, principal: Any = None) -> Response
 
 # wms/feature_info.py
-class FeatureInfoParams(BaseModel):
+class FeatureInfoParams(GetMapParams):
     query_layers: list[str]; i: int; j: int; feature_count: int = 1
     info_format: Literal["application/json"] = "application/json"
-    # + los mismos campos de GetMapParams necesarios para georreferenciar el píxel
+    tolerance_pixels: float = 5
+    include_geometry: bool = False
 async def get_feature_info(ctx, params, principal) -> dict
 
 # wms/capabilities.py
@@ -47,6 +48,10 @@ def capabilities_xml(layers: list[Layer], base_url: str) -> str
   antes de tocar nada más, y hay un test que lo fija.
 - `GetFeatureInfo` convierte el píxel `(i, j)` en un punto del mundo y consulta con un buffer de
   tolerancia en píxeles, no en unidades del CRS.
+- `GetFeatureInfo` utiliza el centro del píxel y una ventana de tolerancia escalada por
+  separado en X/Y. PostGIS descarta candidatos que no intersectan realmente la ventana
+  (incluidos huecos de polígonos). Devuelve GeoJSON con `layer` por elemento; la geometría
+  es nula por defecto y, si se pide, sale en EPSG:4326. `FEATURE_COUNT` se acota por capa.
 - `image/jpeg` ignora `TRANSPARENT=TRUE` (JPEG no tiene alfa): se compone sobre `BGCOLOR`.
 - `GetMapParams` recibe el bbox en el orden del protocolo y lo normaliza una sola vez al
   construir el modelo. `CRS:84` conserva ejes longitud/latitud.

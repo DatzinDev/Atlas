@@ -52,3 +52,16 @@ def test_feature_conversion_custom_geometry_and_no_id():
         "properties": {"value": "text"},
     }
     assert "shape" in row
+
+
+async def test_exact_bbox_predicate_excludes_polygon_holes(db):
+    from atlas.postgis.queries import intersects_bbox_predicate
+
+    info = await inspect_table(db, "geo", "municipios")
+    predicate, values = intersects_bbox_predicate(info, (4, 4, 6, 6), 4326)
+    query = sql.SQL(
+        "SELECT {} AS hit FROM (SELECT ST_GeomFromText(%s,4326) AS geom) AS data"
+    ).format(predicate)
+    hole = "POLYGON((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3))"
+    assert '"geom" && ST_MakeEnvelope' in query.as_string()
+    assert await db.fetch_one(query, [*values, hole]) == {"hit": False}
