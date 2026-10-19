@@ -5,10 +5,13 @@ from collections.abc import Sequence
 from typing import Any, Literal
 
 from psycopg import sql
+from shapely.geometry.base import BaseGeometry  # type: ignore[import-untyped]
+from shapely.wkb import loads  # type: ignore[import-untyped]
 
 from atlas.core.crs import parse_crs, require_crs
 from atlas.core.exceptions import InvalidFilter, InvalidGeometry
 from atlas.core.types import BBox
+from atlas.postgis.connection import Database
 from atlas.postgis.introspection import TableInfo
 
 FILTER_OPERATORS = {
@@ -135,3 +138,38 @@ def count_query(
     return sql.SQL("SELECT count(*) AS count FROM {}{}").format(
         sql.Identifier(info.schema_name, info.table_name), _where_sql(where)
     ), list(params)
+
+
+async def fetch_render_geometries(
+    db: Database,
+    info: TableInfo,
+    *,
+    bbox: BBox,
+    bbox_srid: int,
+    target_srid: int,
+    where: Sequence[sql.Composed] = (),
+    params: Sequence[Any] = (),
+    limit: int | None = None,
+) -> list[BaseGeometry]:
+    """Fetch a bounded set of WKB geometries, filtering before output reprojection."""
+    require_crs(target_srid)
+    predicate, bbox_params = bbox_predicate(info, bbox, bbox_srid)
+    try:
+        resolved_limit = db._config.resolve_limit(limit)
+    except ValueError as exc:
+        raise InvalidFilter("render limit must be positive") from exc
+    query, values = build_feature_query(
+        info,
+        columns=[],
+        where=[*where, predicate],
+        params=[*params, *bbox_params],
+        geometry_as="wkb",
+        target_srid=target_srid,
+        limit=resolved_limit,
+    )
+    rows = await db.fetch_all(query, values)
+    return [
+        loads(bytes(row[info.geometry_column]))
+        for row in rows
+        if row[info.geometry_column] is not None
+    ]
