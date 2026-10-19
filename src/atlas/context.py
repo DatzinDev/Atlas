@@ -18,7 +18,7 @@ class AtlasContext(BaseModel):
     config: AtlasConfig
     db: Database
     registry: LayerRegistry
-    # shortcut: the renderer type arrives with issue #29.
+    # External duck-typed renderers need no runtime inheritance check.
     renderer: Any = None
     permission_checker: PermissionChecker | None = None
     log_hook: LogHook | None = None

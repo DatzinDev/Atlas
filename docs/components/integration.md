@@ -73,8 +73,10 @@ app.include_router(geo.router)
 - `AtlasContext` vive en `atlas.context` y se expone como `geo.context`. El `database_url` debe
   coincidir con el de una configuración explícita; una discrepancia lanza `ValueError`.
 - `lifespan` puede pasarse a `FastAPI(lifespan=geo.lifespan)` y cierra el pool incluso si falla la
-  app. El renderer por defecto permanece en `None` hasta el issue de rendering. El hook recibe
-  `OperationLog` de las operaciones WFS, incluida la duración y cantidad del stream de features.
+  app. El renderer por defecto es `PillowRenderer()`; se admite uno externo que cumpla `MapRenderer`.
+  El hook recibe `OperationLog` de WFS y WMS, incluida duración, capas y cantidad de elementos.
+  `/wms` despacha GetCapabilities, GetMap y GetFeatureInfo de WMS 1.3.0; los errores siguen
+  el formato JSON común de Atlas.
 - Los sub-routers reciben el `AtlasContext`; ningún módulo importa una instancia global de `Atlas`.
   Sin singletons.
 - `register_layer` es async porque hace introspección. `register` es sync para capas ya construidas
