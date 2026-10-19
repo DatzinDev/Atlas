@@ -16,6 +16,7 @@ listed here; see [docs/changelog.md](docs/changelog.md) for when and how to upda
 
 ### Features
 
+* **wfs:** dispatch read-only requests with permissions and operation logs ([7328c65](https://github.com/DatzinDev/Atlas/commit/7328c65))
 * **wfs:** publish escaped read-only capabilities metadata ([c664b25](https://github.com/DatzinDev/Atlas/commit/c664b25))
 * **wfs:** describe feature types with JSON Schema metadata ([aec0445](https://github.com/DatzinDev/Atlas/commit/aec0445))
 * **wfs:** select validated properties while preserving feature ids ([65aeeca](https://github.com/DatzinDev/Atlas/commit/65aeeca))
