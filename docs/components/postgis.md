@@ -58,6 +58,8 @@ def to_geojson_feature(row: dict, id_column: str | None) -> dict
   `psycopg.sql.Identifier`, valores con placeholders `%s`.
 - `build_feature_query` valida cada nombre de columna contra `info.columns` y lanza `InvalidFilter`
   si no está. No confía en su llamador.
+- La geometría seleccionada conserva su nombre de columna; `to_geojson_feature` acepta ese nombre
+  como tercer argumento (por defecto `geom`). La llave primaria se conserva en propiedades e `id`.
 - Los predicados espaciales dejan la columna de geometría desnuda a la izquierda
   (`geom && ST_MakeEnvelope(...)`), nunca `ST_Transform(geom, X) && ...`, para no perder el índice
   GIST (§22). Se transforma el bbox al SRID de la tabla, no la tabla al del bbox.
