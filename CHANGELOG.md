@@ -16,6 +16,7 @@ listed here; see [docs/changelog.md](docs/changelog.md) for when and how to upda
 
 ### Features
 
+* **api:** expose layer catalog and metadata endpoints ([ff4b569](https://github.com/DatzinDev/Atlas/commit/ff4b569))
 * **integration:** embed Atlas in FastAPI with managed lifecycle ([8bdf9da](https://github.com/DatzinDev/Atlas/commit/8bdf9da))
 * **layers:** build layers from PostGIS introspection ([f267e56](https://github.com/DatzinDev/Atlas/commit/f267e56))
 * **styles:** add validated geometry styles and color helpers ([ed5ead2](https://github.com/DatzinDev/Atlas/commit/ed5ead2))
