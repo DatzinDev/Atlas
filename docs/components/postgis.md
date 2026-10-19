@@ -46,6 +46,7 @@ def build_feature_query(
 ) -> tuple[sql.Composed, list]
 
 def bbox_predicate(info: TableInfo, bbox: BBox, bbox_srid: int) -> tuple[sql.Composed, list]
+def parse_bbox(value: str) -> tuple[BBox, int | None]
 def count_query(info: TableInfo, where, params) -> tuple[sql.Composed, list]
 
 # postgis/geometry.py
@@ -63,6 +64,8 @@ def to_geojson_feature(row: dict, id_column: str | None) -> dict
 - Los predicados espaciales dejan la columna de geometría desnuda a la izquierda
   (`geom && ST_MakeEnvelope(...)`), nunca `ST_Transform(geom, X) && ...`, para no perder el índice
   GIST (§22). Se transforma el bbox al SRID de la tabla, no la tabla al del bbox.
+- Bbox usa orden `minx,miny,maxx,maxy` en la API GeoJSON, incluso para EPSG:4326. Se rechazan
+  límites invertidos y valores no finitos. El CRS opcional se valida con el registro compartido.
 - La reproyección de salida (`ST_Transform` sobre el SELECT) es lo único que sí envuelve la
   geometría, y va después del filtrado.
 - `stream()` usa cursor con nombre. Ninguna consulta de descarga materializa el dataset completo.

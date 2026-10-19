@@ -1,11 +1,14 @@
 """Compose feature queries with catalog identifiers and bound values only."""
 
+import math
 from collections.abc import Sequence
 from typing import Any, Literal
 
 from psycopg import sql
 
-from atlas.core.exceptions import InvalidFilter
+from atlas.core.crs import parse_crs, require_crs
+from atlas.core.exceptions import InvalidFilter, InvalidGeometry
+from atlas.core.types import BBox
 from atlas.postgis.introspection import TableInfo
 
 FILTER_OPERATORS = {
@@ -18,6 +21,38 @@ FILTER_OPERATORS = {
     "in": "IN",
     "like": "LIKE",
 }
+
+
+def _validate_bbox(bbox: BBox) -> None:
+    if (
+        len(bbox) != 4
+        or not all(math.isfinite(v) for v in bbox)
+        or not (bbox[0] < bbox[2] and bbox[1] < bbox[3])
+    ):
+        raise InvalidGeometry("bbox must contain finite ordered minx,miny,maxx,maxy")
+
+
+def parse_bbox(value: str) -> tuple[BBox, int | None]:
+    parts = value.split(",")
+    if len(parts) not in (4, 5):
+        raise InvalidGeometry("bbox requires four coordinates and an optional CRS")
+    try:
+        bbox = (float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3]))
+    except ValueError as exc:
+        raise InvalidGeometry("bbox coordinates must be numbers") from exc
+    _validate_bbox(bbox)
+    return bbox, parse_crs(parts[4]) if len(parts) == 5 else None
+
+
+def bbox_predicate(info: TableInfo, bbox: BBox, bbox_srid: int) -> tuple[sql.Composed, list[Any]]:
+    _validate_bbox(bbox)
+    require_crs(bbox_srid)
+    envelope: sql.Composable = sql.SQL("ST_MakeEnvelope(%s,%s,%s,%s,%s)")
+    params: list[Any] = [*bbox, bbox_srid]
+    if bbox_srid != info.srid:
+        envelope = sql.SQL("ST_Transform({}, %s)").format(envelope)
+        params.append(info.srid)
+    return sql.SQL("{} && {}").format(sql.Identifier(info.geometry_column), envelope), params
 
 
 def attribute_predicate(
