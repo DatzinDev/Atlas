@@ -22,21 +22,27 @@ class GetMapParams(BaseModel):
     bgcolor: str = "#FFFFFF"
 
     @field_validator("width", "height")   # 1..MAX_IMAGE_SIZE
-async def get_map(ctx: AtlasContext, params: GetMapParams, principal: Any) -> bytes
+async def get_map(ctx: AtlasContext, params: GetMapParams, principal: Any = None) -> Response
 
 # wms/feature_info.py
-class FeatureInfoParams(BaseModel):
+class FeatureInfoParams(GetMapParams):
     query_layers: list[str]; i: int; j: int; feature_count: int = 1
     info_format: Literal["application/json"] = "application/json"
-    # + los mismos campos de GetMapParams necesarios para georreferenciar el píxel
+    tolerance_pixels: float = 5
+    include_geometry: bool = False
 async def get_feature_info(ctx, params, principal) -> dict
 
 # wms/capabilities.py
-def capabilities_xml(layers: list[Layer], base_url: str) -> str
+def capabilities_xml(layers: list[Layer], base_url: str, *, title: str = "Atlas WMS") -> str
 ```
 
 ## Invariantes
 
+- `capabilities_xml` recibe capas ya filtradas por permiso. Omite las capas deshabilitadas
+  o sin WMS y serializa metadatos con ElementTree. El extent geográfico alimenta EPSG:4326
+  (con ejes lat/lon); para EPSG:3857 anuncia límites globales conservadores del registro de CRS,
+  ya que el metadato no guarda extents proyectados y el serializer no consulta PostGIS.
+  Sin extent se omiten los bounding boxes.
 - `WIDTH` y `HEIGHT` están acotados por una constante de configuración. Una petición de
   20000×20000 es un 400, no un OOM.
 - Las capas se dibujan en el orden en que llegan en `LAYERS`: la primera al fondo, la última
@@ -47,7 +53,16 @@ def capabilities_xml(layers: list[Layer], base_url: str) -> str
   antes de tocar nada más, y hay un test que lo fija.
 - `GetFeatureInfo` convierte el píxel `(i, j)` en un punto del mundo y consulta con un buffer de
   tolerancia en píxeles, no en unidades del CRS.
+- `GetFeatureInfo` utiliza el centro del píxel y una ventana de tolerancia escalada por
+  separado en X/Y. PostGIS descarta candidatos que no intersectan realmente la ventana
+  (incluidos huecos de polígonos). Devuelve GeoJSON con `layer` por elemento; la geometría
+  es nula por defecto y, si se pide, sale en EPSG:4326. `FEATURE_COUNT` se acota por capa.
 - `image/jpeg` ignora `TRANSPARENT=TRUE` (JPEG no tiene alfa): se compone sobre `BGCOLOR`.
+- `GetMapParams` recibe el bbox en el orden del protocolo y lo normaliza una sola vez al
+  construir el modelo. `CRS:84` conserva ejes longitud/latitud.
+- `GetMap` comprueba permisos de todas las capas antes de consultar, usa los límites de features
+  por capa de `AtlasConfig` y ejecuta el renderer en un thread para no bloquear el event loop.
+  Los nombres de `STYLES` se aceptan sin sustituir el estilo configurado en la capa.
 - `wms/` no dibuja nada por sí mismo: llama a `MapRenderer.render()`.
 - Se comprueba el permiso `view` para `GetMap` y `query` para `GetFeatureInfo`, por capa.
 

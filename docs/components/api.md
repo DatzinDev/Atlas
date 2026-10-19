@@ -47,9 +47,21 @@ class MapExportRequest(BaseModel):
   seguridad en solo uno de los dos.
 - `/download` requiere `layer.downloadable` y permiso `download`. Un `format` desconocido es un
   `UnsupportedFormat` 400.
-- `POST /maps/export` reutiliza `wms.get_map`, no reimplementa el pipeline de render.
+- `POST /maps/export` reutiliza `wms.get_map`, con overrides de estilo locales a la petición,
+  bbox siempre `minx,miny,maxx,maxy` y descarga PNG/JPEG con nombre UTC. No muta el registry.
 - Todas las rutas de este paquete cuelgan del prefijo configurado en `Atlas` (por defecto `/atlas`).
 - Los errores salen con la forma de `core.exceptions.error_response`, iguales que en WMS/WFS.
+- Catálogo y detalle tienen modelos de respuesta explícitos en OpenAPI; el catálogo no incluye
+  atributos ni nombres internos de esquema/tabla. El detalle publica atributos `{name, type}`,
+  conserva la llave primaria y excluye la geometría. Una capa deshabilitada responde 404.
+- `download_formats` usa el registro de formatos disponibles y queda vacío si `downloadable=False`.
+- `/download` exporta en EPSG:4326, conserva la llave primaria y admite `properties` y `bbox`.
+  CSV acepta `geometry=wkt|centroid|none`; `lon`/`lat` son coordenadas geográficas.
+  No usa `default_limit`. Con `max_download_features` rechaza con 413 las consultas que exceden
+  el máximo al comprobar el conteo, en vez de descargar silenciosamente una parte de la capa.
+  El cursor consume lotes de 16 filas y se cierra incluso si el cliente falla antes de los headers.
+  Los formatos de archivo completan la escritura en disco antes de enviar headers; el generador
+  del exportador también se cierra explícitamente ante desconexiones para borrar el temporal.
 
 ## Dependencias
 

@@ -5,7 +5,7 @@ vía **WMS** y **WFS**, con API de consulta, filtrado, descarga y exportación d
 
 Sin GeoServer. Sin proceso aparte. Es una librería que vive dentro de tu aplicación.
 
-> **Estado:** en construcción (v0.1.0 / MVP). Ver [roadmap](docs/roadmap.md).
+> **Estado:** v0.1.0 — MVP disponible como release en GitHub. Ver [roadmap](docs/roadmap.md).
 
 ## Instalación
 
@@ -71,6 +71,8 @@ concatena SQL. Ver [security.md](docs/components/security.md).
 | [roadmap.md](docs/roadmap.md) | Qué entra en cada versión y qué no entra nunca |
 | [adr/](docs/adr/) | Decisiones técnicas y alternativas descartadas |
 | [requirements.md](docs/requirements.md) | Manual de requerimientos original |
+| [changelog.md](docs/changelog.md) | Cuándo y cómo se actualiza el CHANGELOG |
+| [CHANGELOG.md](CHANGELOG.md) | Qué cambió en cada versión |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Cómo se trabaja un issue |
 
 ## Alcance

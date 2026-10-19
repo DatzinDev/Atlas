@@ -21,6 +21,7 @@ class Layer(BaseModel):
     schema_name: str; table_name: str
     geometry_column: str; geometry_type: GeometryType; srid: int
     id_column: str | None = None
+    is_view: bool = False           # conserva el tipo de relación al reconstruir TableInfo
     attributes: list[ColumnInfo]
     extent: BBox | None = None      # en EPSG:4326
     enabled: bool = True
@@ -36,6 +37,7 @@ class Layer(BaseModel):
     def table_info(self) -> TableInfo    # lo que consume postgis/
     @property
     def attribute_names(self) -> list[str]   # whitelist de columnas
+    def supports(self, service: str) -> bool
 
 # layers/registry.py
 class LayerRegistry:
@@ -45,6 +47,7 @@ class LayerRegistry:
     def list(self, *, enabled_only: bool = True) -> list[Layer]
     def remove(self, name: str) -> None
     def __contains__(self, name: str) -> bool
+    def __len__(self) -> int
 
 # layers/metadata.py
 async def build_layer(
@@ -58,6 +61,7 @@ Operation = Literal["view", "query", "download", "admin"]
 PermissionChecker = Callable[[Layer, Operation, Any], bool | Awaitable[bool]]
 def default_permission_name(layer: Layer, op: Operation) -> str   # "atlas.municipios.view"
 async def check_permission(checker, layer, op, principal) -> None  # lanza PermissionDenied
+async def visible_layers(registry, checker, op, principal) -> list[Layer]
 ```
 
 ## Invariantes
@@ -65,11 +69,28 @@ async def check_permission(checker, layer, op, principal) -> None  # lanza Permi
 - `Layer.name` es único en el registry y es lo que aparece en URLs y en `GetCapabilities`.
 - Una capa con `enabled=False` no aparece en ningún capabilities ni responde a ninguna operación.
 - `attributes` **nunca** incluye la columna de geometría: es la whitelist que protege el SQL.
+- El modelo elimina la geometría de `attributes` al construirlo. `attribute_names` y `table_info`
+  también la excluyen si luego se modifica la lista. `table_info` conserva `is_view` e `id_column`.
+- `name` acepta solo `[a-z0-9_-]`, sin cadena vacía. Si se omite `title`, usa `name.capitalize()`.
+- `supports` requiere la capa habilitada y el servicio activado; un servicio desconocido devuelve
+  `False`. WMS y WFS están activos por defecto, WMTS y WCS no.
+- `build_layer` descubre metadatos y extent, asigna el estilo por geometría y aplica overrides.
+  Un campo desconocido lanza `TypeError`; `style=None` y `extent=None` explícitos se conservan.
+  La llave primaria también permanece en los atributos descubiertos; la geometría se excluye.
 - El registry es un `dict` en memoria y no persiste nada. La persistencia llega en v0.2 y se
   construirá **encima** de esta interfaz, sin cambiarla.
+- `register` reemplaza por nombre y devuelve la nueva capa. `list` ordena por nombre y excluye
+  deshabilitadas salvo `enabled_only=False`; devuelve una lista nueva con las capas originales.
+- `get` permite consultar metadatos de capas deshabilitadas; `require_service` impide servirlas.
+  `get`, `remove` y `require_service` lanzan `LayerNotFound` con `details.name` si no existe la capa.
+  Un servicio desconocido o deshabilitado lanza `ServiceDisabled`.
 - Atlas no decide si un usuario tiene un permiso: llama al `PermissionChecker` que provee la app
   host y respeta su respuesta (§17). Si no hay checker configurado, todo se permite.
 - Las cuatro operaciones (`view`, `query`, `download`, `admin`) se comprueban por separado (§18).
+- Solo el booleano `True` del checker concede acceso; un error sync/async se transforma en
+  `PermissionDenied` sin exponer su mensaje. Sin checker no se imponen restricciones por permisos.
+- El catálogo comprueba `view` y el detalle `query`, independientemente. `principal_dependency`
+  se configura antes de montar el router y FastAPI resuelve la dependencia de la app host.
 
 ## Dependencias
 

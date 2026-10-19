@@ -1,0 +1,23 @@
+services:
+  postgis:
+    image: postgis/postgis:16-3.4
+    container_name: atlas-postgis
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-atlas}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-atlas}
+      POSTGRES_DB: ${POSTGRES_DB:-atlas}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - ./scripts/seed.sql:/docker-entrypoint-initdb.d/10-seed.sql:ro
+      - atlas-postgis-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-atlas} -d ${POSTGRES_DB:-atlas}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 120s
+
+volumes:
+  atlas-postgis-data:

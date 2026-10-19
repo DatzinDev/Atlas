@@ -67,8 +67,16 @@ app.include_router(geo.router)
 - **Atlas no arranca ningún proceso ni servidor.** Vive dentro de la app del usuario (§6).
 - El router se construye una sola vez, al primer acceso a `.router`. Registrar una capa después no
   cambia rutas: las rutas son genéricas y consultan el registry en cada petición.
-- `Atlas` registra el exception handler de `AtlasError` sobre su propio router, no sobre la app del
-  usuario. No se toca configuración global de la app host.
+- Las rutas de Atlas usan `AtlasRoute`, una subclase de `APIRoute` que captura `AtlasError` y
+  devuelve `error_response`. `APIRouter` no admite handlers de excepción propios; no se modifica
+  ningún handler ni configuración global de la app host.
+- `AtlasContext` vive en `atlas.context` y se expone como `geo.context`. El `database_url` debe
+  coincidir con el de una configuración explícita; una discrepancia lanza `ValueError`.
+- `lifespan` puede pasarse a `FastAPI(lifespan=geo.lifespan)` y cierra el pool incluso si falla la
+  app. El renderer por defecto es `PillowRenderer()`; se admite uno externo que cumpla `MapRenderer`.
+  El hook recibe `OperationLog` de WFS y WMS, incluida duración, capas y cantidad de elementos.
+  `/wms` despacha GetCapabilities, GetMap y GetFeatureInfo de WMS 1.3.0; los errores siguen
+  el formato JSON común de Atlas.
 - Los sub-routers reciben el `AtlasContext`; ningún módulo importa una instancia global de `Atlas`.
   Sin singletons.
 - `register_layer` es async porque hace introspección. `register` es sync para capas ya construidas

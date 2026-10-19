@@ -50,7 +50,7 @@ registrado por `Atlas` las convierte en respuestas consistentes. Nunca se deja e
 
 ## Tests
 
-- `pytest` + `pytest-asyncio`. Los tests de PostGIS usan el contenedor de `docker-compose.yml`.
+- `pytest` + `pytest-asyncio`. Los tests de PostGIS usan el contenedor de `compose.yaml`.
 - **Un archivo de test por módulo**: `src/atlas/wfs/filters.py` → `tests/wfs/test_filters.py`.
 - Cada issue entrega su test. Un PR sin test es un PR incompleto, salvo que el issue diga
   explícitamente lo contrario.
@@ -63,8 +63,8 @@ registrado por `Atlas` las convierte en respuestas consistentes. Nunca se deja e
 - Sin cuerpo. Si el commit necesita un párrafo para justificarse, hay que partirlo.
 - Sin trailers de co-autoría.
 - Una rama por issue: `type/nombre-corto` (ej. `feat/wfs-get-feature`), cortada desde `develop`.
-- Los PRs de issues van contra `develop`. `master` solo recibe releases.
-- Nunca commit directo a `develop` ni a `master`.
+- Los PRs de issues van contra `develop`. `main` solo recibe releases.
+- Nunca commit directo a `develop` ni a `main`.
 
 ## Documentación
 
