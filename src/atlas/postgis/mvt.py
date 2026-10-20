@@ -5,9 +5,10 @@ from typing import Any
 
 from psycopg import sql
 
-from atlas.core.exceptions import InvalidParameter
+from atlas.core.exceptions import DatabaseError, InvalidParameter, QueryTooLarge
 from atlas.core.predicates import Predicate
 from atlas.core.tiles import TileCoord, tile_bounds
+from atlas.postgis.connection import Database
 from atlas.postgis.introspection import TableInfo
 from atlas.postgis.predicates import compile_predicate
 from atlas.postgis.queries import bbox_predicate
@@ -124,3 +125,51 @@ def build_mvt_query(
         extent,
         buffer,
     ]
+
+
+async def fetch_mvt(
+    db: Database,
+    info: TableInfo,
+    tile: TileCoord,
+    *,
+    layer_name: str,
+    properties: Sequence[str] | None = None,
+    predicate: Predicate | None = None,
+) -> bytes:
+    config = db._config
+    tile_bounds(tile, max_zoom=config.max_tile_zoom)
+    query, values = build_mvt_query(
+        info,
+        tile,
+        layer_name=layer_name,
+        properties=properties,
+        predicate=predicate,
+        extent=config.mvt_extent,
+        buffer=config.mvt_buffer,
+        candidate_limit=config.max_tile_features,
+    )
+    if not db._mvt_checked:
+        try:
+            await db.fetch_one(
+                sql.SQL("""
+                SELECT ST_AsMVT(t) FROM (
+                    SELECT ST_AsMVTGeom(ST_TileEnvelope(0,0,0,margin=>0),
+                           ST_TileEnvelope(0,0,0)::box2d) AS geom
+                ) t
+            """).format()
+            )
+        except DatabaseError as exc:
+            raise InvalidParameter("MVT requires PostGIS >=3.1 with protobuf support") from exc
+        db._mvt_checked = True
+    # Check byte size inside PostgreSQL so an oversized blob never crosses the connection.
+    bounded = sql.SQL("""
+        WITH result AS MATERIALIZED ({query})
+        SELECT count, octet_length(tile) AS size,
+               CASE WHEN octet_length(tile) <= %s THEN tile ELSE NULL END AS tile FROM result
+    """).format(query=query)
+    row = await db.fetch_one(bounded, [*values, config.max_tile_bytes])
+    if row is None:
+        raise DatabaseError("MVT aggregation returned no result")
+    if row["count"] > config.max_tile_features or row["size"] > config.max_tile_bytes:
+        raise QueryTooLarge("tile exceeds configured feature or byte budget")
+    return bytes(row["tile"])

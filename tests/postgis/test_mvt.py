@@ -95,3 +95,80 @@ async def test_property_precision_ids_and_buffer_clipping(db):
     finally:
         async with db.connection() as conn:
             await conn.execute(sql.SQL("DROP TABLE geo.mvt_fixture"))
+
+
+async def test_executor_caps_and_payload_not_transferred(db, municipios_layer):
+    from atlas.core.exceptions import QueryTooLarge
+    from atlas.postgis.mvt import fetch_mvt
+
+    tile = TileCoord(z=6, x=13, y=28)
+    db._config = db._config.model_copy(update={"max_tile_features": 5})
+    data = await fetch_mvt(db, municipios_layer.table_info, tile, layer_name="test")
+    assert len(mapbox_vector_tile.decode(data)["test"]["features"]) == 5
+    for change in ({"max_tile_features": 4}, {"max_tile_bytes": 1}):
+        db._config = db._config.model_copy(update=change)
+        with pytest.raises(QueryTooLarge):
+            await fetch_mvt(db, municipios_layer.table_info, tile, layer_name="test")
+    assert (
+        await fetch_mvt(
+            db, municipios_layer.table_info, TileCoord(z=6, x=0, y=0), layer_name="test"
+        )
+        == b""
+    )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"mvt_extent": 0},
+        {"mvt_buffer": -1},
+        {"mvt_buffer": 4097},
+        {"max_tile_bytes": 0},
+        {"max_tile_features": 0},
+    ],
+)
+def test_invalid_config(changes):
+    from pydantic import ValidationError
+
+    from atlas.core.config import AtlasConfig
+
+    with pytest.raises(ValidationError):
+        AtlasConfig(database_url="unused", **changes)
+
+
+async def test_executor_timeout_and_cancellation_release_pool(
+    database_url, municipios_layer, monkeypatch
+):
+    import asyncio
+
+    from atlas.core.config import AtlasConfig
+    from atlas.core.exceptions import QueryTimeout
+    from atlas.postgis.connection import Database
+    from atlas.postgis.mvt import fetch_mvt
+
+    config = AtlasConfig(database_url=database_url, query_timeout=0.1, pool_max_size=1)
+    db = Database(config)
+    await db.open()
+    db._mvt_checked = True
+    monkeypatch.setattr(
+        "atlas.postgis.mvt.build_mvt_query",
+        lambda *a, **k: (
+            sql.SQL("SELECT 0 AS count, ''::bytea AS tile FROM pg_sleep(5)").format(),
+            [],
+        ),
+    )
+    try:
+        with pytest.raises(QueryTimeout):
+            await fetch_mvt(
+                db, municipios_layer.table_info, TileCoord(z=0, x=0, y=0), layer_name="test"
+            )
+        task = asyncio.create_task(
+            fetch_mvt(db, municipios_layer.table_info, TileCoord(z=0, x=0, y=0), layer_name="test")
+        )
+        await asyncio.sleep(0.02)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert await db.fetch_one(sql.SQL("SELECT 1 AS alive").format()) == {"alive": 1}
+    finally:
+        await db.close()

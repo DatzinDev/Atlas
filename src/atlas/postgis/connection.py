@@ -27,6 +27,7 @@ class Database:
 
     def __init__(self, config: AtlasConfig) -> None:
         self._config = config
+        self._mvt_checked = False
         self._pool: AsyncConnectionPool[AsyncConnection[dict[str, Any]]] | None = None
 
     @property
@@ -56,6 +57,7 @@ class Database:
             return
         pool, self._pool = self._pool, None
         await pool.close()
+        self._mvt_checked = False
 
     async def _configure(self, conn: AsyncConnection[dict[str, Any]]) -> None:
         """Apply the configured query timeout to a connection the pool has just created.

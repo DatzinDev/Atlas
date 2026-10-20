@@ -39,11 +39,17 @@ class AtlasConfig(BaseModel):
     filter_max_coordinates: int = Field(default=FILTER_MAX_COORDINATES, gt=0)
     filter_max_depth: int = Field(default=8, gt=0)
     filter_max_nodes: int = Field(default=100, gt=0)
+    mvt_extent: int = Field(default=4096, ge=1, le=65536)
+    mvt_buffer: int = Field(default=64, ge=0)
+    max_tile_features: int = Field(default=100000, gt=0)
+    max_tile_bytes: int = Field(default=8388608, gt=0)
     max_tile_zoom: int = Field(default=22, ge=0, le=30)
     max_image_size: int = Field(default=4096, gt=0)
 
     @model_validator(mode="after")
     def _check_limits_are_consistent(self) -> AtlasConfig:
+        if self.mvt_buffer > self.mvt_extent:
+            raise ValueError("mvt_buffer cannot exceed mvt_extent")
         if self.default_limit > self.max_limit:
             raise ValueError(
                 f"default_limit ({self.default_limit}) cannot exceed max_limit ({self.max_limit})"
