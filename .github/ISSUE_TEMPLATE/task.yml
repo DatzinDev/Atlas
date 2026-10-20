@@ -22,6 +22,8 @@ body:
         - wms
         - styles
         - rendering
+        - tiles
+        - raster
         - exports
         - api
         - integration
