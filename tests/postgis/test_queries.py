@@ -65,3 +65,57 @@ async def test_exact_bbox_predicate_excludes_polygon_holes(db):
     hole = "POLYGON((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3))"
     assert '"geom" && ST_MakeEnvelope' in query.as_string()
     assert await db.fetch_one(query, [*values, hole]) == {"hit": False}
+
+
+@pytest.mark.parametrize(
+    "order_by",
+    [
+        [("missing", "ASC")],
+        [("geom", "ASC")],
+        [("id;DROP TABLE x", "ASC")],
+        [("id", "DESC;SELECT 1")],
+        [("id", "desc")],
+        [("id", "ASC"), ("id", "DESC")],
+    ],
+)
+async def test_invalid_order_is_rejected(db, order_by):
+    info = await inspect_table(db, "geo", "escuelas")
+    with pytest.raises(InvalidFilter):
+        build_feature_query(info, order_by=order_by)
+
+
+async def test_ordered_pages_break_ties_with_primary_key(db):
+    info = await inspect_table(db, "geo", "escuelas")
+    ids = []
+    for offset in range(0, 5, 2):
+        query, params = build_feature_query(
+            info,
+            columns=["nivel"],
+            geometry_as="none",
+            order_by=[("nivel", "ASC")],
+            limit=2,
+            offset=offset,
+        )
+        assert 'ORDER BY "nivel" ASC, "id" ASC LIMIT %s OFFSET %s' in query.as_string()
+        ids.extend(row["id"] for row in await db.fetch_all(query, params))
+    assert ids == [3, 1, 4, 2, 5]
+    assert len(set(ids)) == 5
+
+
+async def test_explicit_primary_key_direction_and_multiple_criteria(db):
+    info = await inspect_table(db, "geo", "escuelas")
+    criteria = [("nivel", "ASC"), ("id", "DESC")]
+    query, params = build_feature_query(info, geometry_as="none", order_by=criteria)
+    assert query.as_string().count('"id" DESC') == 1
+    assert '"id" ASC' not in query.as_string()
+    assert [row["id"] for row in await db.fetch_all(query, params)] == [3, 4, 1, 5, 2]
+    assert criteria == [("nivel", "ASC"), ("id", "DESC")]
+
+
+async def test_default_order_requires_a_primary_key(db):
+    info = await inspect_table(db, "geo", "municipios")
+    query, _ = build_feature_query(info)
+    assert 'ORDER BY "id" ASC' in query.as_string()
+    view = info.model_copy(update={"primary_key": None, "is_view": True})
+    query, _ = build_feature_query(view)
+    assert "ORDER BY" not in query.as_string()

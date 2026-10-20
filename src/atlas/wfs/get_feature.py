@@ -38,12 +38,16 @@ class _FeatureResponse(StreamingResponse):
                 await self.rows.aclose()
 
 
-def parse_property_names(value: str | None, layer: Layer) -> list[str] | None:
+def parse_property_names(
+    value: str | None, layer: Layer, *, allow_geometry: bool = False
+) -> list[str] | None:
     if value is None or not value.strip():
         return None
     names = list(dict.fromkeys(name.strip() for name in value.split(",")))
     for name in names:
-        if name not in layer.attribute_names:
+        if name not in layer.attribute_names and not (
+            allow_geometry and name == layer.geometry_column
+        ):
             raise InvalidFilter("unknown attribute", column=name)
     return names
 
@@ -65,6 +69,14 @@ async def get_feature(
 ) -> StreamingResponse:
     layer = ctx.registry.require_service(type_names, "wfs")
     await check_permission(ctx.permission_checker, layer, "query", principal)
+    columns = property_names
+    if property_names is not None:
+        allowed = {*layer.attribute_names, layer.geometry_column}
+        for name in property_names:
+            if name not in allowed:
+                raise InvalidFilter("unknown attribute", column=name)
+        columns = [name for name in property_names if name != layer.geometry_column]
+        include_geometry = include_geometry and layer.geometry_column in property_names
     require_crs(output_srid)
     page = resolve_pagination(ctx.config, count, start_index)
     where, params = compile_filters(filters or [], layer)
@@ -78,7 +90,7 @@ async def get_feature(
     matched = await ctx.db.fetch_one(query, values)
     query, values = build_feature_query(
         layer.table_info,
-        columns=property_names,
+        columns=columns,
         where=where,
         params=params,
         target_srid=output_srid,

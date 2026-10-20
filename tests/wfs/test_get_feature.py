@@ -1,13 +1,14 @@
 """Bounded streaming, projection, error boundaries and cursor cleanup."""
 
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 from starlette.requests import ClientDisconnect
 
-from atlas.core.exceptions import LayerNotFound, PermissionDenied, ServiceDisabled
+from atlas.core.exceptions import InvalidFilter, LayerNotFound, PermissionDenied, ServiceDisabled
 from atlas.wfs.filters import parse_filters
-from atlas.wfs.get_feature import get_feature
+from atlas.wfs.get_feature import get_feature, parse_property_names
 
 
 async def payload(response):
@@ -104,3 +105,69 @@ async def test_disconnect_before_headers_releases_prefetched_cursor(atlas, monke
     with pytest.raises((ClientDisconnect, ExceptionGroup)):
         await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, disconnected)
     assert closed == [True]
+
+
+@pytest.mark.parametrize(
+    "properties,geometry,expected_geometry,expected_fields",
+    [
+        (None, None, True, {"id", "clave", "nombre", "poblacion"}),
+        ("nombre", None, False, {"id", "nombre"}),
+        ("nombre,geom", None, True, {"id", "nombre"}),
+        ("geom", None, True, {"id"}),
+        ("geom", "false", False, {"id"}),
+    ],
+)
+async def test_http_property_projection_sql_and_geojson(
+    client, atlas, monkeypatch, properties, geometry, expected_geometry, expected_fields
+):
+    statements = []
+    original = atlas.context.db.stream
+
+    def observed(query, values):
+        statements.append(query.as_string())
+        return original(query, values)
+
+    monkeypatch.setattr(atlas.context.db, "stream", observed)
+    params = {"request": "GetFeature", "typeNames": "municipios", "count": "1"}
+    if properties is not None:
+        params["propertyName"] = properties
+    if geometry is not None:
+        params["geometry"] = geometry
+    response = await client.get("/atlas/wfs", params=params)
+    assert response.status_code == 200
+    feature = response.json()["features"][0]
+    assert (feature["geometry"] is not None) == expected_geometry
+    assert ("ST_AsGeoJSON" in statements[0]) == expected_geometry
+    assert set(feature["properties"]) == expected_fields
+    assert feature["id"] == feature["properties"]["id"]
+
+
+async def test_custom_geometry_column_and_rejection_of_other_geometry(atlas, monkeypatch):
+    layer = atlas.context.registry.get("municipios")
+    layer.geometry_column = "shape"
+    queries = []
+    counter = AsyncMock(return_value={"count": 1})
+
+    async def rows(query, values):
+        queries.append(query.as_string())
+        yield {"id": 1, "shape": {"type": "Point", "coordinates": [1, 2]}}
+
+    monkeypatch.setattr(atlas.context.db, "fetch_one", counter)
+    monkeypatch.setattr(atlas.context.db, "stream", rows)
+    names = parse_property_names("shape", layer, allow_geometry=True)
+    data = await payload(
+        await get_feature(atlas.context, type_names=layer.name, property_names=names)
+    )
+    assert data["features"][0]["geometry"]["coordinates"] == [1, 2]
+    assert 'AS "shape"' in queries[0] and '"geom"' not in queries[0]
+    for name in ["geom", "other_geom", "pg_sleep(10)"]:
+        with pytest.raises(InvalidFilter):
+            await get_feature(atlas.context, type_names=layer.name, property_names=[name])
+    assert counter.await_count == 1
+
+
+async def test_download_properties_remain_attribute_only(client):
+    ok = await client.get("/atlas/layers/municipios/download?properties=nombre")
+    bad = await client.get("/atlas/layers/municipios/download?properties=geom")
+    assert ok.status_code == 200
+    assert bad.status_code == 400
