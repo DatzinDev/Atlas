@@ -123,11 +123,17 @@ Lo importan: `layers`, `wfs`, `wms`, `exports`.
 `requirements.md` §13.1 (seguridad), §19 (introspección), §20 (CRS), §21 (bbox), §22 (rendimiento),
 §24 (streaming). ADR 0001.
 
-## Contrato de predicados propuesto, aún no implementado
+## Predicados compartidos de atributos (#112)
 
-[ADR 0005](../adr/0005-shared-query-predicates.md) fija compile_predicate(TableInfo,
-Predicate), validación, SQL parametrizado y selección espacial exacta tras prefiltrado GIST.
-Los helpers existentes conservan firmas; el compilador no recibe Layer ni interpreta HTTP.
+`compile_predicate(predicate: Predicate | None, info: TableInfo)` devuelve `(sql.Composed, list)`.
+Recibe el árbol previamente validado por `core.validate_predicate`; None devuelve SQL vacío sin WHERE.
+Compone AND/OR/NOT con paréntesis, comparaciones, IN, LIKE/ILIKE y NULL explícito.
+Valida columnas no geométricas y tipos: enteros/números JSON finitos, bool estricto, texto/fechas ISO.
+No convierte texto a número ni 0/1 a bool; el adaptador legacy conserva su casteo previo.
+Tipos no soportados se rechazan; NULL conserva la lógica SQL de tres valores incluso con NOT.
+Identificadores usan Identifier y valores placeholders; comparte casteo con WFS mediante values.py.
+Los helpers existentes conservan firmas; no recibe Layer ni interpreta HTTP.
+La selección espacial del ADR 0005 se implementará por separado en #116.
 
 ## Conversión compartida de atributos (#159)
 
