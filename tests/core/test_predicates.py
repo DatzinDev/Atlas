@@ -98,3 +98,76 @@ def test_config_and_python_models_are_validated():
                 AtlasConfig(database_url="test", **{name: value})
     with pytest.raises(InvalidFilter):
         validate_predicate(None, max_depth=0, max_nodes=1)
+
+
+SQUARE = {"type": "Polygon", "coordinates": [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]]}
+
+
+def spatial(geometry=SQUARE, **kwargs):
+    return {"op": "within", "geometry": geometry, "srid": 4326, **kwargs}
+
+
+def test_valid_polygons_multipolygons_and_holes():
+    hole = [[2, 2], [2, 4], [4, 4], [4, 2], [2, 2]]
+    polygon = {"type": "Polygon", "coordinates": [*SQUARE["coordinates"], hole]}
+    multi = {"type": "MultiPolygon", "coordinates": [polygon["coordinates"]]}
+    for geometry in (SQUARE, polygon, multi):
+        raw = spatial(geometry)
+        assert validate(raw).model_dump() == raw
+        assert validate(validate(raw)).model_dump() == raw
+
+
+@pytest.mark.parametrize(
+    "geometry",
+    [
+        {"type": "GeometryCollection", "geometries": []},
+        {"type": "Polygon", "coordinates": []},
+        {"type": "MultiPolygon", "coordinates": [[]]},
+        {"type": "Polygon", "coordinates": [[[0, 0], [1, 1], [1, 0], [0, 1], [0, 0]]]},
+        {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1]]]},
+        {"type": "Polygon", "coordinates": [[[0, 0, 1]] * 4]},
+        {"type": "Polygon", "coordinates": [[[0, 0], [True, 0], [1, 1], [0, 0]]]},
+        {"type": "Polygon", "coordinates": [[[0, 0], [float("inf"), 0], [1, 1], [0, 0]]]},
+        {**SQUARE, "crs": "EPSG:4326"},
+    ],
+)
+def test_invalid_spatial_geometry(geometry):
+    with pytest.raises(InvalidFilter):
+        validate(spatial(geometry))
+
+
+@pytest.mark.parametrize(
+    "extra", [{"srid": 0}, {"srid": -1}, {"srid": True}, {"srid": "4326"}, {"column": "geom"}]
+)
+def test_spatial_srid_and_extra_keys(extra):
+    with pytest.raises(InvalidFilter):
+        validate(spatial(**extra))
+    with pytest.raises(InvalidFilter):
+        validate({"op": "within", "geometry": SQUARE})
+
+
+def test_spatial_budgets_before_native_validation(monkeypatch):
+    import json
+
+    import atlas.core.predicates as module
+
+    raw = spatial()
+    size = len(json.dumps(raw, separators=(",", ":")).encode())
+    assert validate_predicate(raw, max_depth=1, max_nodes=1, max_bytes=size, max_coordinates=5)
+
+    def unexpected(*args):
+        raise AssertionError("GEOS must not run for over-budget input")
+
+    monkeypatch.setattr(module, "shape", unexpected)
+    for limits in ({"max_coordinates": 4}, {"max_bytes": size - 1}):
+        with pytest.raises(InvalidFilter):
+            validate_predicate(raw, max_depth=1, max_nodes=1, **limits)
+    with pytest.raises(InvalidFilter):
+        validate_predicate(
+            {"op": "and", "args": [raw, raw]}, max_depth=2, max_nodes=3, max_coordinates=9
+        )
+    config = AtlasConfig(database_url="test")
+    assert (config.filter_max_bytes, config.filter_max_coordinates) == (65536, 10000)
+    for name in ("filter_max_bytes", "filter_max_coordinates"):
+        with pytest.raises(ValidationError):
+            AtlasConfig(database_url="test", **{name: 0})

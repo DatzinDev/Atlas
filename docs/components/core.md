@@ -24,6 +24,8 @@ class AtlasConfig(BaseModel):
     pool_min_size: int = 1
     pool_max_size: int = 10
     query_timeout: float = 30.0      # segundos
+    filter_max_bytes: int = 65536
+    filter_max_coordinates: int = 10000
     filter_max_depth: int = 8       # raíz = 1
     filter_max_nodes: int = 100     # cada predicado cuenta una vez
     max_image_size: int = 4096       # lado máximo en píxeles de una imagen renderizada
@@ -152,7 +154,7 @@ LogHook = Callable[[OperationLog], None]
 
 ## Dependencias
 
-Importa: nada del proyecto. Solo `pydantic` y stdlib.
+Importa: nada fuera de core. Pydantic, stdlib y Shapely para validar polígonos.
 Lo importan: todos.
 
 ## Fuera de alcance
@@ -175,4 +177,14 @@ Valida profundidad y nodos de forma iterativa antes de Pydantic; errores son Inv
 Los modelos rechazan campos extra y coerción; escalares admitidos son texto, bool, int y float finito.
 NULL solo se expresa con los operadores explícitos. SQL aparente sigue siendo texto literal.
 La whitelist y los tipos PostgreSQL corresponden al compilador posterior, no a core.
-Estos modelos todavía no se conectan a HTTP; límites de bytes/IN y geometrías son entregas posteriores.
+Estos modelos todavía no se conectan a HTTP; los límites de IN son una entrega posterior.
+
+## Selección por polígono (#113)
+
+Predicate admite `within/intersects` con `geometry` GeoJSON Polygon/MultiPolygon y `srid` entero
+positivo explícito. La relación se interpreta desde la geometría de la capa respecto al polígono.
+`validate_predicate` añade `max_bytes=65536` (JSON compacto UTF-8) y `max_coordinates=10000`
+(pares XY acumulados, incluidos cierres y huecos). Se verifican antes de invocar GEOS.
+El futuro transporte comprobará además bytes crudos antes de JSON. Se rechazan Z, no finitos,
+anillos sin cerrar, vacíos, geometrías inválidas y claves extra; no se reparan ni reproyectan.
+Shapely solo comprueba topología. El registro CRS y ST_Transform pertenecen a postgis (#116).

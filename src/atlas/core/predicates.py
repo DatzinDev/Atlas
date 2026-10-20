@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import json
+import math
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from shapely.errors import GEOSException  # type: ignore[import-untyped]
+from shapely.geometry import shape  # type: ignore[import-untyped]
 
+from atlas.core.config import FILTER_MAX_BYTES, FILTER_MAX_COORDINATES
 from atlas.core.exceptions import InvalidFilter
 
 Scalar = str | bool | int | float
@@ -48,27 +53,79 @@ class Negation(PredicateModel):
     arg: Predicate
 
 
+class SpatialPredicate(PredicateModel):
+    op: Literal["intersects", "within"]
+    geometry: dict[str, Any]
+    srid: int = Field(gt=0)
+
+
 Predicate = Annotated[
-    Comparison | Membership | NullCheck | Group | Negation, Field(discriminator="op")
+    Comparison | Membership | NullCheck | Group | Negation | SpatialPredicate,
+    Field(discriminator="op"),
 ]
 _ADAPTER: TypeAdapter[Predicate] = TypeAdapter(Predicate)
 
 
-def validate_predicate(value: Any, *, max_depth: int, max_nodes: int) -> Predicate | None:
+def _model_dict(value: Any) -> dict[str, Any]:
+    if not isinstance(value, PredicateModel):
+        raise TypeError("expected a predicate model")
+    return {key: getattr(value, key) for key in type(value).model_fields}
+
+
+def _check_coordinates(geometry: Any, remaining: int) -> int:
+    if not isinstance(geometry, dict) or set(geometry) != {"type", "coordinates"}:
+        raise InvalidFilter("geometry requires type and coordinates only")
+    kind, coordinates = geometry["type"], geometry["coordinates"]
+    if kind not in ("Polygon", "MultiPolygon"):
+        raise InvalidFilter("only Polygon/MultiPolygon selections are supported")
+    polygons = [coordinates] if kind == "Polygon" else coordinates
+    if not isinstance(polygons, list) or not polygons:
+        raise InvalidFilter("polygon cannot be empty")
+    count = 0
+    for polygon in polygons:
+        if not isinstance(polygon, list) or not polygon:
+            raise InvalidFilter("polygon requires rings")
+        for ring in polygon:
+            if not isinstance(ring, list) or len(ring) < 4:
+                raise InvalidFilter("ring requires at least four positions")
+            for point in ring:
+                count += 1
+                if count > remaining:
+                    raise InvalidFilter("predicate exceeds coordinate limit")
+                if (
+                    not isinstance(point, list)
+                    or len(point) != 2
+                    or any(type(v) not in (int, float) or not math.isfinite(v) for v in point)
+                ):
+                    raise InvalidFilter("positions must contain finite XY numbers")
+            if ring[0] != ring[-1]:
+                raise InvalidFilter("rings must be closed")
+    return count
+
+
+def validate_predicate(
+    value: Any,
+    *,
+    max_depth: int,
+    max_nodes: int,
+    max_bytes: int = FILTER_MAX_BYTES,
+    max_coordinates: int = FILTER_MAX_COORDINATES,
+) -> Predicate | None:
     """Check tree budgets iteratively before Pydantic's recursive validation."""
-    if type(max_depth) is not int or type(max_nodes) is not int or min(max_depth, max_nodes) < 1:
+    if any(type(v) is not int or v < 1 for v in (max_depth, max_nodes, max_bytes, max_coordinates)):
         raise InvalidFilter("predicate limits must be positive integers")
     if value is None:
         return None
     stack = [(value, 1)]
-    nodes = 0
+    nodes = coordinates = 0
+    geometries = []
     while stack:
         node, depth = stack.pop()
         nodes += 1
         if depth > max_depth or nodes > max_nodes:
             raise InvalidFilter("predicate exceeds depth or node limit")
         if isinstance(node, PredicateModel):
-            node = {key: getattr(node, key) for key in type(node).model_fields}
+            node = _model_dict(node)
         if not isinstance(node, dict):
             raise InvalidFilter("predicate must be an object")
         if node.get("op") in ("and", "or"):
@@ -80,7 +137,34 @@ def validate_predicate(value: Any, *, max_depth: int, max_nodes: int) -> Predica
             stack.extend((child, depth + 1) for child in children)
         elif node.get("op") == "not":
             stack.append((node.get("arg"), depth + 1))
+        elif node.get("op") in ("within", "intersects"):
+            geometry = node.get("geometry")
+            try:
+                coordinates += _check_coordinates(geometry, max_coordinates - coordinates)
+            except (ValueError, OverflowError) as exc:
+                raise InvalidFilter("invalid polygon coordinates") from exc
+            geometries.append(geometry)
     try:
-        return _ADAPTER.validate_python(value)
-    except (ValidationError, RecursionError) as exc:
+        size = 0
+        encoder = json.JSONEncoder(
+            default=_model_dict, allow_nan=False, ensure_ascii=False, separators=(",", ":")
+        )
+        for chunk in encoder.iterencode(value):
+            size += len(chunk.encode("utf-8"))
+            if size > max_bytes:
+                raise InvalidFilter("predicate exceeds byte limit")
+        result = _ADAPTER.validate_python(value)
+        for geometry in geometries:
+            native = shape(geometry)
+            if native.is_empty or not native.is_valid:
+                raise InvalidFilter("polygon must be non-empty and topologically valid")
+        return result
+    except (
+        ValidationError,
+        RecursionError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        GEOSException,
+    ) as exc:
         raise InvalidFilter("invalid predicate") from exc
