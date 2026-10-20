@@ -199,3 +199,12 @@ texto vacío o malformado produce InvalidFilter. No interpreta CQL, XML ni campo
 `validate_predicate` añade max_in_values=1000: cada IN debe tener 1..N elementos; la profundidad
 y nodos acotan el total del árbol. filter_max_in_values es configurable positivo en AtlasConfig.
 El parser no consulta ni compila SQL; los consumidores autorizan y compilan posteriormente.
+
+## Grid XYZ (#110)
+
+`core.tiles.TileCoord(z, x, y)` valida enteros estrictos, sin wrap ni TMS.
+`tile_bounds(tile, *, max_zoom=22)` devuelve minx/miny/maxx/maxy en EPSG:3857.
+El mundo z0 abarca ±20037508.342789244 metros; Y aumenta hacia el sur.
+`AtlasConfig.max_tile_zoom=22` admite 0..30; el techo numérico evita zooms desmedidos.
+Las coordenadas fuera del grid se rechazan antes de I/O; un error de construcción
+Pydantic también se traduce a InvalidParameter en la frontera HTTP.

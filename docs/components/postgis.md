@@ -154,3 +154,36 @@ compile_predicate añade el keyword legacy_values=False. Solo el adaptador legac
 activa tras revalidar filtros: conserva casteo, fechas, Decimal exacto y tipos heredados.
 El modo normal sigue rechazando coerción de texto a número/bool y tipos no soportados.
 Ningún modo cambia whitelist, operadores permitidos, Identifier ni placeholders.
+
+## Consulta MVT nativa (#128)
+
+`build_mvt_query(info, tile, *, layer_name, properties=None, predicate=None,
+extent=4096, buffer=64, candidate_limit)` devuelve SQL/valores y una fila count/tile.
+Cuenta hasta cap+1 en un CTE materializado; con exceso no agrega un tile parcial.
+El bbox expandido se transforma al SRID nativo y conserva la columna indexable;
+solo los candidatos se proyectan a 3857. El encoder recibe bounds sin expandir.
+Las propiedades por defecto son texto, booleanos, enteros, floats finitos, numeric
+exacto como texto y fechas/timestamps como texto ISO PostgreSQL. No se inventa zona.
+NULL y floats no finitos se omiten. JSON/arrays/binarios/UUID se excluyen por defecto
+y se rechazan si se solicitan; la geometría nunca es propiedad. PK entera en
+0..2**53-1 puede ser ID; otras PK portables se conservan como atributo sin ID hash.
+PostGIS cuantiza/recorta: puede omitir polígonos pequeños o colapsar dimensiones.
+Un tile vacío es b""; no equivale a una descarga completa. Decoder solo en dev (ADR 0006).
+
+## Ejecución MVT acotada (#131)
+
+`fetch_mvt` utiliza el pool/timeout existentes y comprueba soporte PostGIS 3.1+ con
+protobuf una vez por ciclo del pool. Config: mvt_extent=4096 (1..65536),
+mvt_buffer=64 (0..extent), max_tile_features=100000 y max_tile_bytes=8388608 positivos.
+Candidatos cap+1 o bytes excesivos producen QueryTooLarge (413), sin payload parcial.
+El tamaño se mide en SQL; el blob excesivo no cruza la conexión. La agregación puede
+consumir memoria de PostgreSQL antes del control: estos límites no garantizan RSS.
+Timeout/cancelación conservan la liberación de conexión del gestor existente.
+
+## Bordes mundiales (#177)
+
+El bbox con buffer se acota al mundo 3857 antes de proyectarse: evita que longitudes
+fuera de ±180° se envuelvan y excluyan features válidas. El tile mundial z0 en CRS
+locales no usa bbox redundante (su dominio no cubre el mundo); conserva selección,
+exclusión NULL/EMPTY y cap+1. Esa petición puede recorrer más filas: se recomienda
+consultar tiles regionales para capas grandes. No se añaden duplicados por wrap.

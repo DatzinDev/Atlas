@@ -19,6 +19,7 @@ dependencies = [
 export = ["fiona>=1.9"]
 dev = [
     "pytest>=8",
+    "mapbox-vector-tile==2.2.0",
     "pytest-asyncio>=0.23",
     "httpx",
     "ruff",
