@@ -6,7 +6,7 @@ La primera petición por caso se registra aparte: **no representa disco ni Postg
 
 ## Reproducción
 
-Instalar `pip install -e ".[dev,export]"`; crear un PostGIS descartable 16/3.4 con base `atlas_bench_vector` y extensión PostGIS. Nunca apuntar a una base de aplicación: el generador rechaza nombres fuera de `atlas_bench_*` antes de DDL y usa/retira únicamente un esquema UUID propio.
+Ejecutar desde checkout Git en Linux. Instalar `pip install -e ".[dev,export]"`; crear un PostGIS descartable 16/3.4 con base `atlas_bench_vector` y extensión PostGIS. Nunca apuntar a una base de aplicación: el generador rechaza nombres fuera de `atlas_bench_*` antes de DDL y usa/retira únicamente un esquema UUID propio.
 
 ```bash
 export ATLAS_BENCH_DATABASE_URL='postgresql://atlas:atlas@127.0.0.1:55436/atlas_bench_vector'
@@ -29,4 +29,25 @@ python benchmarks/mvt.py --samples 100 --warmup 10 --concurrency 1 4 --repetitio
 
 ## Resultados de referencia
 
-Pendientes de finalizar la ejecución de la matriz completa; no usar las corridas preliminares de calibración.
+Ejecución 2026-10-20: Ryzen 5 7640HS (12 CPUs lógicas), ~14,8 GiB RAM, Python 3.11.14, PostgreSQL 16.4/PostGIS 3.4.3; cgroup sin cuota CPU ni límite de memoria. Runtime base `63a12a3`; versiones y hashes exactos de scripts en JSON.
+324 casos: 16.200 muestras completas, 7.200 páginas WFS, 1.800 rechazos MVT y cero errores/invalidez calientes; 72 preflights WMS incompletos excluidos (no son éxitos). Cobertura de todos los IDs en los nueve mosaicos.
+
+Ventana selectiva z10: mediana de los p95 de tres repeticiones, milisegundos **c1/c4**. WFS es primera página; con 1M filas contiene 1.000 de 1.024 candidatos. MVT no incluye renderizado cliente.
+
+| Filas y geometría | MVT | WFS | WMS |
+|---|---:|---:|---:|
+| 10,000 puntos | 1.11/3.33 | 3.25/7.82 | 23.14/65.09 |
+| 10,000 líneas | 1.32/4.19 | 2.81/7.52 | 10.74/23.20 |
+| 10,000 polígonos | 1.27/3.31 | 2.83/8.01 | 24.43/58.80 |
+| 100,000 puntos | 1.19/3.66 | 5.00/16.30 | 42.80/156.38 |
+| 100,000 líneas | 1.43/3.05 | 6.30/19.04 | 28.78/99.82 |
+| 100,000 polígonos | 2.16/4.07 | 8.51/45.32 | 59.67/245.87 |
+| 1,000,000 puntos | 3.72/7.58 | 52.70/161.75 | incompleto/incompleto |
+| 1,000,000 líneas | 3.44/6.02 | 60.91/170.26 | incompleto/incompleto |
+| 1,000,000 polígonos | 8.01/10.67 | 71.69/230.10 | incompleto/incompleto |
+
+Primeras respuestas: 0,82–2.333,81 ms entre casos distintos (no comparar como disco frío). RSS muestreado del proceso: 90,18–267,35 MiB; pico cgroup PostgreSQL: 1.110,27 MiB. CPU de los lotes/preflights registrados: Python 491,95 s y PostgreSQL 489,71 s; son cargas/contratos distintos, no una comparación de motores.
+Cancelación: 270 rondas, 1.074 tareas canceladas y 6 finalizadas antes de cancelar. Al reposo final: cero sesiones DB activas, cola y tareas extra; hasta 33 threads. El pool registró 36 returns_bad y 3 requests_errors, y recuperó disponibilidad.
+La CPU del proceso siguió activa en el segundo final del reposo tras cancelar WMS: no se certifica drenado nativo ni ausencia de acumulación sostenida. Seguimientos P0: [truncamiento #193](https://github.com/DatzinDev/Atlas/issues/193) y [trabajo pendiente #194](https://github.com/DatzinDev/Atlas/issues/194).
+Datos sintéticos con ID y geometrías sencillas nativas 3857; no evalúa reproyección desde CRS locales, geometrías complejas, navegador, producción ni GeoServer. Primero corregir integridad/presupuestos y concurrencia; repetir esta matriz antes de atribuir mejoras a caché/renderizado.
+JSON local `/tmp/atlas-vector-benchmark.json` (821.574 bytes), SHA-256 `82ea823f1187fa7e4245d4a82ffb2fe0ef7d5d5600278b4e98427863d13e6937`. Las corridas preliminares de calibración se excluyeron.
