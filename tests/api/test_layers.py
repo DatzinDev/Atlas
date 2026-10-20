@@ -34,7 +34,7 @@ async def test_layer_detail(client: AsyncClient) -> None:
             {"name": "nombre", "type": "text"},
             {"name": "poblacion", "type": "int4"},
         ],
-        "services": {"wms": True, "wfs": True, "wmts": False, "wcs": False},
+        "services": {"wms": True, "wfs": True, "mvt": False, "wmts": False, "wcs": False},
         "download_formats": available_formats(),
         "style": {
             "fill": "#3178c6",
