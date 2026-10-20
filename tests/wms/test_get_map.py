@@ -167,7 +167,7 @@ async def test_layer_filters_intermediate_rejection(client, atlas, monkeypatch):
     leaf = {"op": "eq", "field": "id", "value": 1}
     fetch = Mock(side_effect=AssertionError("must not query"))
     monkeypatch.setattr(atlas.context.db, "fetch_all", fetch)
-    for operation in ("GetMap", "GetFeatureInfo"):
+    for operation in ("GetFeatureInfo",):
         response = await client.get(
             "/atlas/wms",
             params=MAP
@@ -196,4 +196,61 @@ async def test_layer_filters_intermediate_rejection(client, atlas, monkeypatch):
                 atlas_filters={"municipios": leaf},
             ),
         )
+    fetch.assert_not_called()
+
+
+async def test_shared_filters_two_layers_match_wfs_and_do_not_leak(client, atlas):
+    import json
+
+    from shapely.geometry import shape
+    from tests.wms.test_router import MAP
+
+    renderer = Mock()
+    renderer.render.return_value = b"image"
+    atlas.context.renderer = renderer
+    a = {"op": "in", "field": "id", "value": [1, 3]}
+    b = {"op": "eq", "field": "id", "value": 2}
+    for first in (a, b, a):
+        filters = {"municipios": first, "escuelas": b}
+        response = await client.get(
+            "/atlas/wms",
+            params=MAP | dict(LAYERS="municipios,escuelas", ATLAS_FILTERS=json.dumps(filters)),
+        )
+        assert response.status_code == 200
+        rendered = renderer.render.call_args.args[0]
+        for index, name in enumerate(filters):
+            wfs = await client.get(
+                "/atlas/wfs",
+                params=dict(
+                    REQUEST="GetFeature", TYPENAMES=name, ATLAS_FILTER=json.dumps(filters[name])
+                ),
+            )
+            expected = [shape(f["geometry"]) for f in wfs.json()["features"]]
+            assert len(rendered[index].geometries) == len(expected)
+            assert all(
+                actual.equals_exact(wanted, 1e-8)
+                for actual, wanted in zip(rendered[index].geometries, expected, strict=True)
+            )
+
+
+async def test_filtered_map_rejects_all_invalid_columns_before_any_query(
+    client, atlas, monkeypatch
+):
+    import json
+
+    from tests.wms.test_router import MAP
+
+    fetch = Mock(side_effect=AssertionError("must not query"))
+    monkeypatch.setattr(atlas.context.db, "fetch_all", fetch)
+    response = await client.get(
+        "/atlas/wms",
+        params=MAP
+        | dict(
+            LAYERS="municipios,escuelas",
+            ATLAS_FILTERS=json.dumps(
+                {"escuelas": {"op": "eq", "field": "id; DROP TABLE geo.escuelas", "value": 1}}
+            ),
+        ),
+    )
+    assert response.status_code == 400
     fetch.assert_not_called()

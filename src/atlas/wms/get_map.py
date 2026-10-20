@@ -15,6 +15,7 @@ from atlas.core.logging import OperationLog
 from atlas.core.predicates import Group, Predicate, PredicateModel, validate_predicate
 from atlas.core.types import BBox
 from atlas.layers.permissions import check_permission
+from atlas.postgis.predicates import compile_predicate
 from atlas.postgis.queries import fetch_render_geometries
 from atlas.rendering.base import MapRenderer, RenderLayer
 from atlas.rendering.pillow import PillowRenderer
@@ -147,19 +148,23 @@ async def get_map(
 ) -> Response:
     params.validate_size(ctx.config.max_image_size)
     validate_layer_filters(params.atlas_filters, ctx.config)
-    if params.atlas_filters:
-        raise InvalidParameter("filtered GetMap is not implemented yet")
     layers = [ctx.registry.require_service(name, "wms") for name in params.layers]
     for layer in layers:
         await check_permission(ctx.permission_checker, layer, "view", principal)
+    compiled = [
+        compile_predicate(params.atlas_filters.get(layer.name), layer.table_info)
+        for layer in layers
+    ]
     render_layers = []
-    for layer in layers:
+    for layer, (predicate, values) in zip(layers, compiled, strict=True):
         geometries = await fetch_render_geometries(
             ctx.db,
             layer.table_info,
             bbox=params.bbox,
             bbox_srid=params.crs,
             target_srid=params.crs,
+            where=[predicate] if layer.name in params.atlas_filters else [],
+            params=values,
         )
         render_layers.append(
             RenderLayer(

@@ -98,5 +98,7 @@ TILED no activa un caché ni se interpreta como filtro. No se anuncian capacidad
 compartido del ADR 0005. Las claves pertenecen a `LAYERS`; bytes, nodos y coordenadas
 se acotan por petición y la profundidad por árbol mediante `AtlasConfig`.
 El modelo Python expone `atlas_filters`; los servicios vuelven a comprobar los límites
-configurados. En esta entrega intermedia los filtros no vacíos se rechazan explícitamente
-antes de SQL; `{}` conserva el comportamiento anterior. CQL y ATLAS_FILTER siguen rechazados.
+configurados. GetMap compila cada filtro con la metadata de su capa y lo combina con el bbox mediante AND.
+Todos los permisos y columnas se comprueban antes de la primera consulta.
+GetFeatureInfo todavía rechaza filtros no vacíos; `{}` conserva el comportamiento anterior.
+No existe caché en la base integrada: cada solicitud ejecuta su filtro de forma independiente. CQL y ATLAS_FILTER siguen rechazados.
