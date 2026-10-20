@@ -127,3 +127,73 @@ async def test_limits_and_permissions_before_query(atlas, monkeypatch):
     with pytest.raises(PermissionDenied):
         await get_map(atlas.context, params())
     fetch.assert_not_called()
+
+
+def test_layer_filter_validation_and_aggregate_limits():
+    from atlas.core.config import AtlasConfig
+    from atlas.core.exceptions import InvalidFilter
+    from atlas.wms.get_map import validate_layer_filters
+
+    leaf = {"op": "eq", "field": "id", "value": 1}
+    assert params(atlas_filters={"municipios": leaf}).atlas_filters["municipios"].value == 1
+    for value in (
+        "",
+        "null",
+        "[]",
+        '{"a":{},"a":{}}',
+        '{"a":{"op":"eq","field":"id","value":NaN}}',
+    ):
+        with pytest.raises(InvalidFilter):
+            validate_layer_filters(value)
+    with pytest.raises(InvalidFilter):
+        params(atlas_filters={"other": leaf})
+    config = AtlasConfig(database_url="unused", filter_max_nodes=1)
+    with pytest.raises(InvalidFilter):
+        validate_layer_filters({"a": leaf, "b": leaf}, config)
+    assert len(validate_layer_filters({"a": leaf}, config)) == 1
+    with pytest.raises(InvalidFilter):
+        validate_layer_filters(
+            {"a": {"op": "not", "arg": leaf}}, config.model_copy(update={"filter_max_depth": 1})
+        )
+
+
+async def test_layer_filters_intermediate_rejection(client, atlas, monkeypatch):
+    import json
+
+    from tests.wms.test_router import MAP
+
+    from atlas.wms.feature_info import FeatureInfoParams, get_feature_info
+
+    leaf = {"op": "eq", "field": "id", "value": 1}
+    fetch = Mock(side_effect=AssertionError("must not query"))
+    monkeypatch.setattr(atlas.context.db, "fetch_all", fetch)
+    for operation in ("GetMap", "GetFeatureInfo"):
+        response = await client.get(
+            "/atlas/wms",
+            params=MAP
+            | dict(
+                REQUEST=operation,
+                QUERY_LAYERS="municipios",
+                I=0,
+                J=0,
+                ATLAS_FILTERS=json.dumps({"municipios": leaf}),
+            ),
+        )
+        assert response.status_code == 400
+        assert "not implemented" in response.text
+    with pytest.raises(InvalidParameter):
+        await get_feature_info(
+            atlas.context,
+            FeatureInfoParams(
+                layers=["municipios"],
+                query_layers=["municipios"],
+                bbox=(0, 0, 1, 1),
+                crs=3857,
+                width=10,
+                height=10,
+                i=0,
+                j=0,
+                atlas_filters={"municipios": leaf},
+            ),
+        )
+    fetch.assert_not_called()

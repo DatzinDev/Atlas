@@ -25,6 +25,7 @@ MAP_FIELDS = {
     "styles",
     "transparent",
     "bgcolor",
+    "atlas_filters",
 }
 UNSUPPORTED_CONTENT = {
     "cql_filter",
@@ -34,7 +35,6 @@ UNSUPPORTED_CONTENT = {
     "sld_body",
     "filter",
     "atlas_filter",
-    "atlas_filters",
 }
 INFO_FIELDS = MAP_FIELDS | {
     "query_layers",
@@ -89,13 +89,16 @@ def build_router(ctx: AtlasContext) -> APIRouter:
             try:
                 if operation == "GetMap":
                     map_params = GetMapParams.model_validate(
-                        {key: value for key, value in params.items() if key in MAP_FIELDS}
+                        {key: value for key, value in params.items() if key in MAP_FIELDS},
+                        context={"config": ctx.config},
                     )
                     return await get_map(ctx, map_params, principal, report=report)
                 values = {key: value for key, value in params.items() if key in INFO_FIELDS}
                 if "geometry" in params:
                     values["include_geometry"] = params["geometry"]
-                info_params = FeatureInfoParams.model_validate(values)
+                info_params = FeatureInfoParams.model_validate(
+                    values, context={"config": ctx.config}
+                )
                 return JSONResponse(
                     await get_feature_info(ctx, info_params, principal, report=report)
                 )

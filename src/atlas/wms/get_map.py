@@ -1,21 +1,67 @@
 """Parse WMS 1.3.0 map parameters and delegate bounded, authorized drawing."""
 
+import json
 from typing import Any, Literal, Self
 
 from fastapi import Response
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
 
 from atlas.context import AtlasContext
+from atlas.core.config import AtlasConfig
 from atlas.core.crs import require_crs
-from atlas.core.exceptions import InvalidParameter, UnsupportedFormat
+from atlas.core.exceptions import InvalidFilter, InvalidParameter, UnsupportedFormat
 from atlas.core.logging import OperationLog
+from atlas.core.predicates import Group, Predicate, PredicateModel, validate_predicate
 from atlas.core.types import BBox
 from atlas.layers.permissions import check_permission
 from atlas.postgis.queries import fetch_render_geometries
 from atlas.rendering.base import MapRenderer, RenderLayer
 from atlas.rendering.pillow import PillowRenderer
 from atlas.styles.models import Color, Style, default_style
+
+
+def validate_layer_filters(value: Any, config: AtlasConfig | None = None) -> dict[str, Predicate]:
+    limits = config or AtlasConfig(database_url="unused")
+
+    def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in result:
+                raise InvalidFilter("duplicate layer filter key")
+            result[key] = item
+        return result
+
+    try:
+        if isinstance(value, str):
+            if len(value.encode("utf-8")) > limits.filter_max_bytes:
+                raise InvalidFilter("layer filters exceed byte limit")
+            value = json.loads(value, object_pairs_hook=unique)
+        if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+            raise InvalidFilter("layer filters must be an object")
+        encoded = json.dumps(
+            value,
+            default=lambda v: v.model_dump() if isinstance(v, PredicateModel) else v,
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        if len(encoded.encode("utf-8")) > limits.filter_max_bytes:
+            raise InvalidFilter("layer filters exceed byte limit")
+        if not value:
+            return {}
+        # The synthetic AND accounts for aggregate budgets without consuming a user node.
+        group = validate_predicate(
+            {"op": "and", "args": list(value.values())},
+            max_depth=limits.filter_max_depth + 1,
+            max_nodes=limits.filter_max_nodes + 1,
+            max_bytes=limits.filter_max_bytes + 32,
+            max_coordinates=limits.filter_max_coordinates,
+            max_in_values=limits.filter_max_in_values,
+        )
+        assert isinstance(group, Group)
+        return dict(zip(value, group.args, strict=True))
+    except (ValueError, TypeError, RecursionError) as exc:
+        raise InvalidFilter("invalid layer filters") from exc
 
 
 class GetMapParams(BaseModel):
@@ -30,6 +76,12 @@ class GetMapParams(BaseModel):
     styles: list[str] = Field(default_factory=list)
     transparent: bool = False
     bgcolor: Color = "#FFFFFF"
+    atlas_filters: dict[str, Predicate] = Field(default_factory=dict)
+
+    @field_validator("atlas_filters", mode="before")
+    @classmethod
+    def layer_filters(cls, value: Any, info: ValidationInfo) -> dict[str, Predicate]:
+        return validate_layer_filters(value, (info.context or {}).get("config"))
 
     @model_validator(mode="before")
     @classmethod
@@ -74,6 +126,8 @@ class GetMapParams(BaseModel):
             raise ValueError("layers must be nonempty and unique")
         if self.bbox[0] >= self.bbox[2] or self.bbox[1] >= self.bbox[3]:
             raise ValueError("bbox must contain ordered bounds")
+        if not set(self.atlas_filters).issubset(self.layers):
+            raise InvalidFilter("filter layers must belong to LAYERS")
         if any(self.styles):
             raise ValueError("named WMS styles are not supported")
         return self
@@ -92,6 +146,9 @@ async def get_map(
     styles: dict[str, Style] | None = None,
 ) -> Response:
     params.validate_size(ctx.config.max_image_size)
+    validate_layer_filters(params.atlas_filters, ctx.config)
+    if params.atlas_filters:
+        raise InvalidParameter("filtered GetMap is not implemented yet")
     layers = [ctx.registry.require_service(name, "wms") for name in params.layers]
     for layer in layers:
         await check_permission(ctx.permission_checker, layer, "view", principal)
