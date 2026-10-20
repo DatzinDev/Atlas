@@ -1,12 +1,22 @@
 """Compile validated predicates using catalog identifiers and bound literals."""
 
+import json
 from decimal import InvalidOperation
 from typing import Any
 
 from psycopg import sql
 
+from atlas.core.crs import require_crs
 from atlas.core.exceptions import InvalidFilter
-from atlas.core.predicates import Comparison, Group, Membership, Negation, NullCheck, Predicate
+from atlas.core.predicates import (
+    Comparison,
+    Group,
+    Membership,
+    Negation,
+    NullCheck,
+    Predicate,
+    SpatialPredicate,
+)
 from atlas.postgis.introspection import TableInfo
 from atlas.postgis.queries import attribute_predicate
 from atlas.postgis.values import cast_attribute_value
@@ -32,6 +42,24 @@ def _typed_value(value: Any, data_type: str) -> Any:
         raise InvalidFilter("invalid attribute value") from exc
 
 
+def _spatial_predicate(
+    predicate: SpatialPredicate, info: TableInfo
+) -> tuple[sql.Composed, list[Any]]:
+    require_crs(predicate.srid)
+    functions = {"within": sql.SQL("ST_Within"), "intersects": sql.SQL("ST_Intersects")}
+    if predicate.op not in functions:
+        raise InvalidFilter("unknown spatial operator")
+    polygon: sql.Composable = sql.SQL("ST_SetSRID(ST_GeomFromGeoJSON(%s), %s)")
+    values: list[Any] = [json.dumps(predicate.geometry, allow_nan=False), predicate.srid]
+    if predicate.srid != info.srid:
+        polygon = sql.SQL("ST_Transform({}, %s)").format(polygon)
+        values.append(info.srid)
+    column = sql.Identifier(info.geometry_column)
+    return sql.SQL("({} && {} AND {}({}, {}))").format(
+        column, polygon, functions[predicate.op], column, polygon
+    ), [*values, *values]
+
+
 def compile_predicate(
     predicate: Predicate | None, info: TableInfo
 ) -> tuple[sql.Composed, list[Any]]:
@@ -55,6 +83,8 @@ def compile_predicate(
             raise InvalidFilter("invalid negation")
         fragment, values = compile_predicate(predicate.arg, info)
         return sql.SQL("(NOT {})").format(fragment), values
+    if isinstance(predicate, SpatialPredicate):
+        return _spatial_predicate(predicate, info)
     if not isinstance(predicate, (Comparison, Membership, NullCheck)):
         raise InvalidFilter("invalid attribute predicate")
     columns = {c.name: c for c in info.columns if c.name != info.geometry_column}
