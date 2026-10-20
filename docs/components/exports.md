@@ -53,6 +53,10 @@ def download_filename(layer: Layer, exporter: Exporter) -> str
 - Las filas reciben geometría como objeto GeoJSON bajo `layer.geometry_column`; la metadata
   indica el SRID de salida y los atributos seleccionados. GeoJSON usa `default=str` para fechas
   y Decimal; CSV escribe BOM UTF-8 y permite WKT, centroide o ninguna geometría.
+- CSV antepone una comilla simple a texto/cabeceras que pueden interpretarse como fórmulas
+  (también tras espacios), incluidos prefijos de control y variantes Unicode. No altera números
+  tipados, NULL ni las fuentes. Este escape cambia el texto exportado; para intercambio exacto
+  usar GeoJSON/GPKG. No garantiza seguridad si otra aplicación elimina el escape al regrabar.
 - Los exportadores no consultan la base de datos: reciben un `AsyncIterator[dict]` ya construido
   por `postgis/`.
 

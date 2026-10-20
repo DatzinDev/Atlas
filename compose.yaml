@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-atlas}
       POSTGRES_DB: ${POSTGRES_DB:-atlas}
     ports:
-      - "${POSTGRES_PORT:-5433}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
     volumes:
       - ./scripts/seed.sql:/docker-entrypoint-initdb.d/10-seed.sql:ro
       - atlas-postgis-data:/var/lib/postgresql/data

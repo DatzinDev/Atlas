@@ -1,9 +1,12 @@
 name: Publish to PyPI
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing protected tag matching the version and current main commit (vX.Y.Z)
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -13,41 +16,44 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  ci:
-    if: github.ref == 'refs/heads/main'
-    uses: ./.github/workflows/ci.yml
-
-  build:
-    needs: ci
+  release-guard:
+    if: github.repository == 'DatzinDev/Atlas' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
-      - name: Build and validate distributions
-        run: |
-          python -m pip install build twine
-          python -m build
-          python -m twine check --strict dist/*
-      - uses: actions/upload-artifact@v4
-        with:
-          name: python-distributions
-          path: dist/*
-          if-no-files-found: error
+      - name: Validate release identity
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: python .github/scripts/validate_release.py
+
+  ci:
+    needs: release-guard
+    uses: ./.github/workflows/ci.yml
 
   publish:
-    needs: build
+    needs: ci
+    if: github.repository == 'DatzinDev/Atlas' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment:
       name: pypi
       url: https://pypi.org/p/atlas-geo
     permissions:
+      contents: read
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: python-distributions
           path: dist/
-      - name: Publish distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Publish distributions to PyPI using OIDC
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          attestations: true

@@ -1,0 +1,6 @@
+# Avisar al mantenedor sobre cambios en la cadena de suministro y permisos.
+/.github/ @zamax14
+/pyproject.toml @zamax14
+/SECURITY.md @zamax14
+/src/atlas/layers/permissions.py @zamax14
+/src/atlas/postgis/ @zamax14

@@ -16,3 +16,14 @@ htmlcov/
 /tmp/
 .idea/
 .vscode/
+
+# Credenciales y configuración local; conservar solo la plantilla pública.
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+.pypirc
+pip.conf
+credentials.json

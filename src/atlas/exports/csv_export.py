@@ -14,6 +14,16 @@ if TYPE_CHECKING:
     from atlas.layers.models import Layer
 
 
+def _safe_cell(value: Any) -> Any:
+    """Keep untrusted text from being interpreted as a spreadsheet formula."""
+    if isinstance(value, str) and (
+        value.startswith(("\t", "\r", "\n"))
+        or value.lstrip().startswith(("=", "+", "-", "@", "＝", "＋", "－", "＠"))
+    ):
+        return "'" + value
+    return value
+
+
 class CSVExporter:
     format: ClassVar[str] = "csv"
     media_type: ClassVar[str] = "text/csv"
@@ -40,7 +50,7 @@ class CSVExporter:
         )
         buffer = StringIO(newline="")
         writer = csv.writer(buffer)
-        writer.writerow([*names, *extra])
+        writer.writerow([_safe_cell(name) for name in [*names, *extra]])
         yield codecs.BOM_UTF8 + buffer.getvalue().encode("utf-8")
         async for row in rows:
             buffer.seek(0)
@@ -56,5 +66,5 @@ class CSVExporter:
                     values.extend([center.x, center.y])
                 else:
                     values.extend([None, None])
-            writer.writerow(values)
+            writer.writerow([_safe_cell(value) for value in values])
             yield buffer.getvalue().encode("utf-8")

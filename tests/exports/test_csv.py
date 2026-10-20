@@ -70,3 +70,42 @@ async def test_one_row_at_a_time(layer):
     await stream.aclose()
     with pytest.raises(ValueError):
         CSVExporter("bad")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "=1+1",
+        "+SUM(1,1)",
+        "-1+2",
+        "@SUM(1,1)",
+        "  =1+1",
+        "\t=1+1",
+        "\r=1+1",
+        "\n=1+1",
+        "＝1+1",
+        "＋1+1",
+        "－1+1",
+        "＠SUM(1,1)",
+        '=HYPERLINK("https://example.invalid","click"),extra',
+    ],
+)
+async def test_csv_neutralizes_formulas_in_values_and_headers(layer, value):
+    layer.attributes[1] = ColumnInfo(name=value, data_type="text", nullable=True)
+
+    async def rows():
+        yield {"id": -42, value: value}
+
+    body = b"".join([chunk async for chunk in CSVExporter("none").export(rows(), layer)])
+    parsed = list(csv.reader(StringIO(body.decode("utf-8-sig"), newline="")))
+    assert parsed == [["id", "'" + value], ["-42", "'" + value]]
+
+
+async def test_csv_keeps_ordinary_text_numbers_and_nulls(layer):
+    async def rows():
+        for value in ["text = harmless", "123", "'already text", None, -1.5]:
+            yield {"id": -1, "name": value}
+
+    body = b"".join([chunk async for chunk in CSVExporter("none").export(rows(), layer)])
+    parsed = list(csv.reader(StringIO(body.decode("utf-8-sig"))))
+    assert [row[1] for row in parsed[1:]] == ["text = harmless", "123", "'already text", "", "-1.5"]
