@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from atlas.core.config import AtlasConfig
 from atlas.core.exceptions import InvalidFilter
-from atlas.core.predicates import Comparison, validate_predicate
+from atlas.core.predicates import Comparison, parse_predicate, validate_predicate
 
 
 def validate(value, **limits):
@@ -171,3 +171,70 @@ def test_spatial_budgets_before_native_validation(monkeypatch):
     for name in ("filter_max_bytes", "filter_max_coordinates"):
         with pytest.raises(ValidationError):
             AtlasConfig(database_url="test", **{name: 0})
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",
+        "{",
+        "[]",
+        '"sql"',
+        '{"op":"eq","op":"ne","field":"x","value":1}',
+        '{"op":"and","args":[{"op":"eq","field":"x","value":1,"value":2}]}',
+        '{"op":"eq","field":"x","value":NaN}',
+        '{"op":"eq","field":"x","value":Infinity}',
+        '{"op":"eq","field":"x","value":1e999}',
+        "[" * 2000 + "]" * 2000,
+    ],
+)
+def test_json_parser_rejects_invalid_and_ambiguous_json(raw):
+    with pytest.raises(InvalidFilter):
+        parse_predicate(raw, AtlasConfig(database_url="test"))
+
+
+def test_parser_checks_utf8_bytes_before_json(monkeypatch):
+    import json
+
+    config = AtlasConfig(database_url="test", filter_max_bytes=4)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("JSON decoder must not run for oversized input")
+
+    monkeypatch.setattr(json, "loads", unexpected)
+    for raw in (" " * 5, "á" * 3):
+        with pytest.raises(InvalidFilter):
+            parse_predicate(raw, config)
+
+
+def test_parser_uses_config_for_every_budget():
+    import json
+
+    config = AtlasConfig(database_url="test")
+    raw = {"op": "eq", "field": "nombre", "value": "Jaliscó"}
+    assert parse_predicate(json.dumps(raw, ensure_ascii=False), config).model_dump() == raw
+    assert parse_predicate(None, config) is None and parse_predicate("null", config) is None
+    group = json.dumps({"op": "not", "arg": raw})
+    for limits in ({"filter_max_depth": 1}, {"filter_max_nodes": 1}):
+        with pytest.raises(InvalidFilter):
+            parse_predicate(group, config.model_copy(update=limits))
+    with pytest.raises(InvalidFilter):
+        parse_predicate(
+            json.dumps(spatial()), config.model_copy(update={"filter_max_coordinates": 4})
+        )
+    assert parse_predicate('{"op":"in","field":"x","value":[1,2]}', config)
+    with pytest.raises(InvalidFilter):
+        parse_predicate(
+            '{"op":"in","field":"x","value":[1,2]}',
+            config.model_copy(update={"filter_max_in_values": 1}),
+        )
+    assert config.filter_max_in_values == 1000
+    with pytest.raises(ValidationError):
+        AtlasConfig(database_url="test", filter_max_in_values=0)
+    assert validate_predicate(
+        {"op": "in", "field": "x", "value": [0] * 1000}, max_depth=1, max_nodes=1
+    )
+    with pytest.raises(InvalidFilter):
+        validate_predicate(
+            {"op": "in", "field": "x", "value": [0] * 1001}, max_depth=1, max_nodes=1
+        )
