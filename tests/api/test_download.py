@@ -1,7 +1,10 @@
 """Full filtered downloads, projection, access control and cursor cleanup on disconnect."""
 
 import csv
+import json
 from io import StringIO
+from unittest.mock import AsyncMock, Mock, patch
+from urllib.parse import urlencode
 
 import pytest
 from psycopg import sql
@@ -108,7 +111,15 @@ async def test_cursor_closed_on_early_exit_and_before_headers(atlas, monkeypatch
     route = next(
         r for r in build_router(atlas.context).routes if r.path == "/layers/{name}/download"
     )
-    request = Request({"type": "http", "query_string": b"", "headers": []})
+    request = Request(
+        {
+            "type": "http",
+            "query_string": urlencode(
+                {"ATLAS_FILTER": '{"op":"gte","field":"id","value":1}'}
+            ).encode(),
+            "headers": [],
+        }
+    )
     response = await route.endpoint("municipios", request, None)
     assert len(consumed) == 1
     await anext(response.body_iterator)
@@ -150,7 +161,15 @@ async def test_geopackage_download_and_header_disconnect_cleanup(
     route = next(
         r for r in build_router(atlas.context).routes if r.path == "/layers/{name}/download"
     )
-    request = Request({"type": "http", "query_string": b"format=gpkg", "headers": []})
+    request = Request(
+        {
+            "type": "http",
+            "query_string": urlencode(
+                {"format": "gpkg", "ATLAS_FILTER": '{"op":"gte","field":"id","value":1}'}
+            ).encode(),
+            "headers": [],
+        }
+    )
     response = await route.endpoint("escuelas", request, None)
     assert list(scratch.iterdir())
 
@@ -185,7 +204,15 @@ async def test_shapefile_download_warning_limits_and_cleanup(client, atlas, monk
     route = next(
         r for r in build_router(atlas.context).routes if r.path == "/layers/{name}/download"
     )
-    request = Request({"type": "http", "query_string": b"format=shp", "headers": []})
+    request = Request(
+        {
+            "type": "http",
+            "query_string": urlencode(
+                {"format": "shp", "ATLAS_FILTER": '{"op":"gte","field":"id","value":1}'}
+            ).encode(),
+            "headers": [],
+        }
+    )
     response = await route.endpoint("municipios", request, None)
     await anext(response.body_iterator)
     assert list(tmp_path.iterdir())
@@ -195,3 +222,75 @@ async def test_shapefile_download_warning_limits_and_cleanup(client, atlas, monk
     response = await client.get("/atlas/layers/municipios/download?format=shp")
     assert response.status_code == 413 and response.json()["error"]["code"] == "query_too_large"
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("format", ["geojson", "csv"])
+async def test_structured_download_is_complete_and_matches_cap_count(client, atlas, format):
+    atlas.context.config = atlas.context.config.model_copy(
+        update={"default_limit": 1, "max_limit": 1, "max_download_features": 2}
+    )
+    params = {
+        "format": format,
+        "ATLAS_FILTER": json.dumps({"op": "in", "field": "id", "value": [1, 2, 4]}),
+        "id__gte": "2",
+        "bbox": "-104,19,-100,23",
+        "properties": "nombre",
+        "count": "1",
+    }
+    db = atlas.context.db
+    with (
+        patch.object(db, "fetch_one", wraps=db.fetch_one) as count,
+        patch.object(db, "stream", wraps=db.stream) as stream,
+    ):
+        response = await client.get("/atlas/layers/escuelas/download", params=params)
+    assert response.status_code == 200, response.text
+    assert count.call_args.args[1] == stream.call_args.args[1][1:-2]
+    if format == "geojson":
+        features = response.json()["features"]
+        ids = [f["id"] for f in features]
+        assert set(features[0]["properties"]) == {"id", "nombre"}
+    else:
+        ids = [int(r["id"]) for r in csv.DictReader(StringIO(response.content.decode("utf-8-sig")))]
+    assert ids == [2, 4]
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"atlas_filter": "{"},
+        {"atlas_filter": '{"op":"eq","field":"missing","value":1}'},
+        {"atlas_filter": '{"op":"eq","field":"id","value":"1"}'},
+        {"ATLAS_FILTER": "null", "atlas_filter": "null"},
+        {"CQL_FILTER": ""},
+        {"FILTER": ""},
+        {"ATLAS_FILTERS": "null"},
+    ],
+)
+async def test_invalid_structured_download_never_queries(client, atlas, monkeypatch, params):
+    monkeypatch.setattr(
+        atlas.context.db, "fetch_one", AsyncMock(side_effect=AssertionError("unexpected SQL"))
+    )
+    monkeypatch.setattr(
+        atlas.context.db, "stream", Mock(side_effect=AssertionError("unexpected cursor"))
+    )
+    response = await client.get("/atlas/layers/escuelas/download", params=params)
+    assert response.status_code == 400
+
+
+async def test_filtered_download_cap_and_denial_do_not_start_export(client, atlas, monkeypatch):
+    params = {"format": "gpkg", "atlas_filter": '{"op":"lte","field":"id","value":2}'}
+    atlas.context.config = atlas.context.config.model_copy(update={"max_download_features": 1})
+    monkeypatch.setattr(
+        atlas.context.db, "stream", Mock(side_effect=AssertionError("unexpected cursor"))
+    )
+    monkeypatch.setattr(
+        "atlas.exports.geopackage.TemporaryDirectory",
+        Mock(side_effect=AssertionError("unexpected temporary file")),
+    )
+    response = await client.get("/atlas/layers/escuelas/download", params=params)
+    assert response.status_code == 413
+    atlas.context.permission_checker = lambda *args: False
+    monkeypatch.setattr(
+        atlas.context.db, "fetch_one", AsyncMock(side_effect=AssertionError("unexpected SQL"))
+    )
+    assert (await client.get("/atlas/layers/escuelas/download", params=params)).status_code == 403
