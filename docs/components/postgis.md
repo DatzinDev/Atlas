@@ -154,3 +154,18 @@ compile_predicate añade el keyword legacy_values=False. Solo el adaptador legac
 activa tras revalidar filtros: conserva casteo, fechas, Decimal exacto y tipos heredados.
 El modo normal sigue rechazando coerción de texto a número/bool y tipos no soportados.
 Ningún modo cambia whitelist, operadores permitidos, Identifier ni placeholders.
+
+## Consulta MVT nativa (#128)
+
+`build_mvt_query(info, tile, *, layer_name, properties=None, predicate=None,
+extent=4096, buffer=64, candidate_limit)` devuelve SQL/valores y una fila count/tile.
+Cuenta hasta cap+1 en un CTE materializado; con exceso no agrega un tile parcial.
+El bbox expandido se transforma al SRID nativo y conserva la columna indexable;
+solo los candidatos se proyectan a 3857. El encoder recibe bounds sin expandir.
+Las propiedades por defecto son texto, booleanos, enteros, floats finitos, numeric
+exacto como texto y fechas/timestamps como texto ISO PostgreSQL. No se inventa zona.
+NULL y floats no finitos se omiten. JSON/arrays/binarios/UUID se excluyen por defecto
+y se rechazan si se solicitan; la geometría nunca es propiedad. PK entera en
+0..2**53-1 puede ser ID; otras PK portables se conservan como atributo sin ID hash.
+PostGIS cuantiza/recorta: puede omitir polígonos pequeños o colapsar dimensiones.
+Un tile vacío es b""; no equivale a una descarga completa. Decoder solo en dev (ADR 0006).
