@@ -37,6 +37,7 @@ packages = ["src/atlas"]
 include = [
     "/src/atlas",
     "/tests",
+    "/benchmarks",
     "/scripts/seed.sql",
     "/.github/scripts/validate_release.py",
     "/pyproject.toml",
