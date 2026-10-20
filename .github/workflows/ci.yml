@@ -70,7 +70,9 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install
-        run: python -m pip install -e ".[dev,export]" build twine pip-audit==2.10.1
+        run: |
+          python -m pip install --upgrade pip "setuptools>=83.0.0"
+          python -m pip install -e ".[dev,export]" build twine pip-audit==2.10.1
 
       - name: Seed
         run: psql "$ATLAS_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/seed.sql
