@@ -123,8 +123,27 @@ Lo importan: `layers`, `wfs`, `wms`, `exports`.
 `requirements.md` §13.1 (seguridad), §19 (introspección), §20 (CRS), §21 (bbox), §22 (rendimiento),
 §24 (streaming). ADR 0001.
 
-## Contrato de predicados propuesto, aún no implementado
+## Predicados compartidos de atributos (#112)
 
-[ADR 0005](../adr/0005-shared-query-predicates.md) fija compile_predicate(TableInfo,
-Predicate), validación, SQL parametrizado y selección espacial exacta tras prefiltrado GIST.
-Los helpers existentes conservan firmas; el compilador no recibe Layer ni interpreta HTTP.
+`compile_predicate(predicate: Predicate | None, info: TableInfo)` devuelve `(sql.Composed, list)`.
+Recibe el árbol previamente validado por `core.validate_predicate`; None devuelve SQL vacío sin WHERE.
+Compone AND/OR/NOT con paréntesis, comparaciones, IN, LIKE/ILIKE y NULL explícito.
+Valida columnas no geométricas y tipos: enteros/números JSON finitos, bool estricto, texto/fechas ISO.
+No convierte texto a número ni 0/1 a bool; el adaptador legacy conserva su casteo previo.
+Tipos no soportados se rechazan; NULL conserva la lógica SQL de tres valores incluso con NOT.
+Identificadores usan Identifier y valores placeholders; comparte casteo con WFS mediante values.py.
+Los helpers existentes conservan firmas; no recibe Layer ni interpreta HTTP.
+SpatialPredicate (#116) usa la geometría registrada de TableInfo y acepta within/intersects.
+Combina `geom && polígono` con ST_Within/ST_Intersects exacto. Transforma el polígono al SRID
+nativo en PostGIS; la columna queda desnuda. Los parámetros incluyen GeoJSON y SRID ligados.
+El SRID de entrada se valida con el registro core (CRS desconocido → UnsupportedCRS 400);
+el SRID nativo proviene de introspección, también para capas UTM. La salida se reproyecta aparte.
+Se conservan huecos y bordes: WITHIN excluye puntos del borde, INTERSECTS los incluye.
+EXPLAIN con seqscan deshabilitado verifica elegibilidad GIST, no una garantía de plan o latencia.
+
+## Conversión compartida de atributos (#159)
+
+`postgis.values.cast_attribute_value(value, data_type)` conserva el casteo legacy de WFS:
+enteros con ancho PostgreSQL, flotantes/decimales finitos, booleanos, fechas ISO y texto.
+Devuelve el escalar tipado o lanza ValueError/InvalidOperation/OverflowError; el adaptador
+traduce esos fallos a InvalidFilter. No valida columnas ni construye SQL.

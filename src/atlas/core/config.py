@@ -6,6 +6,9 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
+FILTER_MAX_BYTES = 65536
+FILTER_MAX_COORDINATES = 10000
+
 DatabaseURL = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
@@ -30,6 +33,8 @@ class AtlasConfig(BaseModel):
     pool_min_size: int = Field(default=1, gt=0)
     pool_max_size: int = Field(default=10, gt=0)
     query_timeout: float = Field(default=30.0, gt=0)
+    filter_max_bytes: int = Field(default=FILTER_MAX_BYTES, gt=0)
+    filter_max_coordinates: int = Field(default=FILTER_MAX_COORDINATES, gt=0)
     filter_max_depth: int = Field(default=8, gt=0)
     filter_max_nodes: int = Field(default=100, gt=0)
     max_image_size: int = Field(default=4096, gt=0)
