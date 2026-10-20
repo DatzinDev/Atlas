@@ -100,5 +100,6 @@ se acotan por petición y la profundidad por árbol mediante `AtlasConfig`.
 El modelo Python expone `atlas_filters`; los servicios vuelven a comprobar los límites
 configurados. GetMap compila cada filtro con la metadata de su capa y lo combina con el bbox mediante AND.
 Todos los permisos y columnas se comprueban antes de la primera consulta.
-GetFeatureInfo todavía rechaza filtros no vacíos; `{}` conserva el comportamiento anterior.
+GetFeatureInfo reutiliza el mismo compilador por `QUERY_LAYERS` y combina el filtro
+con la intersección exacta de la ventana del clic. `{}` conserva el comportamiento anterior.
 No existe caché en la base integrada: cada solicitud ejecuta su filtro de forma independiente. CQL y ATLAS_FILTER siguen rechazados.

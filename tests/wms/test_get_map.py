@@ -157,48 +157,6 @@ def test_layer_filter_validation_and_aggregate_limits():
         )
 
 
-async def test_layer_filters_intermediate_rejection(client, atlas, monkeypatch):
-    import json
-
-    from tests.wms.test_router import MAP
-
-    from atlas.wms.feature_info import FeatureInfoParams, get_feature_info
-
-    leaf = {"op": "eq", "field": "id", "value": 1}
-    fetch = Mock(side_effect=AssertionError("must not query"))
-    monkeypatch.setattr(atlas.context.db, "fetch_all", fetch)
-    for operation in ("GetFeatureInfo",):
-        response = await client.get(
-            "/atlas/wms",
-            params=MAP
-            | dict(
-                REQUEST=operation,
-                QUERY_LAYERS="municipios",
-                I=0,
-                J=0,
-                ATLAS_FILTERS=json.dumps({"municipios": leaf}),
-            ),
-        )
-        assert response.status_code == 400
-        assert "not implemented" in response.text
-    with pytest.raises(InvalidParameter):
-        await get_feature_info(
-            atlas.context,
-            FeatureInfoParams(
-                layers=["municipios"],
-                query_layers=["municipios"],
-                bbox=(0, 0, 1, 1),
-                crs=3857,
-                width=10,
-                height=10,
-                i=0,
-                j=0,
-                atlas_filters={"municipios": leaf},
-            ),
-        )
-    fetch.assert_not_called()
-
-
 async def test_shared_filters_two_layers_match_wfs_and_do_not_leak(client, atlas):
     import json
 

@@ -6,10 +6,11 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import Field, field_validator, model_validator
 
 from atlas.context import AtlasContext
-from atlas.core.exceptions import InvalidParameter, UnsupportedFormat
+from atlas.core.exceptions import UnsupportedFormat
 from atlas.core.logging import OperationLog
 from atlas.layers.permissions import check_permission
 from atlas.postgis.geometry import to_geojson_feature
+from atlas.postgis.predicates import compile_predicate
 from atlas.postgis.queries import build_feature_query, intersects_bbox_predicate
 from atlas.wms.get_map import GetMapParams, validate_layer_filters
 
@@ -55,23 +56,25 @@ async def get_feature_info(
 ) -> dict[str, Any]:
     params.validate_size(ctx.config.max_image_size)
     validate_layer_filters(params.atlas_filters, ctx.config)
-    if params.atlas_filters:
-        raise InvalidParameter("filtered GetFeatureInfo is not implemented yet")
     layers = [ctx.registry.require_service(name, "wms") for name in params.query_layers]
     for layer in layers:
         await check_permission(ctx.permission_checker, layer, "query", principal)
+    compiled = [
+        compile_predicate(params.atlas_filters.get(layer.name), layer.table_info)
+        for layer in layers
+    ]
     minx, miny, maxx, maxy = params.bbox
     pixel_x, pixel_y = (maxx - minx) / params.width, (maxy - miny) / params.height
     x, y = minx + (params.i + 0.5) * pixel_x, maxy - (params.j + 0.5) * pixel_y
     dx, dy = params.tolerance_pixels * pixel_x, params.tolerance_pixels * pixel_y
     bbox = (x - dx, y - dy, x + dx, y + dy)
     features = []
-    for layer in layers:
+    for layer, (selection, selection_values) in zip(layers, compiled, strict=True):
         predicate, values = intersects_bbox_predicate(layer.table_info, bbox, params.crs)
         query, values = build_feature_query(
             layer.table_info,
-            where=[predicate],
-            params=values,
+            where=[predicate, selection] if layer.name in params.atlas_filters else [predicate],
+            params=[*values, *selection_values],
             geometry_as="geojson" if params.include_geometry else "none",
             target_srid=4326,
             limit=ctx.config.resolve_limit(params.feature_count),
