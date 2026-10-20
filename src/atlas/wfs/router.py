@@ -26,6 +26,7 @@ from atlas.wfs.capabilities import capabilities_xml
 from atlas.wfs.describe import describe_feature_type
 from atlas.wfs.filters import RESERVED_PARAMS, parse_filters
 from atlas.wfs.get_feature import get_feature, parse_property_names, parse_sort_by
+from atlas.wfs.hits import get_hits, hits_xml
 from atlas.wfs.pagination import resolve_pagination
 
 
@@ -121,17 +122,47 @@ def build_router(ctx: AtlasContext) -> APIRouter:
                 return JSONResponse(
                     describe_feature_type(layer, params.get("outputformat", "application/json"))
                 )
+            result_type = params.get("resulttype", "results")
+            if result_type not in ("results", "hits"):
+                raise InvalidParameter("resultType must be results or hits")
             output_format = params.get("outputformat", params.get("format", "application/geo+json"))
-            if output_format not in ("application/json", "application/geo+json"):
+            if result_type == "results" and output_format not in (
+                "application/json",
+                "application/geo+json",
+            ):
                 raise UnsupportedFormat("GetFeature supports GeoJSON only")
-            if params.get("resulttype", "results") != "results":
-                raise InvalidParameter("resultType=hits is not supported")
+            if result_type == "hits" and params.get(
+                "outputformat", params.get("format", "application/xml")
+            ) not in ("application/xml", "text/xml", "application/gml+xml; version=3.2"):
+                raise UnsupportedFormat("hits supports an XML FeatureCollection only")
             if {"cql_filter", "filter", "atlas_filters"} & params.keys():
                 raise InvalidFilter("unsupported filter encoding; use ATLAS_FILTER JSON")
+            bbox, bbox_srid = parse_bbox(params["bbox"]) if "bbox" in params else (None, None)
+            filters = parse_filters(
+                {k: v for k, v in params.items() if k not in {"sortby", "atlas_filter"}}, layer
+            )
+            predicate = parse_predicate(params.get("atlas_filter"), ctx.config)
+            if result_type == "hits":
+                matched = await get_hits(
+                    ctx,
+                    type_names=name,
+                    filters=filters,
+                    predicate=predicate,
+                    bbox=bbox,
+                    bbox_srid=bbox_srid,
+                    principal=principal,
+                )
+                next_url = None
+                if matched:
+                    first = {**params, "resulttype": "results", "startindex": "0"}
+                    for key in ("offset", "count", "limit", "outputformat", "format"):
+                        first.pop(key, None)
+                    next_url = str(request.url.replace_query_params(**first))
+                report.feature_count = 0
+                return Response(hits_xml(matched, next_url), media_type="application/xml")
             geometry = params.get("geometry", "true").lower()
             if geometry not in ("true", "false", "1", "0"):
                 raise InvalidParameter("geometry must be true or false")
-            bbox, bbox_srid = parse_bbox(params["bbox"]) if "bbox" in params else (None, None)
             page = resolve_pagination(
                 ctx.config,
                 _integer(params.get("count")),
@@ -145,10 +176,8 @@ def build_router(ctx: AtlasContext) -> APIRouter:
                 bbox=bbox,
                 bbox_srid=bbox_srid,
                 output_srid=parse_crs(params.get("srsname", str(ctx.config.default_srid))),
-                filters=parse_filters(
-                    {k: v for k, v in params.items() if k not in {"sortby", "atlas_filter"}}, layer
-                ),
-                predicate=parse_predicate(params.get("atlas_filter"), ctx.config),
+                filters=filters,
+                predicate=predicate,
                 order_by=parse_sort_by(params.get("sortby"), layer),
                 property_names=parse_property_names(
                     params.get("propertyname"), layer, allow_geometry=True

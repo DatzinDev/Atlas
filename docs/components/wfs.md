@@ -60,7 +60,8 @@ def capabilities_xml(layers: list[Layer], base_url: str) -> str
   tienen prioridad los de WFS. Los límites no positivos y offsets negativos son `InvalidFilter`.
 - Se responde con `PermissionDenied` si el checker rechaza la operación `query`, y con
   `ServiceDisabled` si `layer.services.wfs` es `False`.
-- La salida es `application/geo+json` en streaming; no se construye la lista completa en memoria.
+- Results usa `application/geo+json` en streaming; hits usa el contenedor XML vacío descrito abajo.
+  No se construye la lista completa de features en memoria.
 - GET y POST form-encoded comparten validación; no se admite XML. Los parámetros OGC son
   case-insensitive, los nombres de atributos conservan el caso de PostgreSQL. Parámetros
   duplicados se rechazan para evitar interpretaciones ambiguas. Solo se consulta una capa por vez.
@@ -136,4 +137,17 @@ CQL_FILTER, FILTER XML y ATLAS_FILTERS se rechazan explícitamente, incluso vac�
 El nuevo filtro es una extensión Atlas: no se anuncia como FES/CQL ni cambia el formato GeoJSON.
 La API Python get_feature(predicate=...) recibe un Predicate previamente validado con
 parse_predicate/validate_predicate; el transporte HTTP lo valida una vez, sin repetir GEOS al compilar.
-Descargas y WMS se integrarán en sus issues propios; sus rutas no aceptan aún este parámetro.
+Descargas también aceptan ATLAS_FILTER (#126); WMS se integrará en sus issues propios.
+
+## Conteo sin features (#127)
+
+`get_hits(ctx, *, type_names, predicate=None, filters=None, bbox=None, bbox_srid=None, principal=None)`
+devuelve int. Requiere servicio WFS y permiso query antes de contar; comparte compile_query_filters
+con get_feature para combinar atributos legacy, predicado y bbox sin duplicar el plan.
+`resultType=hits` por GET/POST form devuelve application/xml: FeatureCollection vacío del namespace
+WFS 2.0 con numberMatched exacto, numberReturned=0 y timeStamp UTC. No abre cursor de features ni
+serializa/reproyecta geometría de salida. COUNT/STARTINDEX y propiedades no limitan el conteo.
+Para coincidencias, next apunta a la primera página results con paginación/formato por defecto.
+outputFormat explícito acepta application/xml, text/xml y application/gml+xml; version=3.2;
+JSON explícito es UnsupportedFormat. No implementa features GML ni nuevas clases de conformidad.
+Referencia: [WFS 2.0, §7.6.3.6](https://docs.ogc.org/is/09-025r2/09-025r2.html#_resulttype_parameter).

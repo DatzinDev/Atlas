@@ -9,9 +9,10 @@ from pydantic import BaseModel
 
 from atlas.core.exceptions import InvalidFilter
 from atlas.core.predicates import Comparison, Group, Membership, Predicate, Scalar
+from atlas.core.types import BBox
 from atlas.layers.models import Layer
 from atlas.postgis.predicates import compile_predicate
-from atlas.postgis.queries import FILTER_OPERATORS
+from atlas.postgis.queries import FILTER_OPERATORS, bbox_predicate
 from atlas.postgis.values import cast_attribute_value
 
 OPERATORS = FILTER_OPERATORS
@@ -110,3 +111,23 @@ def compile_filters(filters: list[Filter], layer: Layer) -> tuple[list[sql.Compo
         Group(op="and", args=children), layer.table_info, legacy_values=True
     )
     return [fragment], values
+
+
+def compile_query_filters(
+    layer: Layer,
+    *,
+    bbox_srid: int,
+    filters: list[Filter] | None = None,
+    predicate: Predicate | None = None,
+    bbox: BBox | None = None,
+) -> tuple[list[sql.Composed], list[Any]]:
+    where, params = compile_filters(filters or [], layer)
+    if predicate is not None:
+        fragment, values = compile_predicate(predicate, layer.table_info)
+        where.append(fragment)
+        params.extend(values)
+    if bbox is not None:
+        fragment, values = bbox_predicate(layer.table_info, bbox, bbox_srid)
+        where.append(fragment)
+        params.extend(values)
+    return where, params

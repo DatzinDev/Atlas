@@ -78,3 +78,13 @@ Lo importan: `api`.
 
 `requirements.md` §15 (descarga de datos), §15.1 (formatos), §15.2 (descargas filtradas),
 §24 (streaming).
+
+## Descargas con predicados compartidos (#126)
+
+`GET /layers/{name}/download` admite ATLAS_FILTER JSON (nombre case-insensitive), con el parser
+acotado de core y el compilador común. Se combina con AND con filtros legacy y bbox.
+El conteo del cap y el cursor usan el mismo WHERE y parámetros; default_limit/max_limit de WFS
+no limitan la descarga. max_download_features conserva el rechazo 413 por exceso.
+Se mantienen propiedades, geometría, permisos download y limpieza de cursores/temporales.
+Duplicados de ATLAS_FILTER, CQL_FILTER, FILTER y ATLAS_FILTERS se rechazan explícitamente.
+No se añaden formatos ni cambia el CRS de salida EPSG:4326.

@@ -10,10 +10,18 @@ from starlette.types import Receive, Scope, Send
 
 from atlas.api.routing import AtlasRoute
 from atlas.context import AtlasContext
-from atlas.core.exceptions import InvalidParameter, LayerNotFound, PermissionDenied, QueryTooLarge
+from atlas.core.exceptions import (
+    InvalidFilter,
+    InvalidParameter,
+    LayerNotFound,
+    PermissionDenied,
+    QueryTooLarge,
+)
+from atlas.core.predicates import parse_predicate
 from atlas.exports.base import download_filename, get_exporter
 from atlas.exports.csv_export import CSVExporter
 from atlas.layers.permissions import check_permission
+from atlas.postgis.predicates import compile_predicate
 from atlas.postgis.queries import bbox_predicate, build_feature_query, count_query, parse_bbox
 from atlas.wfs.filters import compile_filters, parse_filters
 from atlas.wfs.get_feature import parse_property_names
@@ -62,9 +70,18 @@ def build_router(ctx: AtlasContext) -> APIRouter:
         if not layer.downloadable:
             raise PermissionDenied("the layer is not downloadable", name=name)
         await check_permission(ctx.permission_checker, layer, "download", principal)
-        params = dict(request.query_params)
-        if len(params) != len(request.query_params.multi_items()):
-            raise InvalidParameter("duplicate download parameter")
+        params: dict[str, str] = {}
+        for key, value in request.query_params.multi_items():
+            key = (
+                key.lower()
+                if key.lower() in {"atlas_filter", "atlas_filters", "filter", "cql_filter"}
+                else key
+            )
+            if key in params:
+                raise InvalidParameter("duplicate download parameter")
+            params[key] = value
+        if {"atlas_filters", "filter", "cql_filter"} & params.keys():
+            raise InvalidFilter("unsupported filter encoding; use ATLAS_FILTER JSON")
         exporter = get_exporter(params.get("format", "geojson"))
         if exporter.format == "csv":
             try:
@@ -74,7 +91,12 @@ def build_router(ctx: AtlasContext) -> APIRouter:
             except ValueError as exc:
                 raise InvalidParameter("invalid CSV geometry mode") from exc
         columns = parse_property_names(params.pop("properties", None), layer)
+        selection = parse_predicate(params.pop("atlas_filter", None), ctx.config)
         where, values = compile_filters(parse_filters(params, layer), layer)
+        if selection is not None:
+            predicate, bound = compile_predicate(selection, layer.table_info)
+            where.append(predicate)
+            values.extend(bound)
         if "bbox" in params:
             bbox, srid = parse_bbox(params["bbox"])
             predicate, coordinates = bbox_predicate(
