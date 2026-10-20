@@ -172,3 +172,35 @@ async def test_executor_timeout_and_cancellation_release_pool(
         assert await db.fetch_one(sql.SQL("SELECT 1 AS alive").format()) == {"alive": 1}
     finally:
         await db.close()
+
+
+async def test_world_edges_and_global_local_crs(db, escuelas_layer):
+    async with db.connection() as conn:
+        await conn.execute(
+            sql.SQL("""CREATE VIEW geo.mvt_edges AS
+            SELECT id, ST_SetSRID(ST_Point(lon,0),4326)::geometry(Point,4326) AS geom
+            FROM (VALUES (1,179.0),(2,-179.0)) AS p(id,lon)""")
+        )
+    try:
+        info = await inspect_table(db, "geo", "mvt_edges")
+        for tile, expected in [
+            (TileCoord(z=0, x=0, y=0), {1, 2}),
+            (TileCoord(z=6, x=63, y=31), {1}),
+            (TileCoord(z=6, x=0, y=31), {2}),
+        ]:
+            query, values = build_mvt_query(info, tile, layer_name="test", candidate_limit=10)
+            row = await db.fetch_one(query, values)
+            features = mapbox_vector_tile.decode(bytes(row["tile"]))["test"]["features"]
+            assert {f["properties"]["id"] for f in features} == expected
+        query, values = build_mvt_query(
+            escuelas_layer.table_info,
+            TileCoord(z=0, x=0, y=0),
+            layer_name="test",
+            candidate_limit=10,
+        )
+        row = await db.fetch_one(query, values)
+        assert row["count"] == 5
+        assert len(mapbox_vector_tile.decode(bytes(row["tile"]))["test"]["features"]) == 5
+    finally:
+        async with db.connection() as conn:
+            await conn.execute(sql.SQL("DROP VIEW geo.mvt_edges"))

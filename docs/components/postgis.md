@@ -179,3 +179,11 @@ Candidatos cap+1 o bytes excesivos producen QueryTooLarge (413), sin payload par
 El tamaño se mide en SQL; el blob excesivo no cruza la conexión. La agregación puede
 consumir memoria de PostgreSQL antes del control: estos límites no garantizan RSS.
 Timeout/cancelación conservan la liberación de conexión del gestor existente.
+
+## Bordes mundiales (#177)
+
+El bbox con buffer se acota al mundo 3857 antes de proyectarse: evita que longitudes
+fuera de ±180° se envuelvan y excluyan features válidas. El tile mundial z0 en CRS
+locales no usa bbox redundante (su dominio no cubre el mundo); conserva selección,
+exclusión NULL/EMPTY y cap+1. Esa petición puede recorrer más filas: se recomienda
+consultar tiles regionales para capas grandes. No se añaden duplicados por wrap.

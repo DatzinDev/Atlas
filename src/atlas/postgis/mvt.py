@@ -7,6 +7,7 @@ from psycopg import sql
 
 from atlas.core.exceptions import DatabaseError, InvalidParameter, QueryTooLarge
 from atlas.core.predicates import Predicate
+from atlas.core.tiles import WEB_MERCATOR_HALF_WORLD as H
 from atlas.core.tiles import TileCoord, tile_bounds
 from atlas.postgis.connection import Database
 from atlas.postgis.introspection import TableInfo
@@ -81,8 +82,18 @@ def build_mvt_query(
     else:
         feature_id = None
     margin = (bounds[2] - bounds[0]) * buffer / extent
-    expanded = (bounds[0] - margin, bounds[1] - margin, bounds[2] + margin, bounds[3] + margin)
-    spatial, spatial_values = bbox_predicate(info, expanded, 3857)
+    # Transforming longitudes beyond the world wraps the candidate envelope at ±180°.
+    expanded = (
+        max(-H, bounds[0] - margin),
+        max(-H, bounds[1] - margin),
+        min(H, bounds[2] + margin),
+        min(H, bounds[3] + margin),
+    )
+    spatial_values: list[Any] = []
+    spatial = sql.SQL("TRUE").format()
+    # A global envelope has no useful local-CRS bbox and can exceed its projection domain.
+    if tile.z != 0 or info.srid in (4326, 3857):
+        spatial, spatial_values = bbox_predicate(info, expanded, 3857)
     selection, selection_values = compile_predicate(predicate, info)
     where = [spatial, sql.SQL("{} IS NOT NULL AND NOT ST_IsEmpty({})").format(geom, geom)]
     if predicate is not None:
