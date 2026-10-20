@@ -84,3 +84,87 @@ async def test_tolerance_changes_with_zoom_and_pixel_aspect(atlas, monkeypatch):
     assert first == pytest.approx((-102.795, 21.195, -102.695, 21.295))
     assert second[2] - second[0] == pytest.approx(0.04)
     assert second[3] - second[1] == pytest.approx(0.02)
+
+
+async def test_shared_selection_excludes_hidden_map_features(client, atlas, monkeypatch):
+    import json
+    from unittest.mock import Mock
+
+    from tests.wms.test_router import MAP
+
+    for selected, expected in ((1, [1]), (2, []), (1, [1])):
+        response = await client.get(
+            "/atlas/wms",
+            params=MAP
+            | dict(
+                REQUEST="GetFeatureInfo",
+                QUERY_LAYERS="municipios",
+                I=25,
+                J=25,
+                ATLAS_FILTERS=json.dumps(
+                    {"municipios": {"op": "eq", "field": "id", "value": selected}}
+                ),
+            ),
+        )
+        assert response.status_code == 200
+        assert [f["id"] for f in response.json()["features"]] == expected
+    leaf = {"op": "eq", "field": "id", "value": 1}
+    data = await get_feature_info(
+        atlas.context,
+        params(
+            layers=["municipios", "escuelas"],
+            query_layers=["municipios", "escuelas"],
+            width=2,
+            height=2,
+            i=0,
+            j=0,
+            feature_count=10,
+            atlas_filters={"municipios": leaf, "escuelas": dict(leaf, value=2)},
+        ),
+    )
+    assert {(f["layer"], f["id"]) for f in data["features"]} == {("municipios", 1), ("escuelas", 2)}
+    assert all(f["geometry"] is None for f in data["features"])
+    fetch = Mock(side_effect=AssertionError("denied request queried"))
+    monkeypatch.setattr(atlas.context.db, "fetch_all", fetch)
+    atlas.context.permission_checker = lambda *args: False
+    with pytest.raises(PermissionDenied):
+        await get_feature_info(atlas.context, params(atlas_filters={"municipios": leaf}))
+    fetch.assert_not_called()
+
+
+async def test_filtered_click_preserves_polygon_holes_and_wfs_parity(atlas, client):
+    import json
+
+    selection = {
+        "op": "intersects",
+        "srid": 4326,
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [
+                [[-104, 20], [-101, 20], [-101, 22], [-104, 22], [-104, 20]],
+                [[-103.1, 20.9], [-103.1, 21.6], [-102.4, 21.6], [-102.4, 20.9], [-103.1, 20.9]],
+            ],
+        },
+    }
+    data = await get_feature_info(
+        atlas.context,
+        params(
+            bbox=(20, -104, 22, -101),
+            width=1,
+            height=1,
+            i=0,
+            j=0,
+            feature_count=10,
+            include_geometry=True,
+            atlas_filters={"municipios": selection},
+        ),
+    )
+    wfs = await client.get(
+        "/atlas/wfs",
+        params=dict(
+            REQUEST="GetFeature", TYPENAMES="municipios", ATLAS_FILTER=json.dumps(selection)
+        ),
+    )
+    assert {f["id"] for f in data["features"]} == {f["id"] for f in wfs.json()["features"]}
+    assert 1 not in {f["id"] for f in data["features"]}
+    assert all(f["geometry"] for f in data["features"])

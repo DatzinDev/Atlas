@@ -133,7 +133,7 @@ async def test_custom_prefix_principal_and_proxy(atlas, database_url):
 @pytest.mark.parametrize("operation", ["GetMap", "GetFeatureInfo"])
 @pytest.mark.parametrize(
     "name",
-    ["CQL_FILTER", "TIME", "ENV", "SLD", "SLD_BODY", "FILTER", "ATLAS_FILTER", "ATLAS_FILTERS"],
+    ["CQL_FILTER", "TIME", "ENV", "SLD", "SLD_BODY", "FILTER", "ATLAS_FILTER"],
 )
 @pytest.mark.parametrize("value", ["", "unsupported"])
 async def test_unsupported_content_fails_before_pipeline(

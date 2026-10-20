@@ -88,6 +88,18 @@ Lo importan: `api` (para `/maps/export`), `integration`.
 
 Antes se ignoraban nombres de estilos y parámetros de contenido. GetMap/GetFeatureInfo
 ahora rechazan con InvalidParameter (400) CQL_FILTER, TIME, ENV, SLD, SLD_BODY, FILTER,
-ATLAS_FILTER y ATLAS_FILTERS, incluso vacíos y sin distinguir mayúsculas. No pasan al
+ATLAS_FILTER, incluso vacíos y sin distinguir mayúsculas. No pasan al
 pipeline de datos/render/caché. Los parámetros de transporte inocuos siguen tolerándose;
 TILED no activa un caché ni se interpreta como filtro. No se anuncian capacidades nuevas.
+
+## Filtros compartidos por capa (#125)
+
+`ATLAS_FILTERS` acepta un objeto JSON `{nombre_capa: predicado}` con el contrato
+compartido del ADR 0005. Las claves pertenecen a `LAYERS`; bytes, nodos y coordenadas
+se acotan por petición y la profundidad por árbol mediante `AtlasConfig`.
+El modelo Python expone `atlas_filters`; los servicios vuelven a comprobar los límites
+configurados. GetMap compila cada filtro con la metadata de su capa y lo combina con el bbox mediante AND.
+Todos los permisos y columnas se comprueban antes de la primera consulta.
+GetFeatureInfo reutiliza el mismo compilador por `QUERY_LAYERS` y combina el filtro
+con la intersección exacta de la ventana del clic. `{}` conserva el comportamiento anterior.
+No existe caché en la base integrada: cada solicitud ejecuta su filtro de forma independiente. CQL y ATLAS_FILTER siguen rechazados.

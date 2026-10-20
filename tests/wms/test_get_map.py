@@ -127,3 +127,88 @@ async def test_limits_and_permissions_before_query(atlas, monkeypatch):
     with pytest.raises(PermissionDenied):
         await get_map(atlas.context, params())
     fetch.assert_not_called()
+
+
+def test_layer_filter_validation_and_aggregate_limits():
+    from atlas.core.config import AtlasConfig
+    from atlas.core.exceptions import InvalidFilter
+    from atlas.wms.get_map import validate_layer_filters
+
+    leaf = {"op": "eq", "field": "id", "value": 1}
+    assert params(atlas_filters={"municipios": leaf}).atlas_filters["municipios"].value == 1
+    for value in (
+        "",
+        "null",
+        "[]",
+        '{"a":{},"a":{}}',
+        '{"a":{"op":"eq","field":"id","value":NaN}}',
+    ):
+        with pytest.raises(InvalidFilter):
+            validate_layer_filters(value)
+    with pytest.raises(InvalidFilter):
+        params(atlas_filters={"other": leaf})
+    config = AtlasConfig(database_url="unused", filter_max_nodes=1)
+    with pytest.raises(InvalidFilter):
+        validate_layer_filters({"a": leaf, "b": leaf}, config)
+    assert len(validate_layer_filters({"a": leaf}, config)) == 1
+    with pytest.raises(InvalidFilter):
+        validate_layer_filters(
+            {"a": {"op": "not", "arg": leaf}}, config.model_copy(update={"filter_max_depth": 1})
+        )
+
+
+async def test_shared_filters_two_layers_match_wfs_and_do_not_leak(client, atlas):
+    import json
+
+    from shapely.geometry import shape
+    from tests.wms.test_router import MAP
+
+    renderer = Mock()
+    renderer.render.return_value = b"image"
+    atlas.context.renderer = renderer
+    a = {"op": "in", "field": "id", "value": [1, 3]}
+    b = {"op": "eq", "field": "id", "value": 2}
+    for first in (a, b, a):
+        filters = {"municipios": first, "escuelas": b}
+        response = await client.get(
+            "/atlas/wms",
+            params=MAP | dict(LAYERS="municipios,escuelas", ATLAS_FILTERS=json.dumps(filters)),
+        )
+        assert response.status_code == 200
+        rendered = renderer.render.call_args.args[0]
+        for index, name in enumerate(filters):
+            wfs = await client.get(
+                "/atlas/wfs",
+                params=dict(
+                    REQUEST="GetFeature", TYPENAMES=name, ATLAS_FILTER=json.dumps(filters[name])
+                ),
+            )
+            expected = [shape(f["geometry"]) for f in wfs.json()["features"]]
+            assert len(rendered[index].geometries) == len(expected)
+            assert all(
+                actual.equals_exact(wanted, 1e-8)
+                for actual, wanted in zip(rendered[index].geometries, expected, strict=True)
+            )
+
+
+async def test_filtered_map_rejects_all_invalid_columns_before_any_query(
+    client, atlas, monkeypatch
+):
+    import json
+
+    from tests.wms.test_router import MAP
+
+    fetch = Mock(side_effect=AssertionError("must not query"))
+    monkeypatch.setattr(atlas.context.db, "fetch_all", fetch)
+    response = await client.get(
+        "/atlas/wms",
+        params=MAP
+        | dict(
+            LAYERS="municipios,escuelas",
+            ATLAS_FILTERS=json.dumps(
+                {"escuelas": {"op": "eq", "field": "id; DROP TABLE geo.escuelas", "value": 1}}
+            ),
+        ),
+    )
+    assert response.status_code == 400
+    fetch.assert_not_called()
