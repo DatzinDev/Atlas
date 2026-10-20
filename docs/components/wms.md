@@ -62,7 +62,8 @@ def capabilities_xml(layers: list[Layer], base_url: str, *, title: str = "Atlas 
   construir el modelo. `CRS:84` conserva ejes longitud/latitud.
 - `GetMap` comprueba permisos de todas las capas antes de consultar, usa los límites de features
   por capa de `AtlasConfig` y ejecuta el renderer en un thread para no bloquear el event loop.
-  Los nombres de `STYLES` se aceptan sin sustituir el estilo configurado en la capa.
+  `STYLES` omitido/vacío o con vacíos por capa usa el estilo registrado; nombres no vacíos
+  se rechazan antes de consultar/renderizar. Los overrides tipados de `/maps/export` no cambian.
 - `wms/` no dibuja nada por sí mismo: llama a `MapRenderer.render()`.
 - Se comprueba el permiso `view` para `GetMap` y `query` para `GetFeatureInfo`, por capa.
 
@@ -82,3 +83,11 @@ Lo importan: `api` (para `/maps/export`), `integration`.
 
 `requirements.md` §9 (RF-WMS-01..03), §10 (renderizado), §11 (estilos), §16 (exportación de mapas),
 §20 (CRS). ADR 0002, ADR 0003.
+
+## Compatibilidad — corrección #102
+
+Antes se ignoraban nombres de estilos y parámetros de contenido. GetMap/GetFeatureInfo
+ahora rechazan con InvalidParameter (400) CQL_FILTER, TIME, ENV, SLD, SLD_BODY, FILTER,
+ATLAS_FILTER y ATLAS_FILTERS, incluso vacíos y sin distinguir mayúsculas. No pasan al
+pipeline de datos/render/caché. Los parámetros de transporte inocuos siguen tolerándose;
+TILED no activa un caché ni se interpreta como filtro. No se anuncian capacidades nuevas.

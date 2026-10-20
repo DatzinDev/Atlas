@@ -1,6 +1,7 @@
 """HTTP WMS dispatch, host integration, error boundaries, permissions and operation reports."""
 
 from io import BytesIO
+from unittest.mock import AsyncMock
 from xml.etree import ElementTree as ET
 
 import pytest
@@ -127,3 +128,44 @@ async def test_custom_prefix_principal_and_proxy(atlas, database_url):
         response = await client.get("/proxy/geo/wms?request=GetCapabilities")
     assert response.status_code == 200 and "https://host/proxy/geo/wms" in response.text
     assert seen == ["reader"] * 3
+
+
+@pytest.mark.parametrize("operation", ["GetMap", "GetFeatureInfo"])
+@pytest.mark.parametrize(
+    "name",
+    ["CQL_FILTER", "TIME", "ENV", "SLD", "SLD_BODY", "FILTER", "ATLAS_FILTER", "ATLAS_FILTERS"],
+)
+@pytest.mark.parametrize("value", ["", "unsupported"])
+async def test_unsupported_content_fails_before_pipeline(
+    client, monkeypatch, operation, name, value
+):
+    service = AsyncMock(
+        side_effect=AssertionError("content reached the data/render/cache pipeline")
+    )
+    target = "get_map" if operation == "GetMap" else "get_feature_info"
+    monkeypatch.setattr(f"atlas.wms.router.{target}", service)
+    params = MAP | dict(REQUEST=operation, QUERY_LAYERS="municipios", I="0", J="0")
+    response = await client.get("/atlas/wms", params=params | {name.swapcase(): value})
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_parameter"
+    service.assert_not_awaited()
+
+
+@pytest.mark.parametrize("operation", ["GetMap", "GetFeatureInfo"])
+async def test_named_style_fails_before_pipeline(client, monkeypatch, operation):
+    service = AsyncMock(side_effect=AssertionError("named style reached the pipeline"))
+    target = "get_map" if operation == "GetMap" else "get_feature_info"
+    monkeypatch.setattr(f"atlas.wms.router.{target}", service)
+    response = await client.get("/atlas/wms", params=MAP | dict(REQUEST=operation, STYLES="named"))
+    assert response.status_code == 400
+    service.assert_not_awaited()
+
+
+@pytest.mark.parametrize("styles", ["", ","])
+async def test_default_styles_and_transport_parameters(client, styles):
+    response = await client.get(
+        "/atlas/wms",
+        params=MAP | dict(LAYERS="municipios,carreteras", STYLES=styles, TILED="true", _="123"),
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"

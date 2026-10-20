@@ -26,6 +26,16 @@ MAP_FIELDS = {
     "transparent",
     "bgcolor",
 }
+UNSUPPORTED_CONTENT = {
+    "cql_filter",
+    "time",
+    "env",
+    "sld",
+    "sld_body",
+    "filter",
+    "atlas_filter",
+    "atlas_filters",
+}
 INFO_FIELDS = MAP_FIELDS | {
     "query_layers",
     "i",
@@ -74,6 +84,8 @@ def build_router(ctx: AtlasContext) -> APIRouter:
                 )
             if operation not in ("GetMap", "GetFeatureInfo"):
                 raise InvalidParameter("unknown or missing REQUEST", parameter="request")
+            for name in sorted(UNSUPPORTED_CONTENT.intersection(params)):
+                raise InvalidParameter("unsupported WMS content parameter", parameter=name)
             try:
                 if operation == "GetMap":
                     map_params = GetMapParams.model_validate(

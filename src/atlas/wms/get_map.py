@@ -74,6 +74,8 @@ class GetMapParams(BaseModel):
             raise ValueError("layers must be nonempty and unique")
         if self.bbox[0] >= self.bbox[2] or self.bbox[1] >= self.bbox[3]:
             raise ValueError("bbox must contain ordered bounds")
+        if any(self.styles):
+            raise ValueError("named WMS styles are not supported")
         return self
 
     def validate_size(self, maximum: int) -> None:
