@@ -1,11 +1,15 @@
 """Filter casting and hostile input must not change SQL structure."""
 
-from datetime import date
+from datetime import date, datetime
+from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
+from psycopg import sql
 
 from atlas.core.exceptions import InvalidFilter
 from atlas.postgis.introspection import ColumnInfo
+from atlas.postgis.predicates import compile_predicate
 from atlas.postgis.queries import build_feature_query
 from atlas.wfs.filters import Filter, compile_filters, parse_filters
 
@@ -67,3 +71,67 @@ async def test_hostile_values_are_parameters(db, municipios_layer):
 async def test_scalar_types(municipios_layer, kind, value, expected):
     municipios_layer.attributes = [ColumnInfo(name="value", data_type=kind, nullable=True)]
     assert parse_filters({"value": value}, municipios_layer)[0].value == expected
+
+
+@pytest.mark.parametrize(
+    "kind,value,expected",
+    [
+        (
+            "numeric",
+            "12345678901234567890.12345678901234567890",
+            Decimal("12345678901234567890.12345678901234567890"),
+        ),
+        ("date", "2026-01-02", date(2026, 1, 2)),
+        (
+            "timestamptz",
+            "2026-01-02T03:04:05+00:00",
+            datetime.fromisoformat("2026-01-02T03:04:05+00:00"),
+        ),
+        ("bool", "false", False),
+        ("int4", "123", 123),
+        ("uuid", "123e4567-e89b-12d3-a456-426614174000", "123e4567-e89b-12d3-a456-426614174000"),
+    ],
+)
+async def test_shared_compiler_preserves_legacy_typed_values(
+    db, municipios_layer, kind, value, expected
+):
+    column = ColumnInfo(name="MixedCase", data_type=kind, nullable=True)
+    municipios_layer.attributes = [column]
+    with patch("atlas.wfs.filters.compile_predicate", wraps=compile_predicate) as shared:
+        where, params = compile_filters(
+            parse_filters({"MixedCase": value}, municipios_layer), municipios_layer
+        )
+    assert params == [expected] and type(params[0]) is type(expected)
+    assert '"MixedCase"' in where[0].as_string()
+    assert shared.call_args.kwargs == {"legacy_values": True}
+    query = sql.SQL("WITH t AS (SELECT %s::{} AS {}) SELECT {} AS matched FROM t").format(
+        sql.SQL(kind), sql.Identifier("MixedCase"), where[0]
+    )
+    assert await db.fetch_one(query, [expected, *params]) == {"matched": True}
+
+
+async def test_legacy_group_and_empty_contract(municipios_layer):
+    assert compile_filters([], municipios_layer) == ([], [])
+    filters = parse_filters(
+        {"poblacion__gt": "100000", "nombre__like": "%Villa%"}, municipios_layer
+    )
+    where, values = compile_filters(filters, municipios_layer)
+    assert len(where) == 1 and " AND " in where[0].as_string()
+    assert values == [100000, "%Villa%"]
+    with pytest.raises(InvalidFilter):
+        compile_filters([Filter(column="nombre", operator="union", value="x")], municipios_layer)
+
+
+async def test_legacy_numeric_in_preserves_decimal_precision(municipios_layer):
+    municipios_layer.attributes = [ColumnInfo(name="value", data_type="numeric", nullable=True)]
+    _, params = compile_filters(
+        parse_filters({"value__in": "0.1234567890123456789,2"}, municipios_layer), municipios_layer
+    )
+    assert params == [Decimal("0.1234567890123456789"), Decimal(2)]
+
+
+async def test_legacy_does_not_add_predicate_tree_limits(municipios_layer):
+    where, params = compile_filters(
+        [Filter(column="id", operator="gte", value=0)] * 101, municipios_layer
+    )
+    assert len(where) == 1 and params == [0] * 101

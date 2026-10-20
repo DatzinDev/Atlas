@@ -31,7 +31,7 @@ def compile_filters(filters: list[Filter], layer: Layer) -> tuple[list[sql.Compo
 # wfs/get_feature.py
 async def get_feature(ctx, *, type_names: str, bbox: BBox | None = None, bbox_srid: int | None = None,
                       output_srid: int = 4326, filters: list[Filter] | None = None,
-                      order_by: list[tuple[str, Literal["ASC", "DESC"]]] | None = None,
+                      predicate: Predicate | None = None,
                       order_by: list[tuple[str, Literal["ASC", "DESC"]]] | None = None,
                       property_names: list[str] | None = None, include_geometry: bool = True,
                       count: int | None = None, start_index: int = 0, principal=None,
@@ -53,7 +53,7 @@ def capabilities_xml(layers: list[Layer], base_url: str) -> str
   `InvalidFilter` 400, nunca un error 500 de PostgreSQL.
 - `LIKE` recibe el patrón del usuario tal cual como parámetro; no se concatena `%` en el SQL.
 - `compile_filters` revalida filtros creados por código y delega la composición SQL en
-  `postgis.attribute_predicate`. `IN` usa una lista no vacía; los enteros respetan su ancho PostgreSQL.
+  `postgis.compile_predicate` mediante un AND común. `IN` usa una lista no vacía; los enteros respetan su ancho PostgreSQL.
 - El número de features devueltos es `min(count solicitado, config.max_limit)` y por defecto
   `config.default_limit` (§23). Nunca ilimitado.
 - `resolve_pagination` admite `count`/`limit` y `start_index`/`offset`; si se envían ambos nombres,
@@ -98,7 +98,7 @@ Lo importan: `api` (reutiliza `filters`), `integration`.
 - `Transaction` / WFS-T, `LockFeature`, stored queries (§32).
 - Filter Encoding XML (`<fes:Filter>`) — los filtros son parámetros de query (ADR 0003).
 - GML como formato de salida.
-- Operadores espaciales más allá de `bbox`.
+- Operadores espaciales adicionales a bbox, within e intersects.
 
 ## Referencias
 
@@ -114,3 +114,26 @@ Se rechazan columnas desconocidas/geométricas, criterios duplicados y expresion
 El orden se aplica antes de COUNT/STARTINDEX y la PK desempata automáticamente si no se solicitó.
 Las vistas sin PK requieren identidad única del host para garantizar páginas estables; modificaciones
 entre peticiones no comparten snapshot. No se anuncia FES SortBy XML.
+
+## Adaptador de filtros existentes (#118)
+
+Filter, parse_filters y compile_filters conservan firmas e imports. compile_filters devuelve
+([], []) para ausencia y una lista con el AND compilado para filtros presentes; el número de
+fragmentos no representa el número de filtros. Revalida columnas, operadores y valores antes
+de delegar en postgis. El modo legacy_values conserva Decimal exacto, fechas y tipos heredados;
+no convierte Decimal a float ni añade límites nuevos a la API legacy. La entrada JSON futura
+usa el modo estricto por defecto. No se añaden parámetros HTTP en este cambio.
+
+## Filtro estructurado propio de Atlas (#121)
+
+GET y POST form aceptan ATLAS_FILTER (nombre case-insensitive) con JSON del ADR 0005.
+Ejemplo: `{"op":"or","args":[{"op":"gte","field":"poblacion","value":100000},
+{"op":"is_null","field":"poblacion"}]}`. Se combina con AND con filtros legacy y bbox;
+COUNT y página comparten el mismo WHERE y parámetros. Los límites de página siguen vigentes.
+El parser valida bytes antes de JSON, claves duplicadas, tipos y presupuestos de AtlasConfig.
+El compilador rechaza columnas o CRS inválidos antes de consultar; la autorización query precede SQL.
+CQL_FILTER, FILTER XML y ATLAS_FILTERS se rechazan explícitamente, incluso vacíos.
+El nuevo filtro es una extensión Atlas: no se anuncia como FES/CQL ni cambia el formato GeoJSON.
+La API Python get_feature(predicate=...) recibe un Predicate previamente validado con
+parse_predicate/validate_predicate; el transporte HTTP lo valida una vez, sin repetir GEOS al compilar.
+Descargas y WMS se integrarán en sus issues propios; sus rutas no aceptan aún este parámetro.

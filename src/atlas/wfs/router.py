@@ -19,6 +19,7 @@ from atlas.core.exceptions import (
     error_response,
 )
 from atlas.core.logging import OperationLog, log_operation
+from atlas.core.predicates import parse_predicate
 from atlas.layers.permissions import check_permission, visible_layers
 from atlas.postgis.queries import parse_bbox
 from atlas.wfs.capabilities import capabilities_xml
@@ -65,6 +66,7 @@ def _integer(value: str | None) -> int | None:
 def build_router(ctx: AtlasContext) -> APIRouter:
     router = APIRouter(route_class=AtlasRoute)
     dependency = ctx.principal_dependency or (lambda: None)
+    reserved = RESERVED_PARAMS | {"sortby", "atlas_filter", "atlas_filters", "cql_filter", "filter"}
 
     @router.get("/wfs")
     @router.post("/wfs")
@@ -82,7 +84,7 @@ def build_router(ctx: AtlasContext) -> APIRouter:
                 raise InvalidParameter("form must be UTF-8 encoded") from exc
         params: dict[str, str] = {}
         for key, value in pairs:
-            key = key.lower() if key.lower() in RESERVED_PARAMS | {"sortby"} else key
+            key = key.lower() if key.lower() in reserved else key
             if key in params:
                 raise InvalidParameter("duplicate request parameter", parameter=key)
             params[key] = value
@@ -124,6 +126,8 @@ def build_router(ctx: AtlasContext) -> APIRouter:
                 raise UnsupportedFormat("GetFeature supports GeoJSON only")
             if params.get("resulttype", "results") != "results":
                 raise InvalidParameter("resultType=hits is not supported")
+            if {"cql_filter", "filter", "atlas_filters"} & params.keys():
+                raise InvalidFilter("unsupported filter encoding; use ATLAS_FILTER JSON")
             geometry = params.get("geometry", "true").lower()
             if geometry not in ("true", "false", "1", "0"):
                 raise InvalidParameter("geometry must be true or false")
@@ -141,7 +145,10 @@ def build_router(ctx: AtlasContext) -> APIRouter:
                 bbox=bbox,
                 bbox_srid=bbox_srid,
                 output_srid=parse_crs(params.get("srsname", str(ctx.config.default_srid))),
-                filters=parse_filters({k: v for k, v in params.items() if k != "sortby"}, layer),
+                filters=parse_filters(
+                    {k: v for k, v in params.items() if k not in {"sortby", "atlas_filter"}}, layer
+                ),
+                predicate=parse_predicate(params.get("atlas_filter"), ctx.config),
                 order_by=parse_sort_by(params.get("sortby"), layer),
                 property_names=parse_property_names(
                     params.get("propertyname"), layer, allow_geometry=True

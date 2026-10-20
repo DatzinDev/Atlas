@@ -8,8 +8,10 @@ from psycopg import sql
 from pydantic import BaseModel
 
 from atlas.core.exceptions import InvalidFilter
+from atlas.core.predicates import Comparison, Group, Membership, Predicate, Scalar
 from atlas.layers.models import Layer
-from atlas.postgis.queries import FILTER_OPERATORS, attribute_predicate
+from atlas.postgis.predicates import compile_predicate
+from atlas.postgis.queries import FILTER_OPERATORS
 from atlas.postgis.values import cast_attribute_value
 
 OPERATORS = FILTER_OPERATORS
@@ -82,13 +84,29 @@ def parse_filters(params: Mapping[str, str], layer: Layer) -> list[Filter]:
     return filters
 
 
+def _legacy_scalar(value: Any) -> Scalar:
+    return value if isinstance(value, (str, bool, int, float)) else str(value)
+
+
 def compile_filters(filters: list[Filter], layer: Layer) -> tuple[list[sql.Composed], list[Any]]:
-    predicates, values = [], []
+    if not filters:
+        return [], []
+    children: list[Predicate] = []
     for item in filters:
         item = _validated_filter(item.column, item.operator, item.value, layer)
-        predicate, params = attribute_predicate(
-            layer.table_info, item.column, item.operator, item.value
-        )
-        predicates.append(predicate)
-        values.extend(params)
-    return predicates, values
+        if item.operator == "in":
+            children.append(
+                Membership(
+                    op="in", field=item.column, value=[_legacy_scalar(v) for v in item.value]
+                )
+            )
+        else:
+            children.append(
+                Comparison.model_validate(
+                    {"op": item.operator, "field": item.column, "value": _legacy_scalar(item.value)}
+                )
+            )
+    fragment, values = compile_predicate(
+        Group(op="and", args=children), layer.table_info, legacy_values=True
+    )
+    return [fragment], values

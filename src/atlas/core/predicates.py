@@ -10,7 +10,12 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 from shapely.errors import GEOSException  # type: ignore[import-untyped]
 from shapely.geometry import shape  # type: ignore[import-untyped]
 
-from atlas.core.config import FILTER_MAX_BYTES, FILTER_MAX_COORDINATES
+from atlas.core.config import (
+    FILTER_MAX_BYTES,
+    FILTER_MAX_COORDINATES,
+    FILTER_MAX_IN_VALUES,
+    AtlasConfig,
+)
 from atlas.core.exceptions import InvalidFilter
 
 Scalar = str | bool | int | float
@@ -110,9 +115,13 @@ def validate_predicate(
     max_nodes: int,
     max_bytes: int = FILTER_MAX_BYTES,
     max_coordinates: int = FILTER_MAX_COORDINATES,
+    max_in_values: int = FILTER_MAX_IN_VALUES,
 ) -> Predicate | None:
     """Check tree budgets iteratively before Pydantic's recursive validation."""
-    if any(type(v) is not int or v < 1 for v in (max_depth, max_nodes, max_bytes, max_coordinates)):
+    if any(
+        type(v) is not int or v < 1
+        for v in (max_depth, max_nodes, max_bytes, max_coordinates, max_in_values)
+    ):
         raise InvalidFilter("predicate limits must be positive integers")
     if value is None:
         return None
@@ -135,6 +144,10 @@ def validate_predicate(
             if nodes + len(stack) + len(children) > max_nodes:
                 raise InvalidFilter("predicate exceeds node limit")
             stack.extend((child, depth + 1) for child in children)
+        elif node.get("op") == "in":
+            values = node.get("value")
+            if not isinstance(values, list) or not 1 <= len(values) <= max_in_values:
+                raise InvalidFilter("IN requires a non-empty bounded list")
         elif node.get("op") == "not":
             stack.append((node.get("arg"), depth + 1))
         elif node.get("op") in ("within", "intersects"):
@@ -168,3 +181,38 @@ def validate_predicate(
         GEOSException,
     ) as exc:
         raise InvalidFilter("invalid predicate") from exc
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise InvalidFilter("duplicate predicate key")
+        result[key] = value
+    return result
+
+
+def _reject_constant(value: str) -> Any:
+    raise InvalidFilter("non-finite JSON number")
+
+
+def parse_predicate(value: str | None, config: AtlasConfig) -> Predicate | None:
+    """Decode bounded JSON, then validate one predicate with the configured budgets."""
+    if value is None:
+        return None
+    try:
+        if len(value.encode("utf-8")) > config.filter_max_bytes:
+            raise InvalidFilter("predicate exceeds byte limit")
+        decoded = json.loads(
+            value, object_pairs_hook=_unique_object, parse_constant=_reject_constant
+        )
+    except (ValueError, RecursionError) as exc:
+        raise InvalidFilter("invalid predicate JSON") from exc
+    return validate_predicate(
+        decoded,
+        max_depth=config.filter_max_depth,
+        max_nodes=config.filter_max_nodes,
+        max_bytes=config.filter_max_bytes,
+        max_coordinates=config.filter_max_coordinates,
+        max_in_values=config.filter_max_in_values,
+    )

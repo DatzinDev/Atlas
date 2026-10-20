@@ -13,10 +13,12 @@ from atlas.context import AtlasContext
 from atlas.core.crs import require_crs
 from atlas.core.exceptions import InvalidFilter
 from atlas.core.logging import OperationLog
+from atlas.core.predicates import Predicate
 from atlas.core.types import BBox
 from atlas.layers.models import Layer
 from atlas.layers.permissions import check_permission
 from atlas.postgis.geometry import to_geojson_feature
+from atlas.postgis.predicates import compile_predicate
 from atlas.postgis.queries import bbox_predicate, build_feature_query, count_query
 from atlas.wfs.filters import Filter, compile_filters
 from atlas.wfs.pagination import resolve_pagination
@@ -80,6 +82,7 @@ async def get_feature(
     bbox_srid: int | None = None,
     output_srid: int = 4326,
     filters: list[Filter] | None = None,
+    predicate: Predicate | None = None,
     order_by: list[tuple[str, Literal["ASC", "DESC"]]] | None = None,
     property_names: list[str] | None = None,
     include_geometry: bool = True,
@@ -101,11 +104,15 @@ async def get_feature(
     require_crs(output_srid)
     page = resolve_pagination(ctx.config, count, start_index)
     where, params = compile_filters(filters or [], layer)
+    if predicate is not None:
+        fragment, values = compile_predicate(predicate, layer.table_info)
+        where.append(fragment)
+        params.extend(values)
     if bbox is not None:
-        predicate, values = bbox_predicate(
+        fragment, values = bbox_predicate(
             layer.table_info, bbox, bbox_srid if bbox_srid is not None else ctx.config.default_srid
         )
-        where.append(predicate)
+        where.append(fragment)
         params.extend(values)
     query, values = build_feature_query(
         layer.table_info,

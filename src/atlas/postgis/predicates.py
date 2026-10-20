@@ -27,14 +27,14 @@ _NUMBER_TYPES = {"float4", "float8", "numeric", "decimal"}
 _DATE_TYPES = {"date", "timestamp", "timestamptz"}
 
 
-def _typed_value(value: Any, data_type: str) -> Any:
+def _typed_value(value: Any, data_type: str, *, legacy_values: bool) -> Any:
     valid = (
         (data_type in _TEXT_TYPES | _DATE_TYPES and type(value) is str)
         or (data_type in _INTEGER_TYPES and type(value) is int)
         or (data_type in _NUMBER_TYPES and type(value) in (int, float))
         or (data_type == "bool" and type(value) is bool)
     )
-    if not valid:
+    if not valid and not legacy_values:
         raise InvalidFilter("incompatible attribute type")
     try:
         return cast_attribute_value(value, data_type)
@@ -61,7 +61,7 @@ def _spatial_predicate(
 
 
 def compile_predicate(
-    predicate: Predicate | None, info: TableInfo
+    predicate: Predicate | None, info: TableInfo, *, legacy_values: bool = False
 ) -> tuple[sql.Composed, list[Any]]:
     """Compile a tree already checked by core.validate_predicate; None means no WHERE."""
     if predicate is None:
@@ -73,7 +73,7 @@ def compile_predicate(
         for child in predicate.args:
             if child is None:
                 raise InvalidFilter("group child cannot be absent")
-            fragment, params = compile_predicate(child, info)
+            fragment, params = compile_predicate(child, info, legacy_values=legacy_values)
             fragments.append(fragment)
             values.extend(params)
         joiner = sql.SQL(" AND " if predicate.op == "and" else " OR ")
@@ -81,7 +81,7 @@ def compile_predicate(
     if isinstance(predicate, Negation):
         if predicate.op != "not" or predicate.arg is None:
             raise InvalidFilter("invalid negation")
-        fragment, values = compile_predicate(predicate.arg, info)
+        fragment, values = compile_predicate(predicate.arg, info, legacy_values=legacy_values)
         return sql.SQL("(NOT {})").format(fragment), values
     if isinstance(predicate, SpatialPredicate):
         return _spatial_predicate(predicate, info)
@@ -102,9 +102,9 @@ def compile_predicate(
     if isinstance(predicate, Membership):
         if predicate.op != "in" or not isinstance(predicate.value, list) or not predicate.value:
             raise InvalidFilter("IN requires a non-empty list")
-        value = [_typed_value(v, kind) for v in predicate.value]
+        value = [_typed_value(v, kind, legacy_values=legacy_values) for v in predicate.value]
     else:
-        value = _typed_value(predicate.value, kind)
+        value = _typed_value(predicate.value, kind, legacy_values=legacy_values)
     if predicate.op == "ilike":
         return sql.SQL("({} ILIKE %s)").format(column), [value]
     fragment, values = attribute_predicate(info, predicate.field, predicate.op, value)
