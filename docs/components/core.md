@@ -24,6 +24,8 @@ class AtlasConfig(BaseModel):
     pool_min_size: int = 1
     pool_max_size: int = 10
     query_timeout: float = 30.0      # segundos
+    filter_max_depth: int = 8       # raíz = 1
+    filter_max_nodes: int = 100     # cada predicado cuenta una vez
     max_image_size: int = 4096       # lado máximo en píxeles de una imagen renderizada
 
     def resolve_limit(self, requested: int | None) -> int
@@ -162,3 +164,15 @@ Lo importan: todos.
 ## Referencias
 
 `requirements.md` §20 (CRS), §23 (límites), §25 (logging), §26 (errores).
+
+## Predicados de atributos (#109)
+
+`core.predicates.Predicate` es una unión discriminada por `op`, según ADR 0005:
+comparaciones `eq/ne/gt/gte/lt/lte/like/ilike` con `field/value`, `in` con lista no vacía,
+`is_null/is_not_null` con `field`, `and/or` con `args` no vacío y `not` con `arg`.
+`validate_predicate(value, *, max_depth, max_nodes)` acepta dict/modelo o None como ausencia.
+Valida profundidad y nodos de forma iterativa antes de Pydantic; errores son InvalidFilter 400.
+Los modelos rechazan campos extra y coerción; escalares admitidos son texto, bool, int y float finito.
+NULL solo se expresa con los operadores explícitos. SQL aparente sigue siendo texto literal.
+La whitelist y los tipos PostgreSQL corresponden al compilador posterior, no a core.
+Estos modelos todavía no se conectan a HTTP; límites de bytes/IN y geometrías son entregas posteriores.
