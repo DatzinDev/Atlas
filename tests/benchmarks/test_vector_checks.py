@@ -48,3 +48,23 @@ def test_corrupted_ids_and_oversized_success_fail():
         validate(httpx.Response(200, content=b""), "mvt", "point", {"encoded_ids": None}, config)
     assert validate(httpx.Response(413), "mvt", "point", {}, config) == "rejected"
     assert validate(httpx.Response(504), "mvt", "point", {}, config) == "error"
+
+
+async def test_repeated_payload_uses_digest_but_changes_are_revalidated(monkeypatch):
+    from unittest.mock import AsyncMock, Mock
+
+    spy = Mock(wraps=validate)
+    monkeypatch.setattr("benchmarks.vector_checks.validate", spy)
+    client = AsyncMock()
+    client.get.return_value = httpx.Response(200, content=b"")
+    expected = {"encoded_ids": set()}
+    config = SimpleNamespace(default_limit=1000)
+    layer = SimpleNamespace(name="point")
+    for _ in range(2):
+        assert (await request(client, "mvt", layer, GLOBAL, expected, config))[
+            "outcome"
+        ] == "complete"
+    assert spy.call_count == 1
+    client.get.return_value = httpx.Response(200, content=b"broken")
+    assert (await request(client, "mvt", layer, GLOBAL, expected, config))["outcome"] == "invalid"
+    assert spy.call_count == 2

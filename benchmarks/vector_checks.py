@@ -1,5 +1,6 @@
 """Correctness oracles and request classification, independent of timing summaries."""
 
+import hashlib
 from contextvars import ContextVar
 from io import BytesIO
 from time import perf_counter
@@ -120,7 +121,18 @@ async def request(client, protocol, layer, tile, expected, config):
         response = await client.get(path, params=params)
         elapsed = (perf_counter() - start) * 1000
         try:
-            outcome = validate(response, protocol, layer.name, expected, config, OBSERVED.get())
+            digest = hashlib.sha256(response.content).digest()
+            if (
+                protocol == "mvt"
+                and response.status_code == 200
+                and expected.get("validated_mvt_sha256") == digest
+            ):
+                outcome = "complete"
+            else:
+                outcome = validate(response, protocol, layer.name, expected, config, OBSERVED.get())
+                if protocol == "mvt" and outcome == "complete":
+                    # Repeated decoding would distort CPU and concurrent request latency.
+                    expected["validated_mvt_sha256"] = digest
         except Exception:  # Decoder/image failures are integrity failures, never fast successes.
             outcome = "invalid"
         return {
