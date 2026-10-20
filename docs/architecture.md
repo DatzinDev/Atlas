@@ -96,3 +96,9 @@ Los ADRs de consultas, MVT y ráster fijarán las nuevas dependencias antes de i
 [ADR 0005](adr/0005-shared-query-predicates.md): core define predicados; postgis
 compila con TableInfo. WFS/WMS/tiles/exports autorizan y adaptan sin importar entre sí.
 Los filtros fijos y de usuario se combinan con AND; paginación no limita mapas completos.
+
+### Tiles vectoriales (propuesta)
+
+[ADR 0006](adr/0006-native-mvt.md): tiles → core/layers/postgis; postgis → core.
+Grid compartido en core; HTTP y autorización en tiles; SQL y codificación en postgis.
+La integración monta el router y delega en get_vector_tile sin WMS, WFS ni rendering.

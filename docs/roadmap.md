@@ -48,3 +48,6 @@ aplicación web?*
 
 Contrato de consultas en revisión: [ADR 0005](adr/0005-shared-query-predicates.md).
 Su publicación no implementa los issues dependientes de consultas.
+
+Contrato MVT en revisión: [ADR 0006](adr/0006-native-mvt.md) y
+[tiles](components/tiles.md); implementación y benchmark siguen pendientes.
