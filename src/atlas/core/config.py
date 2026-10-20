@@ -39,6 +39,7 @@ class AtlasConfig(BaseModel):
     filter_max_coordinates: int = Field(default=FILTER_MAX_COORDINATES, gt=0)
     filter_max_depth: int = Field(default=8, gt=0)
     filter_max_nodes: int = Field(default=100, gt=0)
+    max_tile_zoom: int = Field(default=22, ge=0, le=30)
     max_image_size: int = Field(default=4096, gt=0)
 
     @model_validator(mode="after")
