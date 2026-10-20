@@ -1,9 +1,7 @@
 """Parse whitelisted attribute filters before their values reach PostgreSQL."""
 
-import math
 from collections.abc import Mapping
-from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import InvalidOperation
 from typing import Any
 
 from psycopg import sql
@@ -12,6 +10,7 @@ from pydantic import BaseModel
 from atlas.core.exceptions import InvalidFilter
 from atlas.layers.models import Layer
 from atlas.postgis.queries import FILTER_OPERATORS, attribute_predicate
+from atlas.postgis.values import cast_attribute_value
 
 OPERATORS = FILTER_OPERATORS
 RESERVED_PARAMS = frozenset(
@@ -42,37 +41,6 @@ class Filter(BaseModel):
     value: Any
 
 
-def _cast(value: Any, data_type: str) -> Any:
-    text = str(value)
-    if data_type in ("int2", "int4", "int8"):
-        bits = {"int2": 16, "int4": 32, "int8": 64}[data_type]
-        number = int(text)
-        if not -(2 ** (bits - 1)) <= number < 2 ** (bits - 1):
-            raise ValueError("integer out of range")
-        return number
-    if data_type in ("float4", "float8"):
-        number_float = float(text)
-        if not math.isfinite(number_float) or (
-            data_type == "float4" and abs(number_float) > 3.4028235e38
-        ):
-            raise ValueError("non-finite number")
-        return number_float
-    if data_type in ("numeric", "decimal"):
-        number_decimal = Decimal(text)
-        if not number_decimal.is_finite():
-            raise ValueError("non-finite number")
-        return number_decimal
-    if data_type == "bool":
-        if text.lower() not in ("true", "false", "1", "0"):
-            raise ValueError("invalid boolean")
-        return text.lower() in ("true", "1")
-    if data_type == "date":
-        return date.fromisoformat(text)
-    if data_type in ("timestamp", "timestamptz"):
-        return datetime.fromisoformat(text)
-    return text
-
-
 def _validated_filter(column: str, operator: str, value: Any, layer: Layer) -> Filter:
     attributes = {a.name: a for a in layer.attributes if a.name != layer.geometry_column}
     if column not in attributes:
@@ -92,11 +60,13 @@ def _validated_filter(column: str, operator: str, value: Any, layer: Layer) -> F
             if not values or any(str(v).strip() == "" for v in values):
                 raise ValueError("empty IN member")
             value = [
-                _cast(v.strip() if isinstance(v, str) else v, attributes[column].data_type)
+                cast_attribute_value(
+                    v.strip() if isinstance(v, str) else v, attributes[column].data_type
+                )
                 for v in values
             ]
         else:
-            value = _cast(value, attributes[column].data_type)
+            value = cast_attribute_value(value, attributes[column].data_type)
     except (ValueError, InvalidOperation, OverflowError) as exc:
         raise InvalidFilter("invalid attribute value", column=column) from exc
     return Filter(column=column, operator=operator, value=value)

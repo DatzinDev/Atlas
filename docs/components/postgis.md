@@ -128,3 +128,10 @@ Lo importan: `layers`, `wfs`, `wms`, `exports`.
 [ADR 0005](../adr/0005-shared-query-predicates.md) fija compile_predicate(TableInfo,
 Predicate), validación, SQL parametrizado y selección espacial exacta tras prefiltrado GIST.
 Los helpers existentes conservan firmas; el compilador no recibe Layer ni interpreta HTTP.
+
+## Conversión compartida de atributos (#159)
+
+`postgis.values.cast_attribute_value(value, data_type)` conserva el casteo legacy de WFS:
+enteros con ancho PostgreSQL, flotantes/decimales finitos, booleanos, fechas ISO y texto.
+Devuelve el escalar tipado o lanza ValueError/InvalidOperation/OverflowError; el adaptador
+traduce esos fallos a InvalidFilter. No valida columnas ni construye SQL.
