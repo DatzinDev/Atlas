@@ -116,3 +116,9 @@ Lo importan: `layers`, `wfs`, `wms`, `exports`.
 
 `requirements.md` §13.1 (seguridad), §19 (introspección), §20 (CRS), §21 (bbox), §22 (rendimiento),
 §24 (streaming). ADR 0001.
+
+## Contrato de predicados propuesto, aún no implementado
+
+[ADR 0005](../adr/0005-shared-query-predicates.md) fija compile_predicate(TableInfo,
+Predicate), validación, SQL parametrizado y selección espacial exacta tras prefiltrado GIST.
+Los helpers existentes conservan firmas; el compilador no recibe Layer ni interpreta HTTP.

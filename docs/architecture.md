@@ -90,3 +90,9 @@ El extra ráster local tendrá `RasterSource` y registro separados de `Layer` Po
 El núcleo y la importación de Atlas no cargarán Rasterio. PostGIS sigue siendo requisito.
 Las políticas de producto, OIDC, calendarios y adaptadores quedan en la aplicación.
 Los ADRs de consultas, MVT y ráster fijarán las nuevas dependencias antes de implementarlas.
+
+### Consultas compartidas (propuesta)
+
+[ADR 0005](adr/0005-shared-query-predicates.md): core define predicados; postgis
+compila con TableInfo. WFS/WMS/tiles/exports autorizan y adaptan sin importar entre sí.
+Los filtros fijos y de usuario se combinan con AND; paginación no limita mapas completos.

@@ -45,3 +45,6 @@ propio de rendering, procesamiento raster propio.
 Antes de aceptar cualquiera de estos, se aplica el principio rector del §45: *¿esta capacidad es
 necesaria para publicar, visualizar, consultar o descargar información geoespacial desde una
 aplicación web?*
+
+Contrato de consultas en revisión: [ADR 0005](adr/0005-shared-query-predicates.md).
+Su publicación no implementa los issues dependientes de consultas.
