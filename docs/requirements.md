@@ -45,7 +45,9 @@ El alcance inicial estará limitado a:
 - WFS.
 - Exportación de datos.
 
-WMTS, WCS y capacidades raster deberán tratarse como extensiones posteriores.
+El MVP vectorial se conserva. Se aprueban MVT nativo PostGIS y un extra opcional de
+GeoTIFF/COG local; sus contratos se definirán antes de implementarse. WMTS y WCS
+completos, fuentes HTTP/S3 y PostGIS Raster quedan diferidos.
 
 ---
 
@@ -271,7 +273,8 @@ La librería no deberá requerir obligatoriamente ejecutar un proceso o servidor
 
 El componente central del sistema será el registro de capas.
 
-Cada recurso geográfico publicado deberá representarse mediante una entidad `Layer`.
+Cada recurso vectorial PostGIS publicado se representa mediante `Layer`. Las futuras
+fuentes ráster tendrán un modelo y registro separados, sin simular una tabla PostGIS.
 
 ---
 
@@ -1114,14 +1117,14 @@ GetTile
 
 ---
 
-# 30. Vector Tiles — Fase posterior
+# 30. Vector Tiles — Contrato aprobado, implementación pendiente
 
 La librería podrá ofrecer tiles MVT directamente desde PostGIS.
 
 Ruta conceptual:
 
 ```text
-/tiles/{layer}/{z}/{x}/{y}.pbf
+/tiles/{name}/{z}/{x}/{y}.mvt
 ```
 
 PostGIS podrá generar los datos mediante:
@@ -1151,13 +1154,14 @@ ortofotos
 
 ---
 
-## 31.1 Backends raster posibles
+## 31.1 Alcance ráster aprobado
 
-```text
-PostGIS Raster
-GeoTIFF
-COG
-```
+Extra opcional GeoTIFF/COG local con Rasterio/GDAL y API REST opt-in de mapas,
+XYZ y metadata. No implica WCS. La instalación vectorial no requiere Rasterio;
+PostGIS sigue siendo requisito del Atlas actual, sin prometer ejecución raster-only.
+La reproyección vectorial usa ST_Transform; la ráster delega en GDAL.
+
+Backend posterior, fuera del primer soporte: PostGIS Raster.
 
 ---
 
@@ -1410,35 +1414,18 @@ Esto permitirá eventualmente construir una GUI administrativa.
 
 ---
 
-# 40. Fase 6 — Optimización
+# 40. Etapas activas — Contratos, consultas y MVT
 
-Solo cuando existan datos de uso real:
-
-```text
-caching
-WMTS
-MVT
-Redis
-tile cache
-simplificación geométrica
-rate limiting
-monitoring
-```
+El [roadmap](roadmap.md) y el índice #100 ordenan contratos, consultas compartidas,
+MVT nativo y validación reproducible. Administración no es un prerrequisito.
+No se añade infraestructura ni se elevan límites globales para simular capacidad.
 
 ---
 
-# 41. Fase 7 — Raster
+# 41. Etapas activas — Ráster opcional
 
-Solo cuando sea necesario:
-
-```text
-Rasterio
-rio-tiler
-GeoTIFF
-COG
-PostGIS Raster
-WCS
-```
+Primero contrato y extra local; después fuentes/ventanas, API y benchmarks.
+Sin rio-tiler por defecto ni promesa de WCS, PostGIS Raster o lectura remota.
 
 ---
 
@@ -1539,7 +1526,7 @@ Su propósito es cubrir las necesidades habituales de un geoportal sin incorpora
 
 Toda nueva funcionalidad deberá responder a la pregunta:
 
-> ¿Esta capacidad es necesaria para publicar, visualizar, consultar o descargar información de PostGIS desde una aplicación web?
+> ¿Es una primitiva geoespacial reutilizable para publicar, visualizar, consultar o descargar datos desde una aplicación web?
 
 Si la respuesta es no, probablemente no pertenece al núcleo del proyecto.
 
@@ -1558,3 +1545,10 @@ Geoportal
 ```
 
 antes de ampliar el proyecto hacia otras capacidades.
+
+## Frontera entre librería y aplicación
+
+Atlas no implementa OIDC, usuarios, catálogo de producto, calendarios, ENV de un
+geoportal, IDs GeoServer ni adaptadores Mapalab. El host controla autenticación,
+autorización y despliegue. Se conserva feature → develop → main. Los ejemplos
+conceptuales del MVP no anuncian las capacidades nuevas como implementadas.

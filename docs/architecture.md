@@ -80,5 +80,13 @@ GET /wfs?REQUEST=GetFeature&TYPENAMES=municipios&bbox=...&poblacion__gt=100000&l
 
 - No hay proceso, daemon ni servidor propio.
 - No hay tabla de usuarios ni middleware de autenticación (§17 de `requirements.md`).
-- No hay motor de reproyección propio: siempre `ST_Transform` en la base de datos.
+- No hay motor de reproyección propio: vectores con `ST_Transform`; el futuro extra ráster usará GDAL.
 - No hay caché en v0.1 — pero ningún componente guarda estado mutable que impida añadirla después.
+
+## Extensiones aprobadas, aún sin implementar (#100)
+
+MVT se generará en `postgis/` y se autorizará en `tiles/`; no usa el renderer WMS.
+El extra ráster local tendrá `RasterSource` y registro separados de `Layer` PostGIS.
+El núcleo y la importación de Atlas no cargarán Rasterio. PostGIS sigue siendo requisito.
+Las políticas de producto, OIDC, calendarios y adaptadores quedan en la aplicación.
+Los ADRs de consultas, MVT y ráster fijarán las nuevas dependencias antes de implementarlas.
