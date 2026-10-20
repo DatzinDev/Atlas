@@ -27,3 +27,9 @@ rechaza duplicados, propiedades vacías y parámetros desconocidos (incluidos CQ
 Errores de coordenadas/filtros fallan antes del servicio. El checker recibe el
 principal de la dependencia del host. La whitelist de atributos se verifica en postgis.
 Errores de permisos/servicio/presupuestos usan la taxonomía Atlas, sin SQL ni URL de BD.
+
+## Benchmark vectorial (#140)
+
+`benchmarks/mvt.py` contrasta MVT, primera página WFS y WMS con integridad previa,
+recursos y cancelaciones. Método, reproducción y resultados: [PERFORMANCE_MVT](../PERFORMANCE_MVT.md).
+No forma parte del runtime ni incorpora caché u optimizaciones a Atlas.
