@@ -11,6 +11,7 @@ from atlas.styles.models import Style
 class LayerServices(BaseModel):
     wms: bool = True
     wfs: bool = True
+    mvt: bool = False
     wmts: bool = False
     wcs: bool = False
 

@@ -1,6 +1,6 @@
-# tiles — contrato propuesto
+# tiles
 
-**No implementado.** [ADR 0006](../adr/0006-native-mvt.md) es la especificación normativa.
+Implementación incremental: servicio Python disponible; HTTP pendiente (#138). [ADR 0006](../adr/0006-native-mvt.md) es la especificación normativa.
 
 - Publicará GET /tiles/{name}/{z}/{x}/{y}.mvt y get_vector_tile con grid XYZ compartido.
 - Importa core, layers y postgis; nunca wfs, wms ni rendering. core calcula el grid.
@@ -8,3 +8,12 @@
 - Properties y predicados usan whitelist y ADR 0005; presupuestos sin truncamiento.
 - Devuelve bytes MVT con caché deshabilitada; no incorpora estilos, WMTS ni GWC.
 - Las pruebas futuras decodifican geometría/atributos, vacío/bordes y errores de límites.
+
+## Servicio (#134)
+
+`get_vector_tile(ctx, name, tile, *, properties=None, predicate=None, principal=None)`
+devuelve bytes. `predicate` es un modelo previamente validado por core, igual que WFS;
+HTTP se encargará de parsear JSON con los límites configurados. Propiedades pasan por
+whitelist SQL. `LayerServices.mvt=False` exige habilitación explícita del host.
+Capa habilitada, servicio MVT, permisos view y query se comprueban antes de SQL,
+incluso para tiles vacíos. WMS/WFS mantienen sus defaults. No se usa caché de imágenes.
