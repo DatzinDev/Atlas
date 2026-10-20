@@ -91,6 +91,7 @@ def build_feature_query(
     target_srid: int | None = None,
     limit: int | None = None,
     offset: int = 0,
+    order_by: Sequence[tuple[str, Literal["ASC", "DESC"]]] = (),
 ) -> tuple[sql.Composed, list[Any]]:
     names = [c.name for c in info.columns] if columns is None else list(columns)
     if info.primary_key is not None and info.primary_key not in names:
@@ -123,6 +124,21 @@ def build_feature_query(
         sql.Identifier(info.schema_name, info.table_name),
         _where_sql(where),
     )
+    ordering = list(order_by)
+    if info.primary_key is not None and not any(name == info.primary_key for name, _ in ordering):
+        ordering.append((info.primary_key, "ASC"))
+    directions = {"ASC": sql.SQL("ASC"), "DESC": sql.SQL("DESC")}
+    order_fields = []
+    seen = set()
+    for name, direction in ordering:
+        if name not in whitelist or name == info.geometry_column:
+            raise InvalidFilter("unknown order attribute", column=name)
+        if direction not in directions or name in seen:
+            raise InvalidFilter("invalid or duplicate order criterion", column=name)
+        seen.add(name)
+        order_fields.append(sql.SQL("{} {}").format(sql.Identifier(name), directions[direction]))
+    if order_fields:
+        query += sql.SQL(" ORDER BY {}").format(sql.SQL(", ").join(order_fields))
     values.extend(params)
     if limit is not None:
         query += sql.SQL(" LIMIT %s")

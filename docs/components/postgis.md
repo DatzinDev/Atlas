@@ -43,6 +43,7 @@ def build_feature_query(
     where: Sequence[sql.Composed] = (), params: Sequence = (),
     geometry_as: Literal["geojson", "wkb", "none"] = "geojson",
     target_srid: int | None = None, limit: int | None = None, offset: int = 0,
+    order_by: Sequence[tuple[str, Literal["ASC", "DESC"]]] = (),
 ) -> tuple[sql.Composed, list]
 
 def bbox_predicate(info: TableInfo, bbox: BBox, bbox_srid: int) -> tuple[sql.Composed, list]
@@ -76,6 +77,11 @@ def to_geojson_feature(row: dict, id_column: str | None) -> dict
 - `fetch_render_geometries` aplica `default_limit` / `max_limit` de la configuración del pool,
   filtra con el bbox en el SRID nativo y transforma solo el SELECT. Devuelve Shapely desde WKB
   y descarta geometrías nulas; no simplifica ni recorta las geometrías.
+- `build_feature_query` acepta orden por atributos introspectados con ASC/DESC explícitos;
+  rechaza geometría, criterios duplicados y direcciones desconocidas. Añade PK simple ASC por
+  defecto y como desempate si no aparece explícitamente. No altera la lista del llamador.
+  Vistas/tablas sin PK no tienen orden total garantizado: el host debe publicar un identificador
+  único. La paginación OFFSET es reproducible con datos estáticos, no un snapshot entre requests.
 - `stream()` usa cursor con nombre. Ninguna consulta de descarga materializa el dataset completo.
 - `inspect_table` funciona igual para tablas y para vistas; si `geometry_columns` no resuelve, cae
   a inspeccionar el tipo real de la columna.
