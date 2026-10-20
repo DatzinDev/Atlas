@@ -51,3 +51,6 @@ Su publicación no implementa los issues dependientes de consultas.
 
 Contrato MVT en revisión: [ADR 0006](adr/0006-native-mvt.md) y
 [tiles](components/tiles.md); implementación y benchmark siguen pendientes.
+
+Contrato ráster en revisión: [ADR 0007](adr/0007-optional-raster.md) y
+[raster](components/raster.md); extra, API y benchmarks aún sin implementar.
