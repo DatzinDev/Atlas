@@ -147,3 +147,10 @@ EXPLAIN con seqscan deshabilitado verifica elegibilidad GIST, no una garantía d
 enteros con ancho PostgreSQL, flotantes/decimales finitos, booleanos, fechas ISO y texto.
 Devuelve el escalar tipado o lanza ValueError/InvalidOperation/OverflowError; el adaptador
 traduce esos fallos a InvalidFilter. No valida columnas ni construye SQL.
+
+## Compatibilidad del adaptador WFS (#118)
+
+compile_predicate añade el keyword legacy_values=False. Solo el adaptador legacy de WFS lo
+activa tras revalidar filtros: conserva casteo, fechas, Decimal exacto y tipos heredados.
+El modo normal sigue rechazando coerción de texto a número/bool y tipos no soportados.
+Ningún modo cambia whitelist, operadores permitidos, Identifier ni placeholders.
