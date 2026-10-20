@@ -36,7 +36,7 @@ async def test_selected_fields_id_and_optional_geometry(atlas):
         feature = data["features"][0]
         assert set(feature["properties"]) == {"nombre", "clave", "id"}
         assert feature["id"] == feature["properties"]["id"]
-        assert (feature["geometry"] is not None) == include_geometry
+        assert feature["geometry"] is None
 
 
 async def test_direct_property_list_is_also_checked(atlas):

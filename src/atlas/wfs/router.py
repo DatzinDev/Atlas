@@ -142,7 +142,9 @@ def build_router(ctx: AtlasContext) -> APIRouter:
                 bbox_srid=bbox_srid,
                 output_srid=parse_crs(params.get("srsname", str(ctx.config.default_srid))),
                 filters=parse_filters(params, layer),
-                property_names=parse_property_names(params.get("propertyname"), layer),
+                property_names=parse_property_names(
+                    params.get("propertyname"), layer, allow_geometry=True
+                ),
                 include_geometry=geometry in ("true", "1"),
                 count=page.limit,
                 start_index=page.offset,

@@ -78,8 +78,13 @@ def capabilities_xml(layers: list[Layer], base_url: str) -> str
   nulabilidad, campo geométrico y SRID. Tipos PostgreSQL desconocidos se describen como `string`;
   cualquier formato de salida distinto de JSON lanza `UnsupportedFormat`.
 - `propertyName` admite atributos separados por comas con espacios; vacío significa todos. La
-  llave primaria siempre se selecciona. `geometry=false` evita consultar la geometría y produce
-  `geometry: null` para conservar la estructura GeoJSON del feature.
+  llave primaria siempre se selecciona como identidad. La lista admite la geometría registrada:
+  si no la incluye, no se ejecuta ST_AsGeoJSON y se devuelve geometry:null. Solo geometría
+  conserva la PK; geometry=false prevalece incluso si se solicita la geometría explícitamente.
+  Otros campos geométricos siguen fuera de la whitelist. La API Python sigue la misma selección.
+- `parse_property_names(..., allow_geometry=True)` se usa solo para WFS. Su default False
+  conserva las descargas como selección de atributos; pedir geometría allí sigue siendo 400.
+  Compatibilidad #104: una lista WFS de solo atributos ya no devuelve geometría implícita.
 
 ## Dependencias
 
