@@ -18,9 +18,8 @@ from atlas.core.types import BBox
 from atlas.layers.models import Layer
 from atlas.layers.permissions import check_permission
 from atlas.postgis.geometry import to_geojson_feature
-from atlas.postgis.predicates import compile_predicate
-from atlas.postgis.queries import bbox_predicate, build_feature_query, count_query
-from atlas.wfs.filters import Filter, compile_filters
+from atlas.postgis.queries import build_feature_query, count_query
+from atlas.wfs.filters import Filter, compile_query_filters
 from atlas.wfs.pagination import resolve_pagination
 
 
@@ -103,17 +102,13 @@ async def get_feature(
         include_geometry = include_geometry and layer.geometry_column in property_names
     require_crs(output_srid)
     page = resolve_pagination(ctx.config, count, start_index)
-    where, params = compile_filters(filters or [], layer)
-    if predicate is not None:
-        fragment, values = compile_predicate(predicate, layer.table_info)
-        where.append(fragment)
-        params.extend(values)
-    if bbox is not None:
-        fragment, values = bbox_predicate(
-            layer.table_info, bbox, bbox_srid if bbox_srid is not None else ctx.config.default_srid
-        )
-        where.append(fragment)
-        params.extend(values)
+    where, params = compile_query_filters(
+        layer,
+        filters=filters,
+        predicate=predicate,
+        bbox=bbox,
+        bbox_srid=bbox_srid if bbox_srid is not None else ctx.config.default_srid,
+    )
     query, values = build_feature_query(
         layer.table_info,
         columns=columns,
