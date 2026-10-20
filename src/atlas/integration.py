@@ -19,6 +19,7 @@ from atlas.layers.registry import LayerRegistry
 from atlas.postgis.connection import Database
 from atlas.rendering.base import MapRenderer
 from atlas.rendering.pillow import PillowRenderer
+from atlas.tiles.router import build_router as build_tiles_router
 from atlas.wfs.router import build_router as build_wfs_router
 from atlas.wms.router import build_router as build_wms_router
 
@@ -65,6 +66,7 @@ class Atlas:
             self._router.include_router(build_download_router(self.context))
             self._router.include_router(build_wfs_router(self.context))
             self._router.include_router(build_wms_router(self.context))
+            self._router.include_router(build_tiles_router(self.context))
         return self._router
 
     async def startup(self) -> None:
