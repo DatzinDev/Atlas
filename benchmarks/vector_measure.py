@@ -71,7 +71,26 @@ async def load(call, samples, concurrency):
 
 
 async def measure(call, *, samples, warmup, concurrency, cgroup=None):
+    probe_before = resources(cgroup)
     first = await call()
+    if first["outcome"] == "incomplete":
+        after = resources(cgroup)
+        return {
+            "first_request": first,
+            "requested_samples": samples,
+            "samples": 0,
+            "concurrency": concurrency,
+            "wall_seconds": first["ms"] / 1000,
+            "skip_reason": "incomplete preflight; no valid hot-latency comparison",
+            "before": probe_before,
+            "after": after,
+            "resource_scope": "preflight",
+            "cpu_seconds": after["cpu_seconds"] - probe_before["cpu_seconds"],
+            "sampled_peak_rss_bytes": max(probe_before["rss_bytes"], after["rss_bytes"]),
+            **summarize([]),
+        }
+    if first["outcome"] in ("invalid", "error"):
+        raise AssertionError("invalid preflight response")
     for _ in range(warmup):
         await call()
     observed = []

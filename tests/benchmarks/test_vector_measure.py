@@ -80,3 +80,16 @@ def test_postgres_cgroup_observer(tmp_path):
     sample = resources(tmp_path)["postgres"]
     assert sample["cpu_seconds"] == 1.5 and sample["cgroup_memory_bytes"] == 4096
     assert sample["file_bytes"] == 2048
+
+
+async def test_incomplete_preflight_has_no_successful_hot_samples():
+    from unittest.mock import AsyncMock
+
+    call = AsyncMock(return_value=dict(outcome="incomplete", status=200, ms=5, bytes=20))
+    result = await measure(call, samples=100, warmup=10, concurrency=4)
+    assert call.await_count == 1
+    assert result["samples"] == 0 and result["requested_samples"] == 100
+    assert result["outcomes"]["complete"]["count"] == 0
+    call.return_value["outcome"] = "invalid"
+    with pytest.raises(AssertionError, match="invalid preflight"):
+        await measure(call, samples=100, warmup=10, concurrency=4)
