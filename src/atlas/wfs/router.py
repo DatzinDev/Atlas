@@ -24,7 +24,7 @@ from atlas.postgis.queries import parse_bbox
 from atlas.wfs.capabilities import capabilities_xml
 from atlas.wfs.describe import describe_feature_type
 from atlas.wfs.filters import RESERVED_PARAMS, parse_filters
-from atlas.wfs.get_feature import get_feature, parse_property_names
+from atlas.wfs.get_feature import get_feature, parse_property_names, parse_sort_by
 from atlas.wfs.pagination import resolve_pagination
 
 
@@ -82,7 +82,7 @@ def build_router(ctx: AtlasContext) -> APIRouter:
                 raise InvalidParameter("form must be UTF-8 encoded") from exc
         params: dict[str, str] = {}
         for key, value in pairs:
-            key = key.lower() if key.lower() in RESERVED_PARAMS else key
+            key = key.lower() if key.lower() in RESERVED_PARAMS | {"sortby"} else key
             if key in params:
                 raise InvalidParameter("duplicate request parameter", parameter=key)
             params[key] = value
@@ -141,7 +141,8 @@ def build_router(ctx: AtlasContext) -> APIRouter:
                 bbox=bbox,
                 bbox_srid=bbox_srid,
                 output_srid=parse_crs(params.get("srsname", str(ctx.config.default_srid))),
-                filters=parse_filters(params, layer),
+                filters=parse_filters({k: v for k, v in params.items() if k != "sortby"}, layer),
+                order_by=parse_sort_by(params.get("sortby"), layer),
                 property_names=parse_property_names(
                     params.get("propertyname"), layer, allow_geometry=True
                 ),

@@ -115,3 +115,59 @@ async def test_capabilities_retain_proxy_prefix(atlas):
     ) as client:
         response = await client.get("/proxy/atlas/wfs?request=GetCapabilities")
     assert response.status_code == 200 and "https://host/proxy/atlas/wfs" in response.text
+
+
+@pytest.mark.parametrize("method", ["get", "post"])
+@pytest.mark.parametrize(
+    "sort,expected",
+    [("nivel D", [2, 5, 1, 4, 3]), ("nivel D,id D", [5, 2, 4, 1, 3]), ("id", [1, 2, 3, 4, 5])],
+)
+async def test_sort_by_pages(client, method, sort, expected):
+    ids = []
+    for offset in (0, 2, 4):
+        params = {
+            "request": "GetFeature",
+            "typeNames": "escuelas",
+            "SoRtBy": sort,
+            "COUNT": "2",
+            "STARTINDEX": str(offset),
+            "geometry": "false",
+        }
+        response = await (
+            client.get("/atlas/wfs", params=params)
+            if method == "get"
+            else client.post("/atlas/wfs", data=params)
+        )
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["numberMatched"] == 5 and data["startIndex"] == offset
+        ids.extend(f["id"] for f in data["features"])
+    assert ids == expected and len(set(ids)) == 5
+
+
+@pytest.mark.parametrize(
+    "sort",
+    [
+        "",
+        "id,",
+        "geom",
+        "missing A",
+        "id DESC",
+        "id A NULLS FIRST",
+        "pg_sleep(1)",
+        "id A,id D",
+        "id;DROP TABLE x",
+    ],
+)
+async def test_invalid_sort_by(client, sort):
+    response = await client.get(
+        "/atlas/wfs", params={"request": "GetFeature", "typeNames": "escuelas", "sortBy": sort}
+    )
+    assert response.status_code == 400 and response.json()["error"]["code"] == "invalid_filter"
+
+
+async def test_duplicate_sort_by(client):
+    response = await client.get(
+        "/atlas/wfs?request=GetFeature&typeNames=escuelas&sortBy=id&SORTBY=id"
+    )
+    assert response.status_code == 400

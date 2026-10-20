@@ -31,6 +31,8 @@ def compile_filters(filters: list[Filter], layer: Layer) -> tuple[list[sql.Compo
 # wfs/get_feature.py
 async def get_feature(ctx, *, type_names: str, bbox: BBox | None = None, bbox_srid: int | None = None,
                       output_srid: int = 4326, filters: list[Filter] | None = None,
+                      order_by: list[tuple[str, Literal["ASC", "DESC"]]] | None = None,
+                      order_by: list[tuple[str, Literal["ASC", "DESC"]]] | None = None,
                       property_names: list[str] | None = None, include_geometry: bool = True,
                       count: int | None = None, start_index: int = 0, principal=None,
                       report: OperationLog | None = None) -> StreamingResponse
@@ -102,3 +104,13 @@ Lo importan: `api` (reutiliza `filters`), `integration`.
 
 `requirements.md` §12 (RF-WFS-01..06), §13 (filtros y seguridad), §23 (límites), §24 (streaming).
 ADR 0003.
+
+## Orden de resultados (#108)
+
+`parse_sort_by(value, layer)` devuelve criterios `(columna, ASC|DESC)` para `get_feature(order_by=...)`.
+GET y POST form aceptan `sortBy=campo A,otro D`; omitir dirección significa A.
+El nombre del parámetro es case-insensitive; columnas conservan caso y direcciones son A/D.
+Se rechazan columnas desconocidas/geométricas, criterios duplicados y expresiones con InvalidFilter 400.
+El orden se aplica antes de COUNT/STARTINDEX y la PK desempata automáticamente si no se solicitó.
+Las vistas sin PK requieren identidad única del host para garantizar páginas estables; modificaciones
+entre peticiones no comparten snapshot. No se anuncia FES SortBy XML.

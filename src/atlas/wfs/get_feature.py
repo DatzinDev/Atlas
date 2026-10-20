@@ -2,7 +2,7 @@
 
 import json
 from collections.abc import AsyncGenerator
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from anyio import CancelScope
 from fastapi.encoders import jsonable_encoder
@@ -52,6 +52,26 @@ def parse_property_names(
     return names
 
 
+def parse_sort_by(value: str | None, layer: Layer) -> list[tuple[str, Literal["ASC", "DESC"]]]:
+    if value is None:
+        return []
+    ordering: list[tuple[str, Literal["ASC", "DESC"]]] = []
+    seen = set()
+    for item in value.split(","):
+        parts = item.split()
+        if not 1 <= len(parts) <= 2:
+            raise InvalidFilter("sortBy requires a field and optional A or D direction")
+        column = parts[0]
+        direction = parts[1] if len(parts) == 2 else "A"
+        if column not in layer.attribute_names or column == layer.geometry_column:
+            raise InvalidFilter("unknown sort attribute", column=column)
+        if direction not in ("A", "D") or column in seen:
+            raise InvalidFilter("invalid or duplicate sort criterion")
+        seen.add(column)
+        ordering.append((column, "ASC" if direction == "A" else "DESC"))
+    return ordering
+
+
 async def get_feature(
     ctx: AtlasContext,
     *,
@@ -60,6 +80,7 @@ async def get_feature(
     bbox_srid: int | None = None,
     output_srid: int = 4326,
     filters: list[Filter] | None = None,
+    order_by: list[tuple[str, Literal["ASC", "DESC"]]] | None = None,
     property_names: list[str] | None = None,
     include_geometry: bool = True,
     count: int | None = None,
@@ -86,8 +107,6 @@ async def get_feature(
         )
         where.append(predicate)
         params.extend(values)
-    query, values = count_query(layer.table_info, where, params)
-    matched = await ctx.db.fetch_one(query, values)
     query, values = build_feature_query(
         layer.table_info,
         columns=columns,
@@ -97,7 +116,10 @@ async def get_feature(
         geometry_as="geojson" if include_geometry else "none",
         limit=page.limit,
         offset=page.offset,
+        order_by=order_by or (),
     )
+    count_sql, count_values = count_query(layer.table_info, where, params)
+    matched = await ctx.db.fetch_one(count_sql, count_values)
     rows = cast(AsyncGenerator[dict[str, Any], None], ctx.db.stream(query, values))
 
     def encode(row: dict[str, Any]) -> str:

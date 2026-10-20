@@ -30,6 +30,8 @@ class AtlasConfig(BaseModel):
     pool_min_size: int = Field(default=1, gt=0)
     pool_max_size: int = Field(default=10, gt=0)
     query_timeout: float = Field(default=30.0, gt=0)
+    filter_max_depth: int = Field(default=8, gt=0)
+    filter_max_nodes: int = Field(default=100, gt=0)
     max_image_size: int = Field(default=4096, gt=0)
 
     @model_validator(mode="after")
