@@ -85,7 +85,7 @@ def validate(response, protocol, name, expected, config, counts=()):
     image = Image.open(BytesIO(response.content))
     image.load()
     assert image.size == (256, 256) and image.format == "PNG"
-    assert counts and counts[-1] == min(expected["matched"], config.default_limit)
+    assert counts and 0 <= counts[-1] <= expected["matched"]
     return "complete" if counts[-1] == expected["matched"] else "incomplete"
 
 

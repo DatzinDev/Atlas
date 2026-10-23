@@ -29,11 +29,7 @@ async def test_real_protocols_and_mosaic(bench_db, kind):
                         client, protocol, layer, tile, expected, atlas.context.config
                     )
                     assert result["outcome"] == (
-                        "page"
-                        if protocol == "wfs" and tile == GLOBAL
-                        else "incomplete"
-                        if protocol == "wms" and tile == GLOBAL
-                        else "complete"
+                        "page" if protocol == "wfs" and tile == GLOBAL else "complete"
                     )
             coverage = await mosaic(atlas.context, client, layer, MOSAIC, 1600)
             assert coverage["unique_ids"] == 1600
