@@ -16,7 +16,7 @@ from atlas.core.predicates import Group, Predicate, PredicateModel, validate_pre
 from atlas.core.types import BBox
 from atlas.layers.permissions import check_permission
 from atlas.postgis.predicates import compile_predicate
-from atlas.postgis.queries import fetch_render_geometries
+from atlas.postgis.queries import RenderBudget, fetch_render_geometries
 from atlas.rendering.base import MapRenderer, RenderLayer
 from atlas.rendering.pillow import PillowRenderer
 from atlas.styles.models import Color, Style, default_style
@@ -155,6 +155,7 @@ async def get_map(
         compile_predicate(params.atlas_filters.get(layer.name), layer.table_info)
         for layer in layers
     ]
+    budget = RenderBudget(ctx.config.max_render_features, ctx.config.max_render_bytes)
     render_layers = []
     for layer, (predicate, values) in zip(layers, compiled, strict=True):
         geometries = await fetch_render_geometries(
@@ -165,6 +166,7 @@ async def get_map(
             target_srid=params.crs,
             where=[predicate] if layer.name in params.atlas_filters else [],
             params=values,
+            budget=budget,
         )
         render_layers.append(
             RenderLayer(

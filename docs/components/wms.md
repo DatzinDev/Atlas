@@ -60,8 +60,8 @@ def capabilities_xml(layers: list[Layer], base_url: str, *, title: str = "Atlas 
 - `image/jpeg` ignora `TRANSPARENT=TRUE` (JPEG no tiene alfa): se compone sobre `BGCOLOR`.
 - `GetMapParams` recibe el bbox en el orden del protocolo y lo normaliza una sola vez al
   construir el modelo. `CRS:84` conserva ejes longitud/latitud.
-- `GetMap` comprueba permisos de todas las capas antes de consultar, usa los límites de features
-  por capa de `AtlasConfig` y ejecuta el renderer en un thread para no bloquear el event loop.
+- `GetMap` comprueba permisos de todas las capas antes de consultar, usa un presupuesto de features/WKB
+  por mapa de `AtlasConfig` y ejecuta el renderer en un thread para no bloquear el event loop.
   `STYLES` omitido/vacío o con vacíos por capa usa el estilo registrado; nombres no vacíos
   se rechazan antes de consultar/renderizar. Los overrides tipados de `/maps/export` no cambian.
 - `wms/` no dibuja nada por sí mismo: llama a `MapRenderer.render()`.
@@ -103,3 +103,15 @@ Todos los permisos y columnas se comprueban antes de la primera consulta.
 GetFeatureInfo reutiliza el mismo compilador por `QUERY_LAYERS` y combina el filtro
 con la intersección exacta de la ventana del clic. `{}` conserva el comportamiento anterior.
 No existe caché en la base integrada: cada solicitud ejecuta su filtro de forma independiente. CQL y ATLAS_FILTER siguen rechazados.
+
+
+## Mapas completos y presupuestos (#193)
+
+GetMap y `/maps/export` comparten `max_render_features=100000` y
+`max_render_bytes=67108864` acumulados entre todas las capas, independientes de WFS.
+Se devuelve el mapa completo bajo el contrato del renderer o QueryTooLarge 413 antes
+de dibujar; nunca un subconjunto silencioso. Solicitar una ventana menor o filtros más
+selectivos permite reducir el trabajo. No se simplifica ni se modifica el dataset.
+La paginación WFS y los límites de imagen se conservan. Los bytes miden WKB de entrada;
+no prometen un techo exacto de RSS. Geometrías inválidas/vacías conservan el contrato
+preexistente del renderer. El benchmark distingue mapa completo, rechazo y respuesta incompleta.
