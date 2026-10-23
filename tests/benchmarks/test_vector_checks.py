@@ -64,3 +64,84 @@ async def test_repeated_payload_uses_digest_but_changes_are_revalidated(monkeypa
     client.get.return_value = httpx.Response(200, content=b"broken")
     assert (await request(client, "mvt", layer, GLOBAL, expected, config))["outcome"] == "invalid"
     assert spy.call_count == 2
+
+
+def test_wms_partial_is_never_complete():
+    from io import BytesIO
+
+    from PIL import Image
+
+    output = BytesIO()
+    Image.new("RGBA", (256, 256)).save(output, format="PNG")
+    response = httpx.Response(200, content=output.getvalue())
+    for actual, outcome in [(1000, "incomplete"), (1001, "complete")]:
+        assert (
+            validate(
+                response,
+                "wms",
+                "point",
+                {"matched": 1001},
+                SimpleNamespace(default_limit=1000),
+                [actual],
+            )
+            == outcome
+        )
+
+
+@pytest.mark.parametrize("count", [1000, 1001, 1100, 1101])
+async def test_complete_map_or_explicit_feature_rejection(bench_db, count):
+    from unittest.mock import Mock
+
+    from benchmarks.vector_data import dataset
+
+    from atlas.core.config import AtlasConfig
+
+    atlas = Atlas(bench_db._config.database_url)
+    atlas.context.db = bench_db
+    app = FastAPI()
+    app.include_router(atlas.router)
+    config = AtlasConfig(
+        database_url=bench_db._config.database_url,
+        default_limit=1,
+        max_limit=1,
+        max_render_features=1100,
+    )
+    atlas.context.config = atlas.context.db._config = config
+    renderer = Mock()
+    renderer.render.return_value = b"image"
+    atlas.context.renderer = renderer
+    async with (
+        dataset(bench_db, count, "point") as layer,
+        httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client,
+    ):
+        atlas.register(layer)
+        response = await client.get(
+            "/atlas/wms",
+            params=dict(
+                REQUEST="GetMap",
+                LAYERS=layer.name,
+                CRS="EPSG:3857",
+                BBOX="-20037508,-20037508,20037508,20037508",
+                WIDTH=16,
+                HEIGHT=16,
+            ),
+        )
+        hits = await client.get(
+            "/atlas/wfs",
+            params=dict(
+                REQUEST="GetFeature",
+                TYPENAMES=layer.name,
+                RESULTTYPE="hits",
+            ),
+        )
+        from xml.etree import ElementTree as ET
+
+        assert hits.status_code == 200
+        assert int(ET.fromstring(hits.content).attrib["numberMatched"]) == count
+        if count <= 1100:
+            assert response.status_code == 200
+            assert len(renderer.render.call_args.args[0][0].geometries) == count
+        else:
+            assert response.status_code == 413
+            assert response.json()["error"]["code"] == "query_too_large"
+            renderer.render.assert_not_called()
