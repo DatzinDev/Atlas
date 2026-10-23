@@ -1,8 +1,10 @@
 """Parse WMS 1.3.0 map parameters and delegate bounded, authorized drawing."""
 
+import asyncio
 import json
 from typing import Any, Literal, Self
 
+from anyio import CancelScope
 from fastapi import Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
@@ -155,38 +157,56 @@ async def get_map(
         compile_predicate(params.atlas_filters.get(layer.name), layer.table_info)
         for layer in layers
     ]
-    budget = RenderBudget(ctx.config.max_render_features, ctx.config.max_render_bytes)
-    render_layers = []
-    for layer, (predicate, values) in zip(layers, compiled, strict=True):
-        geometries = await fetch_render_geometries(
-            ctx.db,
-            layer.table_info,
-            bbox=params.bbox,
-            bbox_srid=params.crs,
-            target_srid=params.crs,
-            where=[predicate] if layer.name in params.atlas_filters else [],
-            params=values,
-            budget=budget,
-        )
-        render_layers.append(
-            RenderLayer(
-                geometries=geometries,
-                style=(styles or {}).get(layer.name)
-                or layer.style
-                or default_style(layer.geometry_type),
+    async with ctx.render_slot():
+        budget = RenderBudget(ctx.config.max_render_features, ctx.config.max_render_bytes)
+        render_layers = []
+        for layer, (predicate, values) in zip(layers, compiled, strict=True):
+            geometries = await fetch_render_geometries(
+                ctx.db,
+                layer.table_info,
+                bbox=params.bbox,
+                bbox_srid=params.crs,
+                target_srid=params.crs,
+                where=[predicate] if layer.name in params.atlas_filters else [],
+                params=values,
+                budget=budget,
+            )
+            render_layers.append(
+                RenderLayer(
+                    geometries=geometries,
+                    style=(styles or {}).get(layer.name)
+                    or layer.style
+                    or default_style(layer.geometry_type),
+                )
+            )
+        if report is not None:
+            report.feature_count = sum(len(layer.geometries) for layer in render_layers)
+        renderer: MapRenderer = ctx.renderer if ctx.renderer is not None else PillowRenderer()
+        drawing = asyncio.create_task(
+            run_in_threadpool(
+                renderer.render,
+                render_layers,
+                bbox=params.bbox,
+                width=params.width,
+                height=params.height,
+                image_format="png" if params.format == "image/png" else "jpeg",
+                transparent=params.transparent,
+                background=params.bgcolor,
             )
         )
-    if report is not None:
-        report.feature_count = sum(len(layer.geometries) for layer in render_layers)
-    renderer: MapRenderer = ctx.renderer if ctx.renderer is not None else PillowRenderer()
-    data = await run_in_threadpool(
-        renderer.render,
-        render_layers,
-        bbox=params.bbox,
-        width=params.width,
-        height=params.height,
-        image_format="png" if params.format == "image/png" else "jpeg",
-        transparent=params.transparent,
-        background=params.bgcolor,
-    )
-    return Response(data, media_type=params.format)
+        try:
+            data = await asyncio.shield(drawing)
+        except asyncio.CancelledError:
+            # Cancelling the HTTP await cannot stop a native worker; retain its slot until it exits.
+            while not drawing.done():
+                with CancelScope(shield=True):
+                    try:
+                        await asyncio.shield(drawing)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+            if not drawing.cancelled():
+                drawing.exception()
+            raise
+        return Response(data, media_type=params.format)

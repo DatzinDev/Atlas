@@ -235,3 +235,87 @@ async def test_budget_is_shared_between_layers(client, atlas, budget_kind):
         assert response.status_code == status
         if status == 413:
             renderer.render.assert_not_called()
+
+
+@pytest.mark.parametrize("fails", [False, True])
+async def test_cancelled_workers_hold_capacity_until_real_completion(atlas, monkeypatch, fails):
+    import asyncio
+    from threading import Event, Lock
+    from unittest.mock import AsyncMock
+
+    from anyio import CancelScope
+
+    from atlas.core.exceptions import QueryTooLarge
+
+    release = Event()
+    lock = Lock()
+    active = peak = 0
+
+    def render(*args, **kwargs):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            assert release.wait(10), "test failed to release renderer"
+            if fails:
+                raise RuntimeError("renderer failed")
+            return b"image"
+        finally:
+            with lock:
+                active -= 1
+
+    atlas.context.renderer = Mock(render=render)
+    fetch = AsyncMock(return_value=[])
+    monkeypatch.setattr("atlas.wms.get_map.fetch_render_geometries", fetch)
+
+    async def level_cancel():
+        with CancelScope() as scope:
+            scopes.append(scope)
+            await get_map(atlas.context, params())
+
+    scopes = []
+    tasks = [
+        asyncio.create_task(get_map(atlas.context, params())),
+        asyncio.create_task(level_cancel()),
+    ]
+    try:
+        async with asyncio.timeout(5):
+            while active != 2:
+                await asyncio.sleep(0.001)
+        tasks[0].cancel()
+        scopes[0].cancel()
+        for _ in range(5):
+            await asyncio.sleep(0.005)
+            tasks[0].cancel()
+            with pytest.raises(QueryTooLarge):
+                await get_map(atlas.context, params())
+            assert active == 2
+        assert fetch.await_count == 2 and peak == 2
+        assert all(not task.done() for task in tasks)
+    finally:
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5)
+    assert active == 0
+    atlas.context.renderer = Mock()
+    atlas.context.renderer.render.return_value = b"recovered"
+    assert (await get_map(atlas.context, params())).body == b"recovered"
+    assert peak == 2
+
+
+async def test_render_slots_are_per_context_and_released_on_failure():
+    from atlas import Atlas
+    from atlas.core.config import AtlasConfig
+    from atlas.core.exceptions import QueryTooLarge
+
+    config = AtlasConfig(database_url="unused", max_render_concurrency=1)
+    first, second = Atlas("unused", config=config), Atlas("unused", config=config)
+    async with first.context.render_slot(), second.context.render_slot():
+        with pytest.raises(QueryTooLarge):
+            async with first.context.render_slot():
+                pytest.fail("slot was released early")
+    with pytest.raises(RuntimeError):
+        async with first.context.render_slot():
+            raise RuntimeError("query failed")
+    async with first.context.render_slot():
+        pass

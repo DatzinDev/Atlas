@@ -115,3 +115,14 @@ selectivos permite reducir el trabajo. No se simplifica ni se modifica el datase
 La paginación WFS y los límites de imagen se conservan. Los bytes miden WKB de entrada;
 no prometen un techo exacto de RSS. Geometrías inválidas/vacías conservan el contrato
 preexistente del renderer. El benchmark distingue mapa completo, rechazo y respuesta incompleta.
+
+
+## Concurrencia de mapas (#194)
+
+`max_render_concurrency=2` positivo se fija al construir cada AtlasContext. GetMap y
+`/maps/export` comparten cupos desde antes de consultar geometrías hasta terminar el worker.
+No existe cola interna: saturación devuelve QueryTooLarge 413; el host puede reintentar
+con espera o limitar peticiones. Cada instancia tiene cupos independientes; los procesos
+multiplican ese límite. Al cancelar se espera la finalización real del renderer sin bloquear
+el event loop ni liberar el cupo antes de tiempo, incluso ante cancelaciones repetidas.
+Un renderer que no termina retiene el cupo: no se puede matar un thread de forma segura.

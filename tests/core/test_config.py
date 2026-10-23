@@ -96,6 +96,7 @@ class TestFieldValidation:
             "query_timeout",
             "max_image_size",
             "max_render_features",
+            "max_render_concurrency",
             "max_render_bytes",
         ],
     )
