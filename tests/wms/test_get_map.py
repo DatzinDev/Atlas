@@ -212,3 +212,26 @@ async def test_filtered_map_rejects_all_invalid_columns_before_any_query(
     )
     assert response.status_code == 400
     fetch.assert_not_called()
+
+
+@pytest.mark.parametrize("budget_kind", ["features", "bytes"])
+async def test_budget_is_shared_between_layers(client, atlas, budget_kind):
+    from tests.wms.test_router import MAP
+
+    renderer = Mock()
+    renderer.render.return_value = b"image"
+    atlas.context.renderer = renderer
+    request_params = MAP | dict(LAYERS="municipios,escuelas")
+    assert (await client.get("/atlas/wms", params=request_params)).status_code == 200
+    rendered = renderer.render.call_args.args[0]
+    geometries = [g for layer in rendered for g in layer.geometries]
+    key = "max_render_" + budget_kind
+    exact = len(geometries) if budget_kind == "features" else sum(len(g.wkb) for g in geometries)
+    for maximum, status in [(exact, 200), (exact - 1, 413)]:
+        atlas.context.config = atlas.context.config.model_copy(update={key: maximum})
+        atlas.context.db._config = atlas.context.config
+        renderer.render.reset_mock()
+        response = await client.get("/atlas/wms", params=request_params)
+        assert response.status_code == status
+        if status == 413:
+            renderer.render.assert_not_called()
