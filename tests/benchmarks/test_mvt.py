@@ -16,7 +16,8 @@ def test_cli_rejects_implicit_database_and_invalid_budgets(monkeypatch, tmp_path
             arguments(["--output", str(tmp_path / "out.json"), *value])
 
 
-async def test_end_to_end_cli_smoke(bench_db, monkeypatch, tmp_path):
+@pytest.mark.parametrize("windows,cases", [(["selective", "global"], 18), (["selective"], 9)])
+async def test_end_to_end_cli_smoke(bench_db, monkeypatch, tmp_path, windows, cases):
     monkeypatch.setenv("ATLAS_BENCH_DATABASE_URL", bench_db._config.database_url)
     monkeypatch.delenv("ATLAS_BENCH_POSTGRES_CGROUP", raising=False)
 
@@ -40,11 +41,16 @@ async def test_end_to_end_cli_smoke(bench_db, monkeypatch, tmp_path):
             "1",
             "--concurrency",
             "1",
+            "--windows",
+            *windows,
         ]
     )
     assert await run(args) == 0
     result = json.loads(path.read_text())
-    assert result["finished"] and len(result["cases"]) == 18
+    assert result["finished"] and len(result["cases"]) == cases
     assert len(result["coverage"]) == 3
     assert "database_url" not in result["config"]
     assert "postgresql://" not in path.read_text()
+
+    assert {c["window"] for c in result["cases"]} == set(windows)
+    assert all(s["window"] == windows[-1] for s in result["stability"])

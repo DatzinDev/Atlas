@@ -27,6 +27,9 @@ from benchmarks.vector_measure import measure, stability  # noqa: E402
 
 def arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--windows", nargs="+", choices=["selective", "global"], default=["selective", "global"]
+    )
     parser.add_argument("--samples", type=int, default=100)
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--concurrency", type=int, nargs="+", default=[1, 4])
@@ -102,9 +105,12 @@ async def run(args):
                         refs = {
                             name: await reference(atlas.context, layer, tile)
                             for name, tile in (("selective", SELECTIVE), ("global", GLOBAL))
+                            if name in args.windows
                         }
                         for repetition in range(args.repetitions):
                             for name, tile in (("selective", SELECTIVE), ("global", GLOBAL)):
+                                if name not in args.windows:
+                                    continue
                                 for protocol in ("mvt", "wfs", "wms"):
                                     call = partial(
                                         request,
@@ -154,8 +160,8 @@ async def run(args):
                                 client,
                                 protocol,
                                 layer,
-                                GLOBAL,
-                                refs["global"],
+                                {"selective": SELECTIVE, "global": GLOBAL}[args.windows[-1]],
+                                refs[args.windows[-1]],
                                 atlas.context.config,
                             )
 
@@ -163,7 +169,13 @@ async def run(args):
                                 cancel_call, atlas.context.db, max(args.concurrency), cgroup=cgroup
                             )
                             report["stability"].append(
-                                dict(rows=rows, geometry=kind, protocol=protocol, **result)
+                                dict(
+                                    rows=rows,
+                                    geometry=kind,
+                                    protocol=protocol,
+                                    window=args.windows[-1],
+                                    **result,
+                                )
                             )
                     atlas.context.registry.remove(kind)
                     args.output.write_text(json.dumps(report, indent=2), encoding="utf-8")

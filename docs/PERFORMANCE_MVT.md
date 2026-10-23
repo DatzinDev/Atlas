@@ -51,3 +51,51 @@ Cancelación: 270 rondas, 1.074 tareas canceladas y 6 finalizadas antes de cance
 La CPU del proceso siguió activa en el segundo final del reposo tras cancelar WMS: no se certifica drenado nativo ni ausencia de acumulación sostenida. Seguimientos P0: [truncamiento #193](https://github.com/DatzinDev/Atlas/issues/193) y [trabajo pendiente #194](https://github.com/DatzinDev/Atlas/issues/194).
 Datos sintéticos con ID y geometrías sencillas nativas 3857; no evalúa reproyección desde CRS locales, geometrías complejas, navegador, producción ni GeoServer. Primero corregir integridad/presupuestos y concurrencia; repetir esta matriz antes de atribuir mejoras a caché/renderizado.
 JSON local `/tmp/atlas-vector-benchmark.json` (821.574 bytes), SHA-256 `82ea823f1187fa7e4245d4a82ffb2fe0ef7d5d5600278b4e98427863d13e6937`. Las corridas preliminares de calibración se excluyeron.
+
+
+## Validación de correcciones WMS — 2026-10-23 (#196)
+
+Stack #201, PRs #197–#200. Repetición **selectiva**, tres repeticiones, 20 muestras por lote,
+2 warmups, concurrencia solicitada 1/4, 10k/100k/1M filas por tipo. Misma máquina y PostGIS;
+Python 3.11.14, Pillow 13.0.0, Shapely 2.2.0, psycopg 3.3.6.
+Las dependencias cambiaron respecto al histórico: no atribuir diferencias de latencia únicamente al código.
+Sin caché; max_render_features=100000, max_render_bytes=67108864 y max_render_concurrency=2.
+
+```bash
+python benchmarks/mvt.py --windows selective --samples 20 --warmup 2 --concurrency 1 4 --repetitions 3 --rows 10000 100000 1000000 --output /tmp/atlas-wms-urgent-final.json
+```
+
+162 casos y nueve mosaicos completos: 2394 muestras completas, 360 páginas WFS,
+486 rechazos explícitos por saturación WMS; cero errores, respuestas incompletas o integridad inválida.
+En c4, cada lote WMS admite 2 de 20 muestras y rechaza 18 sin cola: **no es una mejora de throughput**
+ni un p95 representativo de 20 mapas completos. El host debe espaciar/reintentar o dimensionar el cupo.
+
+WMS c1: mediana de p95 (ms) entre tres repeticiones, 20 mapas completos por lote.
+
+| Tabla y geometría | p95 WMS c1 (ms) |
+|---|---:|
+| 10,000 puntos | 12.43 |
+| 10,000 líneas | 11.64 |
+| 10,000 polígonos | 13.32 |
+| 100,000 puntos | 40.46 |
+| 100,000 líneas | 28.45 |
+| 100,000 polígonos | 55.26 |
+| 1,000,000 puntos | 392.25 |
+| 1,000,000 líneas | 211.96 |
+| 1,000,000 polígonos | 468.66 |
+
+Con 1M filas, la ventana contiene 1024 geometrías y WMS representa todas; WFS conserva su página
+1000/1024. La fidelidad y los presupuestos globales/multicapa se cubren además en regresiones
+1000/1001/cap/cap+1 y bytes exactos/excesivos. No se repitió aquí toda la matriz global histórica.
+
+Cancelación: 270 rondas, 425 cancelaciones;
+observaciones de reposo hasta 6,2 s después del drenaje. Cero sesiones activas, cola del pool o tareas extra
+al final de los 27 perfiles. CPU máxima del proceso en el intervalo final de 5 s tras WMS: 0.0009 s.
+La cancelación espera al worker real; los tests bloqueables verifican retención del cupo incluso con
+cancelaciones asyncio repetidas/AnyIO y excepciones del renderer. No certifica ausencia de fugas a horas.
+El driver sigue descartando conexiones durante cancelaciones duras; el pool recupera disponibilidad.
+RSS máximo muestreado: 274.34 MiB, incluido cliente/validación ASGI; sin cgroup PostgreSQL en esta repetición.
+La latencia de renderizado sigue siendo un área de optimización: este bloque corrige integridad y recursos.
+
+JSON local `/tmp/atlas-wms-urgent-final.json` (365,788 bytes), SHA-256 `022242c38bbe7a7313538724effc3f9089329bf9256a72e0fa94d6462149cca6`.
+Se excluye la corrida preliminar con cursor de una fila. El JSON conserva commit, configuración y hashes de scripts.
