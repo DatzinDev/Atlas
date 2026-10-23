@@ -146,7 +146,7 @@ async def stability(call, db, concurrency, *, rounds=10, cgroup=None):
         completed += sum(isinstance(r, dict) for r in results)
         series.append(resources(cgroup))
     rest = []
-    for delay in (0, 0.2, 1):
+    for delay in (0, 0.2, 1, 5):
         await asyncio.sleep(delay)
         pending = await db.fetch_one(
             sql.SQL("""
