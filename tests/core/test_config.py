@@ -95,6 +95,8 @@ class TestFieldValidation:
             "pool_max_size",
             "query_timeout",
             "max_image_size",
+            "max_render_features",
+            "max_render_bytes",
         ],
     )
     @pytest.mark.parametrize("value", [0, -1])

@@ -29,6 +29,8 @@ class AtlasConfig(BaseModel):
     filter_max_in_values: int = 1000
     filter_max_depth: int = 8       # raíz = 1
     filter_max_nodes: int = 100     # cada predicado cuenta una vez
+    max_render_features: int = 100000 # presupuesto por mapa, independiente de WFS
+    max_render_bytes: int = 67108864 # bytes WKB acumulados por mapa
     max_image_size: int = 4096       # lado máximo en píxeles de una imagen renderizada
 
     def resolve_limit(self, requested: int | None) -> int

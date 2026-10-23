@@ -53,6 +53,7 @@ def count_query(info: TableInfo, where, params) -> tuple[sql.Composed, list]
 async def fetch_render_geometries(
     db: Database, info: TableInfo, *, bbox: BBox, bbox_srid: int, target_srid: int,
     where: Sequence[sql.Composed] = (), params: Sequence = (), limit: int | None = None,
+    budget: RenderBudget | None = None,
 ) -> list[BaseGeometry]
 
 # postgis/geometry.py
@@ -74,9 +75,15 @@ def to_geojson_feature(row: dict, id_column: str | None) -> dict
   límites invertidos y valores no finitos. El CRS opcional se valida con el registro compartido.
 - La reproyección de salida (`ST_Transform` sobre el SELECT) es lo único que sí envuelve la
   geometría, y va después del filtrado.
-- `fetch_render_geometries` aplica `default_limit` / `max_limit` de la configuración del pool,
-  filtra con el bbox en el SRID nativo y transforma solo el SELECT. Devuelve Shapely desde WKB
-  y descarta geometrías nulas; no simplifica ni recorta las geometrías.
+- `fetch_render_geometries` usa `max_render_features=100000` y `max_render_bytes=67108864`,
+  independientes de la paginación WFS. `RenderBudget(features, bytes)` permite acumular el consumo
+  entre capas. Un `limit` explícito reduce el presupuesto; nunca autoriza truncamiento.
+  Lee cap+1 con cursor server-side por lotes y lanza QueryTooLarge 413 ante exceso de features
+  o bytes WKB. SQL suma bytes con una ventana acumulativa y omite todo WKB que exceda el
+  presupuesto; un lote no multiplica ese límite. Cierra el cursor incluso al fallar.
+  Filtra con bbox nativo, transforma solo la salida y no simplifica ni recorta geometrías.
+  Features/WKB/píxeles acotan entradas; no son una garantía exacta de RSS de GEOS, Pillow o
+  PostgreSQL, que puede procesar geometrías grandes antes del control de tamaño.
 - `build_feature_query` acepta orden por atributos introspectados con ASC/DESC explícitos;
   rechaza geometría, criterios duplicados y direcciones desconocidas. Añade PK simple ASC por
   defecto y como desempate si no aparece explícitamente. No altera la lista del llamador.
