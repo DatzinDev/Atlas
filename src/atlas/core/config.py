@@ -45,6 +45,7 @@ class AtlasConfig(BaseModel):
     max_tile_bytes: int = Field(default=8388608, gt=0)
     max_tile_zoom: int = Field(default=22, ge=0, le=30)
     max_image_size: int = Field(default=4096, gt=0)
+    max_render_concurrency: int = Field(default=2, gt=0)
     max_render_features: int = Field(default=100000, gt=0)
     max_render_bytes: int = Field(default=64 * 1024 * 1024, gt=0)
 
