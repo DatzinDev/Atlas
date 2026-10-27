@@ -6,6 +6,7 @@ publish = false
 license = "MIT"
 
 [dependencies]
+jsonwebtoken = { version = "11.1", default-features = false, features = ["use_pem", "aws_lc_rs"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision", "raw_value"] }

@@ -6,6 +6,10 @@ Dependencias y features del motor aprobadas por ADR 0008; Serde/TOML y SQLx
 se incorporan con sus componentes, sin habilitar drivers ajenos a PostgreSQL.
 No se modifican dependencias ni publicación Python.
 
+JWT usa `jsonwebtoken` 11.1 con PEM y AWS-LC (ADR 0008), sin features por defecto.
+El proveedor compila código nativo y requiere compilador C/CMake en builds limpios;
+Cargo.lock fija también sus dependencias transitivas. No implementamos criptografía propia.
+
 ```bash
 cd rust
 cargo build --locked
