@@ -19,5 +19,5 @@
 Herramientas de revisión utilizadas: Python 3, PyYAML, jsonschema ya disponibles, tarfile,
 hashlib y Git. No se añadieron dependencias ni jobs de CI como parte de esta verificación.
 Esquema oficial: https://spec.openapis.org/oas/3.0/schema/2024-10-18.
-El SDD y el protocolo describen las pruebas runtime futuras; no se ejecutaron en esta entrega
+El SDD y el protocolo describen las pruebas runtime futuras; no se ejecutaron localmente
 pytest/PostGIS, la matriz de carga nueva, GeoServer, Rust ni una migración de consumidores.
