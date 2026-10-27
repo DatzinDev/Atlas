@@ -1,0 +1,238 @@
+openapi: 3.0.3
+info:
+  title: Atlas Rust REST API
+  version: 0.1.0-draft
+  description: Contrato del MVP, todavía no implementado. Véanse spec.md y api.md.
+servers: [{url: /api/v1}]
+security: [{}, {bearer: []}]
+paths:
+  /datasets:
+    get:
+      operationId: listDatasets
+      parameters: [{$ref: '#/components/parameters/Limit'}, {$ref: '#/components/parameters/Offset'}]
+      responses: {'200': {description: Catálogo visible paginado, content: {application/json: {schema: {$ref: '#/components/schemas/Catalog'}}}}, default: {$ref: '#/components/responses/Error'}}
+  /datasets/{id}:
+    parameters: [{$ref: '#/components/parameters/Id'}]
+    get:
+      operationId: getDataset
+      responses: {'200': {description: Metadatos públicos autorizados, content: {application/json: {schema: {$ref: '#/components/schemas/Dataset'}}}}, default: {$ref: '#/components/responses/Error'}}
+  /datasets/{id}/items:
+    parameters: [{$ref: '#/components/parameters/Id'}]
+    get:
+      operationId: getItems
+      parameters: [{$ref: '#/components/parameters/Filter'}, {$ref: '#/components/parameters/Bbox'}, {$ref: '#/components/parameters/Properties'}, {$ref: '#/components/parameters/Sort'}, {$ref: '#/components/parameters/Limit'}, {$ref: '#/components/parameters/Offset'}]
+      responses: {'200': {$ref: '#/components/responses/Features'}, default: {$ref: '#/components/responses/Error'}}
+  /datasets/{id}/query:
+    parameters: [{$ref: '#/components/parameters/Id'}]
+    post:
+      operationId: queryDataset
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Query'}}}}
+      responses: {'200': {$ref: '#/components/responses/Features'}, default: {$ref: '#/components/responses/Error'}}
+  /datasets/{id}/tiles/{z}/{x}/{y}.mvt:
+    parameters:
+      - {$ref: '#/components/parameters/Id'}
+      - {name: z, in: path, required: true, schema: {type: integer, minimum: 0, maximum: 22}}
+      - {name: x, in: path, required: true, schema: {type: integer, minimum: 0}}
+      - {name: y, in: path, required: true, schema: {type: integer, minimum: 0}}
+    get:
+      operationId: getVectorTile
+      parameters: [{$ref: '#/components/parameters/Filter'}, {$ref: '#/components/parameters/Properties'}]
+      responses: {'200': {description: MVT completo bajo presupuesto o tile vacío, content: {application/vnd.mapbox-vector-tile: {schema: {type: string, format: binary}}}}, default: {$ref: '#/components/responses/Error'}}
+  /datasets/{id}/tilejson.json:
+    parameters: [{$ref: '#/components/parameters/Id'}]
+    get:
+      operationId: getTileJson
+      responses: {'200': {description: TileJSON autorizado, content: {application/json: {schema: {$ref: '#/components/schemas/TileJson'}}}}, default: {$ref: '#/components/responses/Error'}}
+  /datasets/{id}/export:
+    parameters: [{$ref: '#/components/parameters/Id'}]
+    get:
+      operationId: exportDataset
+      parameters:
+        - {name: format, in: query, schema: {type: string, enum: [geojson], default: geojson}}
+        - {$ref: '#/components/parameters/Filter'}
+        - {$ref: '#/components/parameters/Bbox'}
+        - {$ref: '#/components/parameters/Properties'}
+      responses: {'200': {description: Descarga completa en streaming con Content-Disposition attachment, content: {application/geo+json: {schema: {$ref: '#/components/schemas/Collection'}}}}, default: {$ref: '#/components/responses/Error'}}
+  /admin/datasets:
+    get:
+      operationId: listPublications
+      security: [{bearer: []}]
+      parameters: [{$ref: '#/components/parameters/Limit'}, {$ref: '#/components/parameters/Offset'}]
+      responses: {'200': {description: Publicaciones administrativas, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationList'}}}}, default: {$ref: '#/components/responses/Error'}}
+    post:
+      operationId: createPublication
+      security: [{bearer: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PublicationCreate'}}}}
+      responses: {'201': {description: Publicación validada, headers: {ETag: {schema: {type: string}}}, content: {application/json: {schema: {$ref: '#/components/schemas/Publication'}}}}, default: {$ref: '#/components/responses/Error'}}
+  /admin/datasets/{id}:
+    parameters: [{$ref: '#/components/parameters/Id'}]
+    get:
+      operationId: getPublication
+      security: [{bearer: []}]
+      responses: {'200': {description: Configuración y revisión, headers: {ETag: {schema: {type: string}}}, content: {application/json: {schema: {$ref: '#/components/schemas/Publication'}}}}, default: {$ref: '#/components/responses/Error'}}
+    patch:
+      operationId: updatePublication
+      security: [{bearer: []}]
+      parameters: [{$ref: '#/components/parameters/IfMatch'}]
+      requestBody: {required: true, content: {application/merge-patch+json: {schema: {$ref: '#/components/schemas/PublicationPatch'}}}}
+      responses: {'200': {description: Publicación revalidada, headers: {ETag: {schema: {type: string}}}, content: {application/json: {schema: {$ref: '#/components/schemas/Publication'}}}}, default: {$ref: '#/components/responses/Error'}}
+    delete:
+      operationId: deletePublication
+      security: [{bearer: []}]
+      parameters: [{$ref: '#/components/parameters/IfMatch'}]
+      responses: {'204': {description: Publicación retirada; datos fuente intactos}, default: {$ref: '#/components/responses/Error'}}
+  /health:
+    get:
+      operationId: health
+      security: []
+      responses: {'200': {description: Proceso activo}}
+  /ready:
+    get:
+      operationId: ready
+      security: []
+      responses: {'200': {description: Pool y catálogo disponibles}, '503': {$ref: '#/components/responses/Error'}}
+components:
+  securitySchemes:
+    bearer: {type: http, scheme: bearer, bearerFormat: JWT}
+  parameters:
+    Id: {name: id, in: path, required: true, schema: {type: string, pattern: '^[a-z0-9_-]+$', maxLength: 128}}
+    Limit: {name: limit, in: query, schema: {type: integer, minimum: 1}, description: Defaults y máximos según spec.md; un exceso es 400.}
+    Offset: {name: offset, in: query, schema: {type: integer, minimum: 0, maximum: 100000, default: 0}}
+    Filter: {name: filter, in: query, content: {application/json: {schema: {$ref: '#/components/schemas/Predicate'}}}}
+    Bbox: {name: bbox, in: query, style: form, explode: false, schema: {$ref: '#/components/schemas/Bbox'}}
+    Properties: {name: properties, in: query, style: form, explode: false, schema: {type: array, minItems: 1, uniqueItems: true, items: {type: string}}}
+    Sort: {name: sort, in: query, schema: {type: string}, description: 'field:asc,other:desc; whitelist y desempate por id.'}
+    IfMatch: {name: If-Match, in: header, required: true, schema: {type: string}, description: Revision entre comillas del ETag administrativo.}
+  responses:
+    Error: {description: Error estructurado; códigos HTTP y limpieza en api.md, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Features: {description: Página GeoJSON sin conteo total implícito, content: {application/geo+json: {schema: {$ref: '#/components/schemas/Page'}}}}
+  schemas:
+    Error:
+      type: object
+      additionalProperties: false
+      required: [code, message, request_id]
+      properties: {code: {type: string}, message: {type: string}, request_id: {type: string}}
+    Bbox: {type: array, minItems: 4, maxItems: 4, items: {type: number}, description: 'minx,miny,maxx,maxy finitos en EPSG:4326; sin inversión.'}
+    Scalar: {oneOf: [{type: string}, {type: number}, {type: boolean}]}
+    Predicate:
+      oneOf:
+        - {$ref: '#/components/schemas/Comparison'}
+        - {$ref: '#/components/schemas/Membership'}
+        - {$ref: '#/components/schemas/NullCheck'}
+        - {$ref: '#/components/schemas/Group'}
+        - {$ref: '#/components/schemas/Negation'}
+        - {$ref: '#/components/schemas/Spatial'}
+    Comparison:
+      type: object
+      additionalProperties: false
+      required: [op, field, value]
+      properties: {op: {type: string, enum: [eq, ne, gt, gte, lt, lte, like, ilike]}, field: {type: string, minLength: 1}, value: {$ref: '#/components/schemas/Scalar'}}
+    Membership:
+      type: object
+      additionalProperties: false
+      required: [op, field, value]
+      properties: {op: {type: string, enum: [in]}, field: {type: string, minLength: 1}, value: {type: array, minItems: 1, maxItems: 1000, items: {$ref: '#/components/schemas/Scalar'}}}
+    NullCheck:
+      type: object
+      additionalProperties: false
+      required: [op, field]
+      properties: {op: {type: string, enum: [is_null, is_not_null]}, field: {type: string, minLength: 1}}
+    Group:
+      type: object
+      additionalProperties: false
+      required: [op, args]
+      properties: {op: {type: string, enum: [and, or]}, args: {type: array, minItems: 1, maxItems: 100, items: {$ref: '#/components/schemas/Predicate'}}}
+    Negation:
+      type: object
+      additionalProperties: false
+      required: [op, arg]
+      properties: {op: {type: string, enum: [not]}, arg: {$ref: '#/components/schemas/Predicate'}}
+    Spatial:
+      type: object
+      additionalProperties: false
+      required: [op, geometry]
+      properties: {op: {type: string, enum: [within, intersects]}, geometry: {$ref: '#/components/schemas/SelectionGeometry'}}
+    SelectionGeometry:
+      type: object
+      additionalProperties: false
+      required: [type, coordinates]
+      properties: {type: {type: string, enum: [Polygon, MultiPolygon]}, coordinates: {type: array, minItems: 1, items: {type: array}}}
+      description: XY EPSG:4326; anillos y topología se validan según spec.md.
+    Query:
+      type: object
+      additionalProperties: false
+      properties:
+        filter: {$ref: '#/components/schemas/Predicate'}
+        bbox: {$ref: '#/components/schemas/Bbox'}
+        properties: {type: array, minItems: 1, uniqueItems: true, items: {type: string}}
+        sort: {type: array, minItems: 1, items: {$ref: '#/components/schemas/SortField'}}
+        limit: {type: integer, minimum: 1, maximum: 10000, default: 1000}
+        offset: {type: integer, minimum: 0, maximum: 100000, default: 0}
+    SortField:
+      type: object
+      additionalProperties: false
+      required: [field, direction]
+      properties: {field: {type: string}, direction: {type: string, enum: [asc, desc]}}
+    Feature:
+      type: object
+      required: [type, id, geometry, properties]
+      properties: {type: {type: string, enum: [Feature]}, id: {oneOf: [{type: integer}, {type: string}]}, geometry: {type: object, nullable: true}, properties: {type: object}}
+    Collection:
+      type: object
+      required: [type, features]
+      properties: {type: {type: string, enum: [FeatureCollection]}, features: {type: array, items: {$ref: '#/components/schemas/Feature'}}}
+    Page:
+      allOf:
+        - {$ref: '#/components/schemas/Collection'}
+        - {type: object, required: [numberReturned, hasMore], properties: {numberReturned: {type: integer, minimum: 0}, hasMore: {type: boolean}}}
+    Dataset:
+      type: object
+      additionalProperties: false
+      required: [id, title, geometry_type, srid, attributes, formats]
+      properties: {id: {type: string}, title: {type: string}, description: {type: string, nullable: true}, geometry_type: {type: string}, srid: {type: integer}, extent: {$ref: '#/components/schemas/Bbox'}, attributes: {type: array, items: {$ref: '#/components/schemas/Attribute'}}, formats: {type: array, items: {type: string, enum: [geojson, mvt]}}}
+    Attribute:
+      type: object
+      required: [name, type, nullable]
+      properties: {name: {type: string}, type: {type: string}, nullable: {type: boolean}}
+    Catalog:
+      type: object
+      required: [datasets, hasMore]
+      properties: {datasets: {type: array, items: {$ref: '#/components/schemas/Dataset'}}, hasMore: {type: boolean}}
+    TileJson:
+      type: object
+      required: [tilejson, tiles, vector_layers, minzoom, maxzoom]
+      properties: {tilejson: {type: string, enum: ['3.0.0']}, tiles: {type: array, items: {type: string}}, minzoom: {type: integer}, maxzoom: {type: integer}, bounds: {$ref: '#/components/schemas/Bbox'}, attribution: {type: string}, vector_layers: {type: array, items: {type: object, required: [id, fields], properties: {id: {type: string}, fields: {type: object, additionalProperties: {type: string}}}}}}
+    Source:
+      type: object
+      additionalProperties: false
+      required: [schema, table]
+      properties: {schema: {type: string}, table: {type: string}, geometry_column: {type: string}, id_column: {type: string}}
+    Access:
+      type: object
+      additionalProperties: false
+      properties: {public: {type: boolean, default: false}, public_download: {type: boolean, default: false}, view_roles: {type: array, items: {type: string}}, query_roles: {type: array, items: {type: string}}, download_roles: {type: array, items: {type: string}}}
+    PublicationPatch:
+      type: object
+      additionalProperties: false
+      properties: {title: {type: string, minLength: 1}, description: {type: string, nullable: true}, source: {$ref: '#/components/schemas/Source'}, properties: {type: array, minItems: 1, uniqueItems: true, items: {type: string}}, filter: {allOf: [{$ref: '#/components/schemas/Predicate'}], nullable: true}, access: {$ref: '#/components/schemas/Access'}, enabled: {type: boolean, default: true}}
+    PublicationCreate:
+      type: object
+      additionalProperties: false
+      required: [id, title, source, properties]
+      properties:
+        id: {type: string, pattern: '^[a-z0-9_-]+$', maxLength: 128}
+        title: {type: string, minLength: 1}
+        description: {type: string, nullable: true}
+        source: {$ref: '#/components/schemas/Source'}
+        properties: {type: array, minItems: 1, uniqueItems: true, items: {type: string}}
+        filter: {allOf: [{$ref: '#/components/schemas/Predicate'}], nullable: true}
+        access: {$ref: '#/components/schemas/Access'}
+        enabled: {type: boolean, default: true}
+    Publication:
+      type: object
+      required: [id, config, metadata, revision]
+      properties: {id: {type: string}, config: {$ref: '#/components/schemas/PublicationPatch'}, metadata: {$ref: '#/components/schemas/Dataset'}, revision: {type: integer, format: int64, minimum: 1}}
+    PublicationList:
+      type: object
+      required: [publications, hasMore]
+      properties: {publications: {type: array, items: {$ref: '#/components/schemas/Publication'}}, hasMore: {type: boolean}}
