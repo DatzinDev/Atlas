@@ -79,3 +79,10 @@ recibe únicamente USAGE en atlas_catalog y SELECT/INSERT/UPDATE/DELETE en datas
 además de USAGE/SELECT en los esquemas/relaciones fuente permitidos. Nunca concederle
 CREATE ni propiedad de esos objetos. Las pruebas demuestran el rechazo de DDL con
 un rol limitado; no modifican roles ni fuentes de ningún despliegue existente.
+
+`Catalog` valida configuración y metadatos al leer, vuelve a inspeccionar al crear
+o reemplazar y no usa caché. Update/delete comparan revisión en el mismo statement;
+una revisión obsoleta devuelve RevisionMismatch. Borrar retira solo publicación,
+nunca datos fuente. El repositorio recibe configuración completa: Merge Patch y
+ETag de transporte se incorporan en #218; el filtro opaco se valida en #220 antes
+de habilitar publicación por HTTP. No hay DDL automático en operaciones CRUD.
