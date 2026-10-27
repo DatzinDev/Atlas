@@ -1,5 +1,16 @@
 # Atlas — guía para agentes
 
+## Evolución Rust
+
+El contrato Rust se define en docs/rust/README.md, spec.md, architecture.md y api.md/OpenAPI;
+seguir #203 y sus tareas. La implementación Rust aún no existe y requiere línea base #210.
+No portar OGC/Pillow por inercia ni modificar el checkout Python pendiente. El ADR0008 fija
+el stack y la separación entre JWT externo/políticas; no implementar usuarios/login.
+Las reglas Python siguientes siguen vigentes para src/atlas; no confundirlas con la nueva API.
+Ambas implementaciones conservan SQL parametrizado, límites, validación, GitFlow y MIT.
+Para Rust: un paquete en rust/, módulos concretos, fmt/clippy/test y PostGIS real; sin
+dependencias fuera de ADR, microservicios ni abstracciones especulativas.
+
 Librería Python/FastAPI que publica capas PostGIS vía WMS y WFS. Import `atlas`, distribución
 `atlas-geo`, layout `src/atlas/`.
 

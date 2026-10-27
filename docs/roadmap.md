@@ -1,5 +1,21 @@
 # Roadmap
 
+## Ciclo nuevo: Atlas Rust
+
+La dirección futura aprobada es un motor Rust con API REST, PostGIS, catálogo administrable
+y datasets públicos/privados. MVP GeoJSON/MVT; formatos adicionales después.
+Ver [especificación e índice](rust/README.md), [plan por etapas](rust/plan.md),
+[tareas](rust/tasks.md) y [evidencia de rendimiento](rust/benchmarks.md).
+Seguimiento: [#203](https://github.com/DatzinDev/Atlas/issues/203).
+La línea base Python/GeoServer precede a implementar Rust. No hay implementación ni nuevas
+mediciones por publicar este roadmap. Python mantiene sus contratos y no se retira aquí.
+
+## Historial y planificación anterior de Python
+
+Las secciones siguientes documentan el ciclo Python. Su enfoque OGC/librería y exclusiones
+no gobiernan el motor Rust. Los pendientes Python se clasifican según [el plan](rust/plan.md);
+no se cierran ni fusionan retrospectivamente por aprobar la nueva dirección.
+
 Las fases 0–4 del MVP están cerradas (43 issues). Las etapas nuevas se siguen en
 [#100](https://github.com/DatzinDev/Atlas/issues/100); no equivalen a versiones ni fechas.
 
