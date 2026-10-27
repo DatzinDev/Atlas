@@ -101,3 +101,14 @@ de reloj; roles omitidos producen lista vacía y roles malformados se rechazan.
 Claims externos adicionales se permiten; jku/kid no seleccionan claves ni disparan red.
 Tokens de más de 16 KiB se rechazan. Claves en tests/fixtures son ficticias y públicas;
 jamás usarlas en despliegues. No hay emisor, login ni OIDC.
+
+TOML admite `[auth]` opcional; al incluirlo exige los tres campos siguientes.
+Rutas relativas se resuelven desde el directorio de trabajo del proceso.
+El PEM se carga una vez antes del listener; rotarlo requiere reiniciar.
+
+```toml
+[auth]
+public_key_file = '/etc/atlas/jwt-public.pem'
+issuer = 'https://identity.example.test'
+audience = 'atlas'
+```
