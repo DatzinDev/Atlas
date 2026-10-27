@@ -1,0 +1,30 @@
+{
+  "recorded_on": "2026-10-27",
+  "archive": "python-2026-10.tar.gz",
+  "archive_sha256": "102c0dcc7ba61c796cb9296ce83778e7cf232d4f0249f224084ab729d956b3da",
+  "archive_bytes": 81577,
+  "historical_manifest_matches": 7,
+  "origin": "Local untracked historical reports and raw samples, plus committed reports at pinned refs; not a new benchmark.",
+  "pinned_report_refs": {"reports/vector-develop-254b0d6.md": "254b0d6f100fc2f6ae2eb8d97f9f1014d96479c3", "reports/vector-pr200-ed9fdda.md": "ed9fdda002483832ae435fd7ba990f29524d2c2b"},
+  "missing_raw_reports": [{"path": "/tmp/atlas-vector-benchmark.json", "expected_sha256": "82ea823f1187fa7e4245d4a82ffb2fe0ef7d5d5600278b4e98427863d13e6937"}, {"path": "/tmp/atlas-wms-urgent-final.json", "expected_sha256": "022242c38bbe7a7313538724effc3f9089329bf9256a72e0fa94d6462149cca6"}],
+  "http_runs": [{"file": "2026-10-19-http.json", "combinations": 20, "samples": 240, "transport_errors": 0}, {"file": "2026-10-19-final-uncached.json", "combinations": 20, "samples": 240, "transport_errors": 0}, {"file": "2026-10-19-final-cached.json", "combinations": 20, "samples": 240, "transport_errors": 0}],
+  "files": [
+    {"path": "benchmarks/results/2026-10-19-cprofile-summary.json", "bytes": 6828, "sha256": "8423397bc391a57bbcb5d055b6bf10e468b1d96222371eaaa789fa843872833f"},
+    {"path": "benchmarks/results/2026-10-19-final-cached.json", "bytes": 74724, "sha256": "e26b508a48adb5511baef3560bc3e1a98d0f08fe64eb42532f3a207117fc4ffb"},
+    {"path": "benchmarks/results/2026-10-19-final-soak.json", "bytes": 71895, "sha256": "6027f2350c9b9aa5e8b8b7f36781a88378d5de8ca214b9ae8aad6bd77f2b76b5"},
+    {"path": "benchmarks/results/2026-10-19-final-uncached.json", "bytes": 74659, "sha256": "b33ec6895281c08b6289015e0a30009e19c7654ac12a6499b05d499e1a75dd7f"},
+    {"path": "benchmarks/results/2026-10-19-final-verification.txt", "bytes": 671, "sha256": "04cb8713345f6ce85a85141055d9ba792c6a3647764ebedb25c0b66f620badb1"},
+    {"path": "benchmarks/results/2026-10-19-http.json", "bytes": 67426, "sha256": "d12f9cb33243c13d7282be20860e31fb465f24aef5904c16029bf8f3ed99f389"},
+    {"path": "benchmarks/results/2026-10-19-manifest.json", "bytes": 7170, "sha256": "1a980687024dad0192d22d3d0809465ddc5b795d094070773b4f0512376355b8"},
+    {"path": "benchmarks/results/2026-10-19-profile-points.json", "bytes": 8891, "sha256": "4e4f92a99f7f9cd1986d0faed69ee8e2645a19c96e447f8862660860b3433b3a"},
+    {"path": "benchmarks/results/2026-10-19-profile-polygons.json", "bytes": 6179, "sha256": "43b6f2329e915f9b26f88f2d476cf9577853c5da46dd29270208ac7b3d13483c"},
+    {"path": "benchmarks/results/2026-10-19-requirements.txt", "bytes": 760, "sha256": "e3a8e22ac4ced6de32737d952eb331d7b6375506c155a198bc2328a512efe6fe"},
+    {"path": "benchmarks/results/2026-10-19-stages.jsonl", "bytes": 84713, "sha256": "378e189a0f89dcde721f9f4e86b4c22b53b7515b2020af8dab80f2ff8b98533f"},
+    {"path": "benchmarks/results/2026-10-19-verification.txt", "bytes": 352, "sha256": "842b53016122d4a3643f3dd22a220410702b7ad0fea5c76e8f1d7128a1ee2510"},
+    {"path": "docs/PERFORMANCE_AUDIT.md", "bytes": 44508, "sha256": "d628c8edc6af5cca9f16dd461ea1c05740f92089bec8007183d89cedfec57c4d"},
+    {"path": "docs/PERFORMANCE_BASELINE.md", "bytes": 9234, "sha256": "0dec68294dabf7c54cecbbe0ccb48d2038ad105edd6078af17b2f149deff4585"},
+    {"path": "docs/PERFORMANCE_OPTIMIZATION.md", "bytes": 14243, "sha256": "11a90299e3946e5d4f404999082514442ad8913bf4748393d8660e565c45e754"},
+    {"path": "reports/vector-develop-254b0d6.md", "bytes": 5933, "sha256": "5ef2cb4792740766b36e5f73e552f03dfb72575e185d1aa2195839648d79395e"},
+    {"path": "reports/vector-pr200-ed9fdda.md", "bytes": 8779, "sha256": "cfbc00b7bb91edfffb3c35a524ef63513e0e438e2793ca793c1dd90c320c78a0"}
+  ]
+}
