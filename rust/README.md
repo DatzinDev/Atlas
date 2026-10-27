@@ -24,6 +24,21 @@ en Unix, SIGTERM detienen aceptación y esperan conexiones mediante el shutdown
 de Axum. Logs JSON mínimos en stderr, sin registrar solicitudes ni cabeceras.
 No hay conexiones PostGIS que cerrar todavía.
 
+## Configuración y dominio (#212)
+
+`serve --config archivo.toml` admite `listen`, `database_url`, `allowed_schemas`
+y tabla `[limits]` con los defaults de spec.md. No acepta claves desconocidas.
+`ATLAS_DATABASE_URL` y `ATLAS_LISTEN` prevalecen sobre TOML; `--listen` prevalece
+sobre el entorno. DSN nunca pertenece a un Dataset ni se imprime al fallar.
+La configuración se valida antes del bind/pool. No derive Debug/Serialize en Config.
+En esta etapa el DSN es opcional para health; el pool se incorpora en #213.
+
+Domain no importa HTTP/SQL: Dataset/Source/AccessPolicy/Principal, Query y Error.
+Después de deserializar se llama `validate` con schemas/límites del servidor;
+la introspección posterior verifica propiedades y tipos reales. Los filtros se
+conservan como RawValue sin redondear numeric: su parser acotado y validación
+semántica pertenecen a #220, antes de exponer publicaciones o consultas por HTTP.
+
 ```bash
 cargo fmt --check
 cargo clippy --locked --all-targets --all-features -- -D warnings

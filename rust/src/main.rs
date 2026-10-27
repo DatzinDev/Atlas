@@ -1,18 +1,25 @@
 use std::{env, net::SocketAddr, process::ExitCode};
 
+use atlas::config::Config;
 use axum::{Router, http::StatusCode, routing::get};
 use tokio::{net::TcpListener, signal};
 
-fn listen_address() -> Result<SocketAddr, &'static str> {
+fn configuration() -> Result<Config, &'static str> {
     let args: Vec<_> = env::args_os().skip(1).collect();
-    match args.as_slice() {
-        [command] if command == "serve" => Ok(([127, 0, 0, 1], 8080).into()),
-        [command, option, value] if command == "serve" && option == "--listen" => value
-            .to_str()
-            .and_then(|value| value.parse().ok())
-            .ok_or("invalid listen address"),
-        _ => Err("usage: atlas serve [--listen IP:PORT]"),
+    if args.first().is_none_or(|command| command != "serve") || args.len() % 2 == 0 {
+        return Err("usage: atlas serve [--config FILE] [--listen IP:PORT]");
     }
+    let (mut path, mut listen) = (None, None);
+    for pair in args[1..].as_chunks::<2>().0 {
+        match pair[0].to_str() {
+            Some("--config") if path.is_none() => path = Some(std::path::Path::new(&pair[1])),
+            Some("--listen") if listen.is_none() => {
+                listen = Some(pair[1].to_str().ok_or("invalid configuration")?.to_owned())
+            }
+            _ => return Err("invalid configuration"),
+        }
+    }
+    Config::load(path, listen).map_err(|_| "invalid configuration")
 }
 
 async fn serve(address: SocketAddr) -> Result<(), &'static str> {
@@ -57,8 +64,8 @@ async fn serve(address: SocketAddr) -> Result<(), &'static str> {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let result = match listen_address() {
-        Ok(address) => serve(address).await,
+    let result = match configuration() {
+        Ok(config) => serve(config.listen).await,
         Err(message) => Err(message),
     };
     match result {
