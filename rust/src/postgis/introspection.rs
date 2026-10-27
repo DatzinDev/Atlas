@@ -93,6 +93,15 @@ pub async fn inspect(
     {
         return Err(Error::InvalidRequest);
     }
+    let known_crs: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM spatial_ref_sys WHERE srid=$1)")
+            .bind(srid)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(error)?;
+    if !known_crs {
+        return Err(Error::InvalidRequest);
+    }
     let id_column = if ["v", "m"].contains(&kind.as_str()) {
         source.id_column.clone().ok_or(Error::InvalidRequest)?
     } else {
