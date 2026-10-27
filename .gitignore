@@ -22,6 +22,8 @@ rust/target/
 .env.*
 !.env.example
 *.pem
+!rust/tests/fixtures/jwt-test-private.pem
+!rust/tests/fixtures/jwt-test-public.pem
 *.key
 *.p12
 *.pfx

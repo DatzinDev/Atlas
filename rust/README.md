@@ -92,3 +92,12 @@ una revisión obsoleta devuelve RevisionMismatch. Borrar retira solo publicació
 nunca datos fuente. El repositorio recibe configuración completa: Merge Patch y
 ETag de transporte se incorporan en #218; el filtro opaco se valida en #220 antes
 de habilitar publicación por HTTP. No hay DDL automático en operaciones CRUD.
+
+## Identidad (#216)
+
+`auth::jwt::Verifier` verifica únicamente RS256 con PEM público local, issuer y audience
+configurados. Exige sub no vacío y exp futuro, valida nbf cuando existe, sin tolerancia
+de reloj; roles omitidos producen lista vacía y roles malformados se rechazan.
+Claims externos adicionales se permiten; jku/kid no seleccionan claves ni disparan red.
+Tokens de más de 16 KiB se rechazan. Claves en tests/fixtures son ficticias y públicas;
+jamás usarlas en despliegues. No hay emisor, login ni OIDC.
