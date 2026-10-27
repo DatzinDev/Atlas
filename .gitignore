@@ -16,6 +16,7 @@ htmlcov/
 /tmp/
 .idea/
 .vscode/
+rust/target/
 
 # Credenciales y configuración local; conservar solo la plantilla pública.
 .env.*

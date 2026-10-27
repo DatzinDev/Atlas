@@ -1,0 +1,10 @@
+[package]
+name = "atlas"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT"
+
+[dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+tokio = { version = "1.54.1", default-features = false, features = ["macros", "rt-multi-thread", "net", "signal"] }

@@ -14,6 +14,25 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Format Rust
+        run: cargo fmt --check
+      - name: Lint Rust
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: Test Rust
+        run: cargo test --locked
+
   gitflow:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
