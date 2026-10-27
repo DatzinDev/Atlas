@@ -1,5 +1,18 @@
 # Cómo contribuir a Atlas
 
+## Dos implementaciones, un flujo de revisión
+
+El runtime disponible es Python. El futuro motor Rust se especifica en [docs/rust/](docs/rust/README.md)
+y se sigue en [#203](https://github.com/DatzinDev/Atlas/issues/203); no empezar código Rust
+antes de completar la línea base #210. Para track:rust leer spec.md, architecture.md,
+api.md/OpenAPI y el requisito indicado por el issue; los docs/components actuales son de Python.
+Los límites de tamaño, idioma, commits y develop→main de esta guía aplican a ambos.
+Las dependencias Rust requieren el ADR correspondiente; no ampliar el entorno Python.
+Cuando exista rust/Cargo.toml, comprobar cargo fmt --check, cargo clippy con -D warnings y
+cargo test usando --manifest-path rust/Cargo.toml; integración geoespacial con PostGIS real.
+Conservar los checks Python; no ejecutar pytest/mypy como supuesta validación de Rust.
+Docs únicamente: validar enlaces/contratos/manifiestos; no atribuir pruebas runtime no ejecutadas.
+
 El repositorio está organizado para que cada issue sea implementable de forma aislada —por una
 persona o por un agente— y revisable en pocos minutos. Eso solo funciona si los issues y los PRs
 se mantienen pequeños.

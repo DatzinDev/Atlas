@@ -1,5 +1,9 @@
 # Atlas
 
+> **Evolución en planificación:** [Atlas Rust — motor REST](docs/rust/README.md),
+> [etapas y tareas](docs/rust/plan.md) y [métricas Python](docs/rust/benchmarks.md).
+> El motor Rust aún no está implementado; el uso y la instalación siguientes son de Python.
+
 Librería Python para FastAPI que publica tablas y vistas de **PostGIS** como capas geográficas
 vía **WMS** y **WFS**, con API de consulta, filtrado, descarga y exportación de mapas.
 
@@ -64,6 +68,7 @@ concatena SQL. Ver [security.md](docs/components/security.md).
 
 | Documento | Para qué |
 |---|---|
+| [Atlas Rust](docs/rust/README.md) | SDD, arquitectura, OpenAPI, transición, benchmarks y tareas de la nueva dirección |
 | [architecture.md](docs/architecture.md) | Componentes, reglas de dependencia y flujo de una petición |
 | [components/](docs/components/) | Un documento por componente: contrato, invariantes, alcance |
 | [security.md](docs/components/security.md) | Inyección SQL, autorización, límites de recursos |

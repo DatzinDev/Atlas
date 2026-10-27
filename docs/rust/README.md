@@ -10,6 +10,7 @@ La versión Python conserva sus contratos y su publicación actuales durante la 
 | [Contrato REST](api.md) y [OpenAPI](openapi.yaml) | Interfaz HTTP futura; no anuncia disponibilidad |
 | [Rendimiento](benchmarks.md) | Evidencia histórica y protocolo comparativo |
 | [Plan](plan.md) y [tareas](tasks.md) | Etapas, dependencias y enlaces a GitHub |
+| [Verificación documental](verification.md) | Comprobaciones realizadas y pruebas pendientes |
 | [ADR 0008](../adr/0008-rust-rest-platform.md) | Decisión de producto y tecnología |
 
 SDD significa desarrollo guiado por especificaciones: requisito → issue → prueba → PR → evidencia.
