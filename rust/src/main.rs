@@ -1,7 +1,7 @@
 use std::{env, process::ExitCode};
 
 use atlas::config::Config;
-use axum::{Router, http::StatusCode, routing::get};
+use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
 use tokio::{net::TcpListener, signal};
 
 fn configuration() -> Result<(bool, Config), &'static str> {
@@ -53,11 +53,27 @@ async fn serve(config: Config) -> Result<(), &'static str> {
     } else {
         None
     };
+    let catalog = database
+        .clone()
+        .map(|db| atlas::catalog::Catalog::new(db, config.clone()))
+        .transpose()
+        .map_err(|_| "invalid configuration")?;
     let router = Router::new()
         .route("/api/v1/health", get(|| async { StatusCode::OK }))
         .route(
             "/api/v1/ready",
-            get(|| async { StatusCode::SERVICE_UNAVAILABLE }),
+            get(move || {
+                let catalog = catalog.clone();
+                async move {
+                    if let Some(catalog) = catalog && catalog.ready().await.is_ok() {
+                        return StatusCode::OK.into_response();
+                    }
+                    static REQUEST_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                    let body = serde_json::json!({"code": atlas::domain::Error::DatabaseUnavailable,
+                        "message": "service not ready", "request_id": REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed).to_string()});
+                    (StatusCode::SERVICE_UNAVAILABLE, [("content-type", "application/json")], body.to_string()).into_response()
+                }
+            }),
         );
     eprintln!("{{\"event\":\"listening\",\"address\":\"{bound}\"}}");
     let result = axum::serve(listener, router)

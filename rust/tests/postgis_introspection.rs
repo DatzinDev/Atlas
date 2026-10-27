@@ -20,6 +20,7 @@ async fn real_relations_geometry_identifiers_and_properties() {
         "CREATE TABLE introspection_test.\"quoted\"\"table\"(\"weird\"\"id\" bigint PRIMARY KEY, name text, payload bytea, geom geometry(Point,4326))",
         "CREATE TABLE introspection_test.ambiguous(id integer PRIMARY KEY, geom geometry(Point,4326), other geometry(Point,3857))",
         "CREATE TABLE introspection_test.generic(id integer PRIMARY KEY, geom geometry)",
+        "CREATE TABLE introspection_test.composite(id integer, second integer, geom geometry(Point,4326), PRIMARY KEY(id,second))",
         "CREATE VIEW introspection_test.good AS SELECT \"weird\"\"id\" AS id, geom FROM introspection_test.\"quoted\"\"table\"",
         "CREATE VIEW introspection_test.duplicate AS SELECT 1 AS id, ST_SetSRID(ST_Point(0,0),4326)::geometry(Point,4326) AS geom FROM generate_series(1,2)",
         "CREATE VIEW introspection_test.null_id AS SELECT NULL::integer AS id, ST_SetSRID(ST_Point(0,0),4326)::geometry(Point,4326) AS geom",
@@ -47,6 +48,7 @@ async fn real_relations_geometry_identifiers_and_properties() {
     dataset.source.geometry_column = None;
     for table in [
         "generic",
+        "composite",
         "good",
         "duplicate",
         "null_id",

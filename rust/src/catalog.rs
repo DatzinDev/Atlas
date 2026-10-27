@@ -14,12 +14,21 @@ pub struct Publication {
     pub revision: i64,
 }
 
+#[derive(Clone)]
 pub struct Catalog {
     database: Database,
     config: Config,
 }
 
 impl Catalog {
+    pub async fn ready(&self) -> Result<(), Error> {
+        let mut tx = self.database.begin_read().await?;
+        sqlx::query("SELECT id,config,metadata,revision FROM atlas_catalog.datasets LIMIT 0")
+            .execute(&mut *tx)
+            .await
+            .map_err(error)?;
+        tx.rollback().await.map_err(error)
+    }
     pub fn new(database: Database, config: Config) -> Result<Self, Error> {
         config.validate()?;
         Ok(Self { database, config })

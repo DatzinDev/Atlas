@@ -23,6 +23,7 @@ fn configuration_errors_do_not_echo_input() {
         vec![],
         vec!["serve", "--unknown", "secret-token"],
         vec!["serve", "--listen", "postgres://user:password@host/db"],
+        vec!["serve", "--config", "/missing/secret-token.toml"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_atlas"))
             .args(args)
@@ -38,9 +39,26 @@ fn configuration_errors_do_not_echo_input() {
 
 #[test]
 fn http_startup_and_shutdown() {
-    for signal in ["-TERM", "-INT"] {
+    let dsn = std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required");
+    assert!(
+        Command::new(env!("CARGO_BIN_EXE_atlas"))
+            .arg("migrate")
+            .env("ATLAS_DATABASE_URL", &dsn)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    for (signal, database) in [("-TERM", None), ("-INT", None), ("-TERM", Some(&dsn))] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_atlas"));
+        command
+            .env_remove("ATLAS_DATABASE_URL")
+            .env_remove("ATLAS_LISTEN");
+        if let Some(dsn) = database {
+            command.env("ATLAS_DATABASE_URL", dsn);
+        }
         let mut server = Server(
-            Command::new(env!("CARGO_BIN_EXE_atlas"))
+            command
                 .args(["serve", "--listen", "127.0.0.1:0"])
                 .stderr(Stdio::piped())
                 .spawn()
@@ -60,7 +78,11 @@ fn http_startup_and_shutdown() {
             .unwrap()
             .strip_suffix("\"}")
             .unwrap();
-        for (path, status) in [("health", "200"), ("ready", "503"), ("datasets", "404")] {
+        for (path, status) in [
+            ("health", "200"),
+            ("ready", if database.is_some() { "200" } else { "503" }),
+            ("datasets", "404"),
+        ] {
             let mut stream = TcpStream::connect(address).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
@@ -73,6 +95,11 @@ fn http_startup_and_shutdown() {
             let mut response = String::new();
             stream.read_to_string(&mut response).unwrap();
             assert!(response.starts_with(&format!("HTTP/1.1 {status}")));
+            if path == "ready" && database.is_none() {
+                assert!(
+                    response.contains("database_unavailable") && response.contains("request_id")
+                );
+            }
         }
         let occupied = Command::new(env!("CARGO_BIN_EXE_atlas"))
             .args(["serve", "--listen", address])

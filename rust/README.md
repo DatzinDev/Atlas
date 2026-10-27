@@ -2,7 +2,8 @@
 
 Desde `rust/` (también en CI), rustup lee `rust-toolchain.toml`: Rust 1.99.1,
 estable al iniciar esta implementación. `Cargo.lock` fija la resolución.
-Se usan solo Tokio y Axum con features mínimas, aprobados por ADR 0008.
+Dependencias y features del motor aprobadas por ADR 0008; Serde/TOML y SQLx
+se incorporan con sus componentes, sin habilitar drivers ajenos a PostgreSQL.
 No se modifican dependencias ni publicación Python.
 
 ```bash
@@ -17,12 +18,13 @@ informa la dirección efectiva. Argumentos inválidos o fallos de bind devuelven
 salida no cero con mensajes fijos, sin copiar argumentos ni errores internos.
 Configuración de dominio/archivo, límites y errores REST pertenecen a #212.
 
-`GET /api/v1/health` devuelve 200; `/api/v1/ready` devuelve 503 porque todavía
-no existen pool ni catálogo (#213/#215). El resto devuelve 404. Esta entrega
-no implementa la API geoespacial ni certifica readiness de datos. SIGINT y,
+`GET /api/v1/health` devuelve 200; `/api/v1/ready` comprueba pool y acceso a las
+columnas del catálogo: 200 si están disponibles, 503 estructurado si no.
+Sin DSN se puede iniciar health, pero readiness permanece en 503. El resto
+devuelve 404; aún no hay API geoespacial. SIGINT y,
 en Unix, SIGTERM detienen aceptación y esperan conexiones mediante el shutdown
 de Axum. Logs JSON mínimos en stderr, sin registrar solicitudes ni cabeceras.
-No hay conexiones PostGIS que cerrar todavía.
+El cierre del servidor espera las conexiones prestadas y cierra el pool.
 
 ## Configuración y dominio (#212)
 
@@ -31,7 +33,7 @@ y tabla `[limits]` con los defaults de spec.md. No acepta claves desconocidas.
 `ATLAS_DATABASE_URL` y `ATLAS_LISTEN` prevalecen sobre TOML; `--listen` prevalece
 sobre el entorno. DSN nunca pertenece a un Dataset ni se imprime al fallar.
 La configuración se valida antes del bind/pool. No derive Debug/Serialize en Config.
-En esta etapa el DSN es opcional para health; el pool se incorpora en #213.
+El DSN es opcional solo para health; para operar datos es obligatorio.
 
 Domain no importa HTTP/SQL: Dataset/Source/AccessPolicy/Principal, Query y Error.
 Después de deserializar se llama `validate` con schemas/límites del servidor;
