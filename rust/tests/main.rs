@@ -24,6 +24,7 @@ fn configuration_errors_do_not_echo_input() {
         vec!["serve", "--unknown", "secret-token"],
         vec!["serve", "--listen", "postgres://user:password@host/db"],
         vec!["serve", "--config", "/missing/secret-token.toml"],
+        vec!["serve", "--config", "tests/fixtures/jwt-test-invalid.toml"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_atlas"))
             .args(args)
@@ -49,17 +50,25 @@ fn http_startup_and_shutdown() {
             .status
             .success()
     );
-    for (signal, database) in [("-TERM", None), ("-INT", None), ("-TERM", Some(&dsn))] {
+    for (signal, database, auth) in [
+        ("-TERM", None, false),
+        ("-INT", None, false),
+        ("-TERM", Some(&dsn), true),
+    ] {
         let mut command = Command::new(env!("CARGO_BIN_EXE_atlas"));
+        command.arg("serve");
         command
             .env_remove("ATLAS_DATABASE_URL")
             .env_remove("ATLAS_LISTEN");
         if let Some(dsn) = database {
             command.env("ATLAS_DATABASE_URL", dsn);
         }
+        if auth {
+            command.args(["--config", "tests/fixtures/jwt-test.toml"]);
+        }
         let mut server = Server(
             command
-                .args(["serve", "--listen", "127.0.0.1:0"])
+                .args(["--listen", "127.0.0.1:0"])
                 .stderr(Stdio::piped())
                 .spawn()
                 .unwrap(),
@@ -78,10 +87,11 @@ fn http_startup_and_shutdown() {
             .unwrap()
             .strip_suffix("\"}")
             .unwrap();
-        for (path, status) in [
-            ("health", "200"),
-            ("ready", if database.is_some() { "200" } else { "503" }),
-            ("datasets", "404"),
+        for (path, status, authorization) in [
+            ("health", "200", ""),
+            ("ready", if database.is_some() { "200" } else { "503" }, ""),
+            ("datasets", "404", ""),
+            ("health", "401", "Authorization: Bearer secret-token\r\n"),
         ] {
             let mut stream = TcpStream::connect(address).unwrap();
             stream
@@ -89,7 +99,7 @@ fn http_startup_and_shutdown() {
                 .unwrap();
             write!(
                 stream,
-                "GET /api/v1/{path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+                "GET /api/v1/{path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n{authorization}\r\n"
             )
             .unwrap();
             let mut response = String::new();
@@ -127,6 +137,7 @@ fn http_startup_and_shutdown() {
             assert!(Instant::now() < deadline, "shutdown timed out");
             thread::sleep(Duration::from_millis(10));
         }
-        assert!(logs.join().unwrap().contains("shutdown_complete"));
+        let logs = logs.join().unwrap();
+        assert!(logs.contains("shutdown_complete") && !logs.contains("secret-token"));
     }
 }

@@ -29,6 +29,14 @@ fn configuration() -> Result<(bool, Config), &'static str> {
 }
 
 async fn serve(config: Config) -> Result<(), &'static str> {
+    let verifier = std::sync::Arc::new(
+        config
+            .auth
+            .as_ref()
+            .map(|auth| auth.verifier())
+            .transpose()
+            .map_err(|_| "invalid authentication configuration")?,
+    );
     // Register before accepting connections so an early signal cannot bypass draining.
     #[cfg(unix)]
     let mut terminate = signal::unix::signal(signal::unix::SignalKind::terminate())
@@ -75,6 +83,10 @@ async fn serve(config: Config) -> Result<(), &'static str> {
                 }
             }),
         );
+    let router = router.layer(axum::middleware::from_fn_with_state(
+        verifier,
+        atlas::auth::http::authenticate,
+    ));
     eprintln!("{{\"event\":\"listening\",\"address\":\"{bound}\"}}");
     let result = axum::serve(listener, router)
         .with_graceful_shutdown(async move {

@@ -1,0 +1,4 @@
+[auth]
+public_key_file = '/missing/secret-token.pem'
+issuer = 'atlas-test'
+audience = 'atlas'

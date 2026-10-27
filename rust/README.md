@@ -112,3 +112,8 @@ public_key_file = '/etc/atlas/jwt-public.pem'
 issuer = 'https://identity.example.test'
 audience = 'atlas'
 ```
+
+El middleware verifica Authorization antes de ejecutar handlers, incluidas rutas públicas.
+Sin cabecera inserta un Principal anónimo; tokens inválidos devuelven 401 estructurado.
+Con auth sin configurar, cualquier Authorization falla cerrado. Solo Bearer en cabecera;
+credenciales en query string no se usan. No registrar tokens ni cabeceras.
