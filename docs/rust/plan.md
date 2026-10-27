@@ -5,25 +5,27 @@ Estado: planificación publicada para revisión; sin motor Rust ni nuevas medici
 
 | Milestone | Entrega y condición de cierre |
 |---|---|
-| [Rust 0 — Especificación y línea base](https://github.com/DatzinDev/Atlas/milestone/14) | SDD/ADR/OpenAPI, evidencia histórica y referencia Python/GeoServer HTTP fijada y archivada antes de código Rust. |
+| [Rust 0 — Especificación y línea base](https://github.com/DatzinDev/Atlas/milestone/14) | SDD/ADR/OpenAPI, archivo de métricas Python existentes y herramienta HTTP reutilizable; sin nuevas mediciones ni GeoServer. |
 | [Rust 1 — Publicación y acceso](https://github.com/DatzinDev/Atlas/milestone/15) | Paquete/CI, pool, modelos, introspección, catálogo, JWT/políticas y filtros seguros para registrar/publicar tabla y vista. |
 | [Rust 2 — MVP vectorial](https://github.com/DatzinDev/Atlas/milestone/16) | GeoJSON, selección/orden/páginas, MVT/TileJSON y descarga; recursos acotados, contenedor y aceptación integrada. |
 | [Rust 3 — Validación y adopción](https://github.com/DatzinDev/Atlas/milestone/17) | Comparación de los tres motores, OIDC y consumidor piloto especificado/migrado con retorno probado. |
 | [Rust 4 — Formatos modernos](https://github.com/DatzinDev/Atlas/milestone/18) | ADR de interoperabilidad, GeoParquet y después FlatGeobuf, límites y lectores independientes. |
 | [Rust 5 — Publicaciones estáticas](https://github.com/DatzinDev/Atlas/milestone/19) | ADR y CLI PMTiles por dataset/extensión/zooms, archivo versionado verificable y acceso conforme a política. |
 
-Milestones ordenan entregas, no fechas ni versiones comprometidas. La línea base es un gate
-explícito de #211; documentarla no la satisface. Ninguna tarea se cierra por existir este plan.
+Milestones ordenan entregas, no fechas ni versiones comprometidas. #210 cierra Python con
+métricas conservadas y herramienta #208 revisadas/integradas; no exige una nueva línea base.
+GeoServer #209 queda en Rust 3 y no bloquea #211. Ninguna tarea se cierra por existir este plan.
 Las dependencias, no el número de issue, fijan el orden. Parsing/SQL/selección espacial segura
 pertenecen a Rust 1 porque el API administrativo valida filtros fijos antes de publicar.
 
 ## Secuencia operativa
 
 1. Integrar los cuatro PRs documentales revisados mediante gh stack; conservar originales Python.
-2. Ejecutar #208–#210 y preservar referencia/manifest/resultados. Sin fixture productiva.
+2. Integrar #208 y #210: herramienta HTTP, métricas existentes y sus limitaciones. Cerrar etapa Python.
 3. Implementar Rust 1 por contratos; probar migración explícita y persistencia del catálogo.
 4. Completar Rust 2 y cruzar todos los R01–R17 contra tests reales; empaquetar experimental.
-5. Repetir la matriz de rendimiento, resolver regresiones observadas en issues independientes
+5. Medir Rust y una referencia Python HTTP equivalente; incorporar GeoServer después (#209),
+   resolver regresiones observadas en issues independientes
    y ensayar un consumidor; OIDC no cambia el modelo de políticas.
 6. Especificar formatos adicionales antes de dependencias; PMTiles usa publicación estática.
 

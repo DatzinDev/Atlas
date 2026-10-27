@@ -10,9 +10,8 @@ Esta tabla es un índice de contratos, no una segunda lista de checks que pueda 
 | 0 | [#205 REST/OpenAPI](https://github.com/DatzinDev/Atlas/issues/205) | R01–R16 | #204 |
 | 0 | [#206 Evidencia y protocolo](https://github.com/DatzinDev/Atlas/issues/206) | PERF01–PERF06 | #204 |
 | 0 | [#207 Roadmap y seguimiento](https://github.com/DatzinDev/Atlas/issues/207) | R17 | #204,#205,#206 |
-| 0 | [#208 Generador HTTP](https://github.com/DatzinDev/Atlas/issues/208) | PERF01–PERF06 | #204,#205,#206 |
-| 0 | [#209 Entorno GeoServer](https://github.com/DatzinDev/Atlas/issues/209) | PERF01–PERF04 | #208 |
-| 0 | [#210 Línea base archivada](https://github.com/DatzinDev/Atlas/issues/210) | PERF01–PERF06,R17 | #209,#206 |
+| 0 | [#208 Herramienta HTTP reutilizable](https://github.com/DatzinDev/Atlas/issues/208) | Instrumento mínimo; benchmarks.md | #206 |
+| 0 | [#210 Métricas y cierre Python](https://github.com/DatzinDev/Atlas/issues/210) | Evidencia histórica,R17 | #206,#208 |
 | 1 | [#211 Paquete y CI](https://github.com/DatzinDev/Atlas/issues/211) | R16,R17 | #210,#207 |
 | 1 | [#212 Modelos y límites](https://github.com/DatzinDev/Atlas/issues/212) | R01–R08,R12–R16 | #211 |
 | 1 | [#213 Pool y transacciones](https://github.com/DatzinDev/Atlas/issues/213) | R15,R16 | #212 |
@@ -33,7 +32,8 @@ Esta tabla es un índice de contratos, no una segunda lista de checks que pueda 
 | 2 | [#228 Admisión y cancelación](https://github.com/DatzinDev/Atlas/issues/228) | R11,R15,R16 | #224,#226,#227,#213 |
 | 2 | [#229 Aceptación y paquete MVP](https://github.com/DatzinDev/Atlas/issues/229) | R01–R17 | #228,#226,#219 |
 | 3 | [#230 Adaptador Rust](https://github.com/DatzinDev/Atlas/issues/230) | PERF01–PERF06,R17 | #229,#210 |
-| 3 | [#231 Comparación publicada](https://github.com/DatzinDev/Atlas/issues/231) | PERF01–PERF06,R15,R17 | #230 |
+| 3 | [#209 Entorno GeoServer, diferido](https://github.com/DatzinDev/Atlas/issues/209) | PERF01–PERF04 | #230 |
+| 3 | [#231 Comparación publicada](https://github.com/DatzinDev/Atlas/issues/231) | PERF01–PERF06,R15,R17 | #230,#209 |
 | 3 | [#232 OIDC externo](https://github.com/DatzinDev/Atlas/issues/232) | R12–R14 | #216,#217,#229 |
 | 3 | [#233 Consumidor y retorno](https://github.com/DatzinDev/Atlas/issues/233) | R17; needs-spec | #231,#232 |
 | 4 | [#234 ADR formatos](https://github.com/DatzinDev/Atlas/issues/234) | R11,R13–R15; needs-spec | #229 |

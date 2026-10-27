@@ -8,7 +8,8 @@ La versión Python conserva sus contratos y su publicación actuales durante la 
 | [Especificación](spec.md) | Requisitos y aceptación del MVP |
 | [Arquitectura](architecture.md) | Responsabilidades, reutilización y fronteras |
 | [Contrato REST](api.md) y [OpenAPI](openapi.yaml) | Interfaz HTTP futura; no anuncia disponibilidad |
-| [Rendimiento](benchmarks.md) | Evidencia histórica y protocolo comparativo |
+| [Métricas Python](benchmarks.md) | Archivo consolidado del cierre Python y límites de comparación |
+| [Benchmark reutilizable](../../benchmarks/COMPARE.md) | Medir por HTTP al disponer del servidor Rust |
 | [Plan](plan.md) y [tareas](tasks.md) | Etapas, dependencias y enlaces a GitHub |
 | [Verificación documental](verification.md) | Comprobaciones realizadas y pruebas pendientes |
 | [ADR 0008](../adr/0008-rust-rest-platform.md) | Decisión de producto y tecnología |
