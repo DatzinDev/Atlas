@@ -60,3 +60,12 @@ el future no garantiza cancelación SQL inmediata: el timeout del servidor acota
 el trabajo restante. No registrar SQL/DSN/errores del driver. `close` espera leases.
 Pruebas reales requieren `ATLAS_TEST_DATABASE_URL` hacia una BD descartable con
 PostGIS; fallan si falta. CI proporciona una BD separada para Rust.
+
+## Introspección (#214)
+
+`postgis::introspection::inspect` exige schemas permitidos y propiedades explícitas.
+Tablas requieren PK simple; vistas/materializadas, id declarado único/no nulo.
+Una geometría se infiere solo si es única; varias requieren columna explícita.
+Geometría genérica vacía se rechaza; tipada vacía conserva CRS/tipo. Toda geometría
+se excluye de atributos. Los nombres se resuelven por parámetros en pg_catalog y
+se citan como identificadores al consultar la relación. Pruebas contra PostGIS real.
