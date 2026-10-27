@@ -1,4 +1,4 @@
-use std::{env, net::SocketAddr, process::ExitCode};
+use std::{env, process::ExitCode};
 
 use atlas::config::Config;
 use axum::{Router, http::StatusCode, routing::get};
@@ -22,7 +22,7 @@ fn configuration() -> Result<Config, &'static str> {
     Config::load(path, listen).map_err(|_| "invalid configuration")
 }
 
-async fn serve(address: SocketAddr) -> Result<(), &'static str> {
+async fn serve(config: Config) -> Result<(), &'static str> {
     // Register before accepting connections so an early signal cannot bypass draining.
     #[cfg(unix)]
     let mut terminate = signal::unix::signal(signal::unix::SignalKind::terminate())
@@ -32,12 +32,21 @@ async fn serve(address: SocketAddr) -> Result<(), &'static str> {
         .map_err(|_| "cannot register shutdown signal")?;
     #[cfg(not(unix))]
     let interrupt = signal::ctrl_c();
-    let listener = TcpListener::bind(address)
+    let listener = TcpListener::bind(config.listen)
         .await
         .map_err(|_| "cannot bind listener")?;
     let bound = listener
         .local_addr()
         .map_err(|_| "cannot inspect listener")?;
+    let database = if config.database_url.is_some() {
+        Some(
+            atlas::postgis::connection::Database::open(&config)
+                .await
+                .map_err(|_| "database unavailable")?,
+        )
+    } else {
+        None
+    };
     let router = Router::new()
         .route("/api/v1/health", get(|| async { StatusCode::OK }))
         .route(
@@ -45,7 +54,7 @@ async fn serve(address: SocketAddr) -> Result<(), &'static str> {
             get(|| async { StatusCode::SERVICE_UNAVAILABLE }),
         );
     eprintln!("{{\"event\":\"listening\",\"address\":\"{bound}\"}}");
-    axum::serve(listener, router)
+    let result = axum::serve(listener, router)
         .with_graceful_shutdown(async move {
             #[cfg(unix)]
             tokio::select! {
@@ -56,8 +65,11 @@ async fn serve(address: SocketAddr) -> Result<(), &'static str> {
             let _ = interrupt.await;
             eprintln!("{{\"event\":\"shutdown_started\"}}");
         })
-        .await
-        .map_err(|_| "server failed")?;
+        .await;
+    if let Some(database) = database {
+        database.close().await;
+    }
+    result.map_err(|_| "server failed")?;
     eprintln!("{{\"event\":\"shutdown_complete\"}}");
     Ok(())
 }
@@ -65,7 +77,7 @@ async fn serve(address: SocketAddr) -> Result<(), &'static str> {
 #[tokio::main]
 async fn main() -> ExitCode {
     let result = match configuration() {
-        Ok(config) => serve(config.listen).await,
+        Ok(config) => serve(config).await,
         Err(message) => Err(message),
     };
     match result {

@@ -49,3 +49,14 @@ El smoke Unix ejecuta el binario, verifica HTTP real, rechazo de configuración
 y puerto ocupado, SIGTERM/SIGINT y salida limpia con plazo. No demuestra aún
 cancelación de consultas/exports ni rendimiento; esas pruebas llegarán con
 sus componentes. El job Rust de CI es independiente del job Python existente.
+
+## Pool PostGIS (#213)
+
+`Database::open` valida configuración y extensión PostGIS; máximo 10 conexiones,
+espera 5 s por defecto. `begin_read` abre REPEATABLE READ READ ONLY y
+`begin_catalog` abre READ WRITE; ambas aplican statement_timeout local (30 s).
+SQLx revierte transacciones descartadas antes de reutilizar la conexión. Cancelar
+el future no garantiza cancelación SQL inmediata: el timeout del servidor acota
+el trabajo restante. No registrar SQL/DSN/errores del driver. `close` espera leases.
+Pruebas reales requieren `ATLAS_TEST_DATABASE_URL` hacia una BD descartable con
+PostGIS; fallan si falta. CI proporciona una BD separada para Rust.
