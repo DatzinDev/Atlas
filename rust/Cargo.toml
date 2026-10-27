@@ -6,5 +6,9 @@ publish = false
 license = "MIT"
 
 [dependencies]
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["arbitrary_precision", "raw_value"] }
+toml = { version = "1", default-features = false, features = ["parse", "serde"] }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
 tokio = { version = "1.54.1", default-features = false, features = ["macros", "rt-multi-thread", "net", "signal"] }

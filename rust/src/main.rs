@@ -1,21 +1,34 @@
-use std::{env, net::SocketAddr, process::ExitCode};
+use std::{env, process::ExitCode};
 
-use axum::{Router, http::StatusCode, routing::get};
+use atlas::config::Config;
+use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
 use tokio::{net::TcpListener, signal};
 
-fn listen_address() -> Result<SocketAddr, &'static str> {
+fn configuration() -> Result<(bool, Config), &'static str> {
     let args: Vec<_> = env::args_os().skip(1).collect();
-    match args.as_slice() {
-        [command] if command == "serve" => Ok(([127, 0, 0, 1], 8080).into()),
-        [command, option, value] if command == "serve" && option == "--listen" => value
-            .to_str()
-            .and_then(|value| value.parse().ok())
-            .ok_or("invalid listen address"),
-        _ => Err("usage: atlas serve [--listen IP:PORT]"),
+    if args
+        .first()
+        .is_none_or(|command| command != "serve" && command != "migrate")
+        || args.len() % 2 == 0
+    {
+        return Err("usage: atlas serve|migrate [--config FILE] [--listen IP:PORT]");
     }
+    let (mut path, mut listen) = (None, None);
+    for pair in args[1..].as_chunks::<2>().0 {
+        match pair[0].to_str() {
+            Some("--config") if path.is_none() => path = Some(std::path::Path::new(&pair[1])),
+            Some("--listen") if listen.is_none() => {
+                listen = Some(pair[1].to_str().ok_or("invalid configuration")?.to_owned())
+            }
+            _ => return Err("invalid configuration"),
+        }
+    }
+    Config::load(path, listen)
+        .map(|config| (args[0] == "migrate", config))
+        .map_err(|_| "invalid configuration")
 }
 
-async fn serve(address: SocketAddr) -> Result<(), &'static str> {
+async fn serve(config: Config) -> Result<(), &'static str> {
     // Register before accepting connections so an early signal cannot bypass draining.
     #[cfg(unix)]
     let mut terminate = signal::unix::signal(signal::unix::SignalKind::terminate())
@@ -25,20 +38,45 @@ async fn serve(address: SocketAddr) -> Result<(), &'static str> {
         .map_err(|_| "cannot register shutdown signal")?;
     #[cfg(not(unix))]
     let interrupt = signal::ctrl_c();
-    let listener = TcpListener::bind(address)
+    let listener = TcpListener::bind(config.listen)
         .await
         .map_err(|_| "cannot bind listener")?;
     let bound = listener
         .local_addr()
         .map_err(|_| "cannot inspect listener")?;
+    let database = if config.database_url.is_some() {
+        Some(
+            atlas::postgis::connection::Database::open(&config)
+                .await
+                .map_err(|_| "database unavailable")?,
+        )
+    } else {
+        None
+    };
+    let catalog = database
+        .clone()
+        .map(|db| atlas::catalog::Catalog::new(db, config.clone()))
+        .transpose()
+        .map_err(|_| "invalid configuration")?;
     let router = Router::new()
         .route("/api/v1/health", get(|| async { StatusCode::OK }))
         .route(
             "/api/v1/ready",
-            get(|| async { StatusCode::SERVICE_UNAVAILABLE }),
+            get(move || {
+                let catalog = catalog.clone();
+                async move {
+                    if let Some(catalog) = catalog && catalog.ready().await.is_ok() {
+                        return StatusCode::OK.into_response();
+                    }
+                    static REQUEST_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                    let body = serde_json::json!({"code": atlas::domain::Error::DatabaseUnavailable,
+                        "message": "service not ready", "request_id": REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed).to_string()});
+                    (StatusCode::SERVICE_UNAVAILABLE, [("content-type", "application/json")], body.to_string()).into_response()
+                }
+            }),
         );
     eprintln!("{{\"event\":\"listening\",\"address\":\"{bound}\"}}");
-    axum::serve(listener, router)
+    let result = axum::serve(listener, router)
         .with_graceful_shutdown(async move {
             #[cfg(unix)]
             tokio::select! {
@@ -49,16 +87,22 @@ async fn serve(address: SocketAddr) -> Result<(), &'static str> {
             let _ = interrupt.await;
             eprintln!("{{\"event\":\"shutdown_started\"}}");
         })
-        .await
-        .map_err(|_| "server failed")?;
+        .await;
+    if let Some(database) = database {
+        database.close().await;
+    }
+    result.map_err(|_| "server failed")?;
     eprintln!("{{\"event\":\"shutdown_complete\"}}");
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let result = match listen_address() {
-        Ok(address) => serve(address).await,
+    let result = match configuration() {
+        Ok((false, config)) => serve(config).await,
+        Ok((true, config)) => atlas::migrations::migrate(&config)
+            .await
+            .map_err(|_| "migration failed"),
         Err(message) => Err(message),
     };
     match result {

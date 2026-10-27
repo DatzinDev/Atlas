@@ -45,3 +45,17 @@ Esta tabla es un índice de contratos, no una segunda lista de checks que pueda 
 Cada issue define archivos previstos, aceptación y verificación. Antes de superar su tamaño,
 se parte sin ampliar alcance. Las extensiones needs-spec requieren SDD/ADR y tareas atómicas
 antes de código; el catálogo privado y formatos estáticos no pueden filtrar datos por atajos.
+
+## Descomposición del bloque de fundamentos
+
+El responsable autorizó preparar #212–#215 como un stack sobre dependencias todavía
+sin merge. Se conserva revisión e integración explícitas; no se fusiona automáticamente.
+
+- #212: [#247 dependencias](https://github.com/DatzinDev/Atlas/issues/247),
+  [#248 dominio](https://github.com/DatzinDev/Atlas/issues/248) y configuración del padre.
+- #213: [#249 SQLx/lock](https://github.com/DatzinDev/Atlas/issues/249) y pool del padre.
+  Solo el lock generado tiene excepción aprobada al límite de tamaño.
+- #214: introspección; el repositorio de #215 reutiliza esta validación.
+- #215: [#250 migración](https://github.com/DatzinDev/Atlas/issues/250),
+  [#251 repositorio](https://github.com/DatzinDev/Atlas/issues/251) y aceptación conjunta
+  del padre. Evidencia en [foundation-verification.md](foundation-verification.md).
