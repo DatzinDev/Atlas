@@ -117,3 +117,13 @@ El middleware verifica Authorization antes de ejecutar handlers, incluidas rutas
 Sin cabecera inserta un Principal anónimo; tokens inválidos devuelven 401 estructurado.
 Con auth sin configurar, cualquier Authorization falla cerrado. Solo Bearer en cabecera;
 credenciales en query string no se usan. No registrar tokens ni cabeceras.
+
+## Políticas (#217)
+
+`auth::policy::{view,query,download,admin}` son funciones sin I/O: invocarlas antes de
+acceder a datos. Privado deniega por defecto; query/download exigen view. Public concede
+view/query; public_download concede descarga pública. Invisible/deshabilitado devuelve
+DatasetNotFound; operación faltante sobre visible, PermissionDenied. atlas-admin permite
+solo administración, sin bypass de datos; roles de un Principal anónimo no conceden acceso.
+El listado filtra por view antes de paginar. Los filtros de datos nunca conceden permisos.
+Integración de estas funciones en rutas administrativas/datos: #218–#219 y siguientes.
