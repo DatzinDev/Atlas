@@ -7,8 +7,9 @@ y datasets públicos/privados. MVP GeoJSON/MVT; formatos adicionales después.
 Ver [especificación e índice](rust/README.md), [plan por etapas](rust/plan.md),
 [tareas](rust/tasks.md) y [evidencia de rendimiento](rust/benchmarks.md).
 Seguimiento: [#203](https://github.com/DatzinDev/Atlas/issues/203).
-La línea base Python/GeoServer precede a implementar Rust. No hay implementación ni nuevas
-mediciones por publicar este roadmap. Python mantiene sus contratos y no se retira aquí.
+El cierre Python conserva métricas existentes y una herramienta HTTP reutilizable (#208/#210).
+GeoServer queda para Rust 3; no bloquea iniciar Rust. No hay nuevas mediciones de Atlas por
+publicar este roadmap. El código/paquetes Python se conservan durante la transición.
 
 ## Historial y planificación anterior de Python
 

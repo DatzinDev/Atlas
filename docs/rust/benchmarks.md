@@ -1,7 +1,13 @@
-# Rendimiento: evidencia conservada y comparación futura
+# Cierre Python: métricas y medición posterior de Rust
 
 Fecha de inventario: 2026-10-27. Esta entrega **no ejecuta mediciones nuevas**.
 Requisitos R09–R17 y épica [#203](https://github.com/DatzinDev/Atlas/issues/203).
+
+Este es el archivo consolidado de métricas para cerrar la etapa Python (#210).
+El segundo entregable es [el benchmark HTTP reutilizable](../../benchmarks/COMPARE.md) (#208).
+El cierre no exige nuevas corridas, optimizaciones Python ni GeoServer. Tras revisar e integrar
+ambos entregables se puede comenzar Rust; el contraste con GeoServer se difiere a Rust 3 (#209).
+No se eliminan fuentes, releases ni consumidores Python al cerrar esta etapa.
 
 ## Evidencia que ya existe
 
@@ -24,17 +30,53 @@ tienen cero errores de transporte/validación registrados; esto no borra el trun
 Con doce muestras p95 es el máximo: estos pilotos no justifican p99 ni capacidad sostenida.
 
 Vectorial: Ryzen 5 7640HS, Python 3.11.14, PostgreSQL 16.4/PostGIS 3.4.3; tres repeticiones,
-concurrencias 1/4 y geometrías sintéticas 3857. Con un millón de filas, ventana selectiva:
+concurrencias 1/4 y geometrías sintéticas 3857. Ventana selectiva z10, mediana de p95 de tres
+repeticiones; ms c1/c4. Referencia publicada en develop 254b0d6; runtime medido base 63a12a3.
+El commit del informe no sustituye la identidad del runtime/paquetes descrita en él.
 
-| Mediana de p95 entre repeticiones | c1 ms | c4 ms |
-|---|---:|---:|
-| MVT, puntos/líneas/polígonos | 3,44–8,01 | 6,02–10,67 |
-| WFS, primera página 1.000/1.024 | 52,70–71,69 | 161,75–230,10 |
-| WMS histórico | incompleto | incompleto |
+| Filas | Geometría | MVT c1/c4 | WFS página c1/c4 | WMS c1/c4 |
+|---:|---|---|---|---|
+| 10.000 | puntos | 1,11 / 3,33 | 3,25 / 7,82 | 23,14 / 65,09 |
+| 10.000 | líneas | 1,32 / 4,19 | 2,81 / 7,52 | 10,74 / 23,20 |
+| 10.000 | polígonos | 1,27 / 3,31 | 2,83 / 8,01 | 24,43 / 58,80 |
+| 100.000 | puntos | 1,19 / 3,66 | 5,00 / 16,30 | 42,80 / 156,38 |
+| 100.000 | líneas | 1,43 / 3,05 | 6,30 / 19,04 | 28,78 / 99,82 |
+| 100.000 | polígonos | 2,16 / 4,07 | 8,51 / 45,32 | 59,67 / 245,87 |
+| 1.000.000 | puntos | 3,72 / 7,58 | 52,70 / 161,75 | incompleto |
+| 1.000.000 | líneas | 3,44 / 6,02 | 60,91 / 170,26 | incompleto |
+| 1.000.000 | polígonos | 8,01 / 10,67 | 71,69 / 230,10 | incompleto |
+
+WFS a 1M devuelve 1.000 de 1.024 candidatos. CPU acumulada de lotes/preflights: Python
+491,95 s y PostgreSQL 489,71 s; pico cgroup PostgreSQL 1.110,27 MiB, incluye caché/shared memory.
+Sin cuota CPU/memoria en esta matriz. 270 rondas de cancelación; reposo final sin sesiones DB
+activas, cola ni tareas extra, pero CPU aún activa tras WMS: no certifica drenado nativo.
 
 No comparar WFS/MVT como trabajos equivalentes. MVT no incluye render del cliente y puede
 colapsar geometrías tras cuantización. RSS vectorial muestreado: 90,18–267,35 MiB del proceso
 compartido con generador/validación, no memoria exclusiva del servidor.
+
+## Piloto HTTP anterior: referencia distinta
+
+2026-10-19, Python 3.13.11/Uvicorn un worker; mismo Ryzen, ~14,8 GiB RAM. PostGIS 16.4/3.4.3
+limitado a 1 CPU/512 MiB en RAM; cliente y servidor en el mismo host, sin aislamiento de ruido.
+Medianas ms c1/c4; 12 samples por combinación, no tres repeticiones independientes:
+
+| Caso | Base 7b53a1c | Cambios locales sin caché | Caché caliente local |
+|---|---|---|---|
+| WMS puntos 256² | 1.386,9 / 4.922,7 | 47,1 / 201,1 | 1,11 / 3,07 |
+| WMS puntos 1024² | 15.507,2 / 61.745,5 | 161,2 / 414,6 | 2,06 / 26,94 |
+| WMS líneas 256² | 160,3 / 613,0 | 36,9 / 137,2 | 1,22 / 4,20 |
+| WMS líneas 1024² | 4.277,1 / 17.625,2 | 169,8 / 424,3 | 1,88 / 17,85 |
+| WMS polígonos 256² | 485,1 / 2.053,3 | 163,7 / 693,0 | 1,22 / 3,82 |
+| WMS polígonos 1024² | 26.414,8 / 81.164,3 | 334,0 / 843,5 | 1,89 / 22,04 |
+
+Base puntos dibujaba 1.000/1.111 candidatos; local 1.111/1.111: cargas distintas. HIT no mide
+generación de mapas nuevos. Pico RSS acumulado worker base/sin caché/HIT: 374,2/178,6/132,9 MiB.
+WFS página 1.000 con geometría, base c1/c4: 34,3/120,2 ms; offset 90.000: 100,1/289,4 ms;
+sin geometría: 23,6/73,7 ms. WFS no se optimizó en ese piloto.
+Soak local adicional: 300 ventanas únicas, 1.000 polígonos, 100,2 s; medianas por bloque
+318,0–333,6 ms y RSS final 170,1 MiB. No demuestra ausencia de fugas ni capacidad sostenida.
+Fuentes de estas cifras: PERFORMANCE_BASELINE/OPTIMIZATION dentro del archivo original.
 
 ## Fuentes fijadas y faltantes
 
@@ -50,7 +92,14 @@ Para comprobar el archivo sin extraerlo, verificar archive_sha256, abrir tar.gz 
 tarfile y calcular SHA-256 de cada miembro contra files del manifiesto. Solo miembros regulares,
 rutas relativas y sin '..'. Las muestras originales se preservan byte a byte.
 
-## Protocolo nuevo (PERF01–PERF06)
+## Comparación futura (PERF01–PERF06; no bloquea el cierre Python)
+
+El instrumento mínimo entregado mide samples HTTP y expectativas conocidas; su uso y límites
+están en COMPARE.md. El protocolo ampliado siguiente pertenece a #230/#231; duración/soak,
+oráculos espaciales y recursos del servidor aún no están implementados en compare.py.
+No comparar directamente esta referencia ASGI con números TCP de Rust. Si se quiere cuantificar
+la ganancia del cambio, ejecutar Python fijado y Rust release con el mismo instrumento HTTP,
+dataset/índices/configuración y trabajo equivalente. GeoServer se incorpora después mediante #209.
 
 PERF01 Referencias: congelar Python develop por SHA, lock/resolución de dependencias e imagen.
 El candidato WMS es una referencia adicional explícita, nunca sustitución silenciosa.

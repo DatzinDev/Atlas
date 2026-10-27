@@ -13,7 +13,8 @@
 - JSON HTTP: tres corridas de 240 muestras, errores registrados cero; truncamiento conocido
   preservado como limitación, no borrado por esta comprobación.
 - Dependencias: 35 tareas, referencias internas existentes y grafo sin ciclos. #211 requiere
-  baseline #210; #218 requiere parsing/SQL/selección espacial #220–#222.
+  cierre documental/instrumento #210; GeoServer #209 se difiere hasta #230 en Rust 3.
+  #218 requiere parsing/SQL/selección espacial #220–#222.
 - git diff --check y tamaños de commits/PRs documentales revisados; sin cambios de runtime.
 
 Herramientas de revisión utilizadas: Python 3, PyYAML, jsonschema ya disponibles, tarfile,
@@ -21,3 +22,9 @@ hashlib y Git. No se añadieron dependencias ni jobs de CI como parte de esta ve
 Esquema oficial: https://spec.openapis.org/oas/3.0/schema/2024-10-18.
 El SDD y el protocolo describen las pruebas runtime futuras; no se ejecutaron localmente
 pytest/PostGIS, la matriz de carga nueva, GeoServer, Rust ni una migración de consumidores.
+
+Actualización del cierre Python: compare.py pasa unittest con HTTP localhost (válido, cuerpo
+distinto/malformado, errores/rechazos, redirección, timeout simulado, interrupción, concurrencia
+y no sobrescritura), ruff check/format y diff --check. Sin dependencias nuevas. Son pruebas
+del instrumento con fixtures, no mediciones de Atlas ni un nuevo baseline. Evidencia original
+conservada sin modificaciones; cifras consolidadas contrastadas con los informes archivados.
