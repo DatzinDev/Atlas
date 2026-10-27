@@ -69,3 +69,13 @@ Una geometría se infiere solo si es única; varias requieren columna explícita
 Geometría genérica vacía se rechaza; tipada vacía conserva CRS/tipo. Toda geometría
 se excluye de atributos. Los nombres se resuelven por parámetros en pg_catalog y
 se citan como identificadores al consultar la relación. Pruebas contra PostGIS real.
+
+## Migración explícita (#215)
+
+`atlas migrate --config ddl.toml` crea `atlas_catalog.datasets` en una transacción
+con bloqueo de migración. Repetirla es seguro; `serve` nunca ejecuta DDL.
+Usar un rol DDL separado: propietario del esquema/tabla. La cuenta de servicio
+recibe únicamente USAGE en atlas_catalog y SELECT/INSERT/UPDATE/DELETE en datasets,
+además de USAGE/SELECT en los esquemas/relaciones fuente permitidos. Nunca concederle
+CREATE ni propiedad de esos objetos. Las pruebas demuestran el rechazo de DDL con
+un rol limitado; no modifican roles ni fuentes de ningún despliegue existente.

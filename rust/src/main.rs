@@ -4,10 +4,14 @@ use atlas::config::Config;
 use axum::{Router, http::StatusCode, routing::get};
 use tokio::{net::TcpListener, signal};
 
-fn configuration() -> Result<Config, &'static str> {
+fn configuration() -> Result<(bool, Config), &'static str> {
     let args: Vec<_> = env::args_os().skip(1).collect();
-    if args.first().is_none_or(|command| command != "serve") || args.len() % 2 == 0 {
-        return Err("usage: atlas serve [--config FILE] [--listen IP:PORT]");
+    if args
+        .first()
+        .is_none_or(|command| command != "serve" && command != "migrate")
+        || args.len() % 2 == 0
+    {
+        return Err("usage: atlas serve|migrate [--config FILE] [--listen IP:PORT]");
     }
     let (mut path, mut listen) = (None, None);
     for pair in args[1..].as_chunks::<2>().0 {
@@ -19,7 +23,9 @@ fn configuration() -> Result<Config, &'static str> {
             _ => return Err("invalid configuration"),
         }
     }
-    Config::load(path, listen).map_err(|_| "invalid configuration")
+    Config::load(path, listen)
+        .map(|config| (args[0] == "migrate", config))
+        .map_err(|_| "invalid configuration")
 }
 
 async fn serve(config: Config) -> Result<(), &'static str> {
@@ -77,7 +83,10 @@ async fn serve(config: Config) -> Result<(), &'static str> {
 #[tokio::main]
 async fn main() -> ExitCode {
     let result = match configuration() {
-        Ok(config) => serve(config).await,
+        Ok((false, config)) => serve(config).await,
+        Ok((true, config)) => atlas::migrations::migrate(&config)
+            .await
+            .map_err(|_| "migration failed"),
         Err(message) => Err(message),
     };
     match result {
