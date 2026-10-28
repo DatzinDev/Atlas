@@ -1,6 +1,35 @@
 use crate::domain::{Error, names};
 use serde::Deserialize;
-use std::{net::SocketAddr, path::Path};
+use std::{
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Auth {
+    pub public_key_file: PathBuf,
+    pub issuer: String,
+    pub audience: String,
+}
+
+impl Auth {
+    pub fn validate(&self) -> Result<(), Error> {
+        if self.public_key_file.as_os_str().is_empty()
+            || self.issuer.trim().is_empty()
+            || self.audience.trim().is_empty()
+        {
+            return Err(Error::InvalidRequest);
+        }
+        Ok(())
+    }
+
+    pub fn verifier(&self) -> Result<crate::auth::jwt::Verifier, Error> {
+        self.validate()?;
+        let pem = std::fs::read(&self.public_key_file).map_err(|_| Error::InvalidRequest)?;
+        crate::auth::jwt::Verifier::new(&pem, &self.issuer, &self.audience)
+    }
+}
 
 #[derive(Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -111,6 +140,7 @@ impl Limits {
 pub struct Config {
     pub listen: SocketAddr,
     pub database_url: Option<String>,
+    pub auth: Option<Auth>,
     pub allowed_schemas: Vec<String>,
     pub limits: Limits,
 }
@@ -120,6 +150,7 @@ impl Default for Config {
         Self {
             listen: ([127, 0, 0, 1], 8080).into(),
             database_url: None,
+            auth: None,
             allowed_schemas: vec!["public".into()],
             limits: Limits::default(),
         }
@@ -145,6 +176,9 @@ impl Config {
 
     pub fn validate(&self) -> Result<(), Error> {
         self.limits.validate()?;
+        if let Some(auth) = &self.auth {
+            auth.validate()?;
+        }
         if !names(&self.allowed_schemas)
             || self.allowed_schemas.iter().any(|s| s == "atlas_catalog")
             || self.database_url.as_ref().is_some_and(|s| {

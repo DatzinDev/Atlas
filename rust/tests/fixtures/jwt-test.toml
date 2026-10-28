@@ -1,0 +1,4 @@
+[auth]
+public_key_file = 'tests/fixtures/jwt-test-public.pem'
+issuer = 'atlas-test'
+audience = 'atlas'

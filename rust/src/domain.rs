@@ -26,7 +26,7 @@ impl std::fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
-#[derive(Default, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Principal {
     pub sub: Option<String>,

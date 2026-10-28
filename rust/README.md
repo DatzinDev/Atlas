@@ -6,6 +6,10 @@ Dependencias y features del motor aprobadas por ADR 0008; Serde/TOML y SQLx
 se incorporan con sus componentes, sin habilitar drivers ajenos a PostgreSQL.
 No se modifican dependencias ni publicación Python.
 
+JWT usa `jsonwebtoken` 11.1 con PEM y AWS-LC (ADR 0008), sin features por defecto.
+El proveedor compila código nativo y requiere compilador C/CMake en builds limpios;
+Cargo.lock fija también sus dependencias transitivas. No implementamos criptografía propia.
+
 ```bash
 cd rust
 cargo build --locked
@@ -88,3 +92,38 @@ una revisión obsoleta devuelve RevisionMismatch. Borrar retira solo publicació
 nunca datos fuente. El repositorio recibe configuración completa: Merge Patch y
 ETag de transporte se incorporan en #218; el filtro opaco se valida en #220 antes
 de habilitar publicación por HTTP. No hay DDL automático en operaciones CRUD.
+
+## Identidad (#216)
+
+`auth::jwt::Verifier` verifica únicamente RS256 con PEM público local, issuer y audience
+configurados. Exige sub no vacío y exp futuro, valida nbf cuando existe, sin tolerancia
+de reloj; roles omitidos producen lista vacía y roles malformados se rechazan.
+Claims externos adicionales se permiten; jku/kid no seleccionan claves ni disparan red.
+Tokens de más de 16 KiB se rechazan. Claves en tests/fixtures son ficticias y públicas;
+jamás usarlas en despliegues. No hay emisor, login ni OIDC.
+
+TOML admite `[auth]` opcional; al incluirlo exige los tres campos siguientes.
+Rutas relativas se resuelven desde el directorio de trabajo del proceso.
+El PEM se carga una vez antes del listener; rotarlo requiere reiniciar.
+
+```toml
+[auth]
+public_key_file = '/etc/atlas/jwt-public.pem'
+issuer = 'https://identity.example.test'
+audience = 'atlas'
+```
+
+El middleware verifica Authorization antes de ejecutar handlers, incluidas rutas públicas.
+Sin cabecera inserta un Principal anónimo; tokens inválidos devuelven 401 estructurado.
+Con auth sin configurar, cualquier Authorization falla cerrado. Solo Bearer en cabecera;
+credenciales en query string no se usan. No registrar tokens ni cabeceras.
+
+## Políticas (#217)
+
+`auth::policy::{view,query,download,admin}` son funciones sin I/O: invocarlas antes de
+acceder a datos. Privado deniega por defecto; query/download exigen view. Public concede
+view/query; public_download concede descarga pública. Invisible/deshabilitado devuelve
+DatasetNotFound; operación faltante sobre visible, PermissionDenied. atlas-admin permite
+solo administración, sin bypass de datos; roles de un Principal anónimo no conceden acceso.
+El listado filtra por view antes de paginar. Los filtros de datos nunca conceden permisos.
+Integración de estas funciones en rutas administrativas/datos: #218–#219 y siguientes.
