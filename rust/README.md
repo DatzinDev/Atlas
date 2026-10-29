@@ -138,3 +138,6 @@ identificador. Numeric se conserva como `serde_json::Number`, sin redondear. `in
 `and`/`or`/`not` cuentan profundidad y nodos antes de descender, así que la recursión queda
 acotada por `filter_depth` (máximo 128); un JSON anidado sin límite falla en serde_json sin
 desbordar la pila.
+`intersects`/`within` validan solo la estructura de Polygon/MultiPolygon: anillos cerrados de al
+menos cuatro posiciones XY finitas y `xy_pairs` en todo el filtro. La validez topológica se
+comprueba en PostGIS (#222); no hay motor geométrico en Rust.

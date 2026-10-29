@@ -1,8 +1,10 @@
 use atlas::{
     config::Limits,
     domain::Error,
-    query::predicate::{Comparison, Predicate, Scalar, parse},
+    query::predicate::{Comparison, Predicate, Scalar, Spatial, parse},
 };
+
+const SQUARE: &str = "[[[0,0],[1,0],[1,1],[0,1],[0,0]]]";
 
 fn ok(json: &str) -> Predicate {
     parse(json, &Limits::default()).unwrap()
@@ -67,6 +69,12 @@ fn parses_logical_groups() {
         ok(r#"{"op":"not","arg":{"op":"or","args":[{"op":"is_null","field":"a"}]}}"#),
         Predicate::Not(inner) if matches!(&*inner, Predicate::Or(args) if args.len() == 1)
     ));
+    assert!(matches!(
+        ok(&format!(
+            r#"{{"op":"not","arg":{{"op":"within","geometry":{{"type":"MultiPolygon","coordinates":[{SQUARE},{SQUARE}]}}}}}}"#
+        )),
+        Predicate::Not(inner) if matches!(&*inner, Predicate::Spatial { op: Spatial::Within, polygons } if polygons.len() == 2)
+    ));
 }
 
 #[test]
@@ -105,6 +113,28 @@ fn rejects_malformed_keys_types_and_operators() {
 }
 
 #[test]
+fn validates_selection_geometry_structure() {
+    let limits = Limits::default();
+    let spatial = |geometry: &str| format!(r#"{{"op":"intersects","geometry":{geometry}}}"#);
+    ok(&spatial(&format!(
+        r#"{{"type":"Polygon","coordinates":{SQUARE}}}"#
+    )));
+    for invalid in [
+        r#"{"type":"Point","coordinates":[0,0]}"#.to_string(),
+        r#"{"type":"Polygon","coordinates":[]}"#.into(),
+        r#"{"type":"MultiPolygon","coordinates":[[]]}"#.into(),
+        r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[0,0]]]}"#.into(),
+        r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1]]]}"#.into(),
+        r#"{"type":"Polygon","coordinates":[[[0,0,0],[1,0,0],[1,1,0],[0,0,0]]]}"#.into(),
+        r#"{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,true],[0,0]]]}"#.into(),
+        format!(r#"{{"type":"Polygon","coordinates":{SQUARE},"crs":4326}}"#),
+        format!(r#"{{"type":"Polygon","type":"Polygon","coordinates":{SQUARE}}}"#),
+    ] {
+        assert!(rejected(&spatial(&invalid), &limits), "{invalid}");
+    }
+}
+
+#[test]
 fn enforces_exact_budgets() {
     let mut limits = Limits::default();
     let depth = limits.filter_depth as usize;
@@ -118,6 +148,13 @@ fn enforces_exact_budgets() {
     let membership = format!(r#"{{"op":"in","field":"a","value":[{values}]}}"#);
     assert!(parse(&membership, &limits).is_ok());
     assert!(rejected(&membership.replace("[1,", "[1,1,"), &limits));
+
+    let polygon =
+        format!(r#"{{"op":"within","geometry":{{"type":"Polygon","coordinates":{SQUARE}}}}}"#);
+    limits.xy_pairs = 5;
+    assert!(parse(&polygon, &limits).is_ok());
+    limits.xy_pairs = 4;
+    assert!(rejected(&polygon, &limits));
 
     limits.filter_bytes = membership.len() as u32;
     assert!(parse(&membership, &limits).is_ok());
