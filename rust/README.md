@@ -1,5 +1,21 @@
 # Atlas Rust: arranque inicial (#211)
 
+Selección espacial (#222): `spatial::prepare` valida topología y transforma únicamente
+la selección 4326 al CRS nativo, dentro de una transacción con timeout. No repara
+geometrías. La selección exige XY en el dominio geográfico; el predicado combina
+`&&` y la relación exacta sobre la columna nativa. EXPLAIN prueba elegibilidad GIST,
+sin garantizar el plan elegido en producción ni latencia.
+
+`selection::prepare(tx, fixed, user, bbox, metadata, limits)` es la entrada común
+para combinar restricciones tras autorizar: interpreta los filtros con presupuestos,
+valida atributos y topología, y devuelve `Selection::append` para el WHERE SQLx.
+Usar la misma transacción de solo lectura al seleccionar filas. Conserva AND entre
+publicación, usuario y bbox incluso con OR/NOT anidados. Sin nuevas rutas HTTP.
+
+El parser valida los presupuestos configurados y rechaza objetos usados como escalares,
+incluido el marcador interno de números de Serde: preservar numeric no permite coerción
+de objetos JSON a números. Las pruebas incluyen este caso ofensivo en comparación e IN.
+
 Desde `rust/` (también en CI), rustup lee `rust-toolchain.toml`: Rust 1.99.1,
 estable al iniciar esta implementación. `Cargo.lock` fija la resolución.
 Dependencias y features del motor aprobadas por ADR 0008; Serde/TOML y SQLx
@@ -70,7 +86,7 @@ Domain no importa HTTP/SQL: Dataset/Source/AccessPolicy/Principal, Query y Error
 Después de deserializar se llama `validate` con schemas/límites del servidor;
 la introspección posterior verifica propiedades y tipos reales. Los filtros se
 conservan como RawValue sin redondear numeric: su parser acotado y validación
-semántica pertenecen a #220, antes de exponer publicaciones o consultas por HTTP.
+semántica se implementan en #220; `selection::prepare` los valida antes de consultar.
 
 ```bash
 cargo fmt --check
@@ -154,3 +170,52 @@ DatasetNotFound; operación faltante sobre visible, PermissionDenied. atlas-admi
 solo administración, sin bypass de datos; roles de un Principal anónimo no conceden acceso.
 El listado filtra por view antes de paginar. Los filtros de datos nunca conceden permisos.
 Integración de estas funciones en rutas administrativas/datos: #218–#219 y siguientes.
+
+## Filtros (#220)
+
+`query::predicate::parse` convierte el filtro JSON en un `Predicate` cerrado antes de tocar SQL.
+Mide bytes antes de parsear; rechaza claves duplicadas, desconocidas o faltantes, operadores
+desconocidos, valores que no sean texto, booleano o número finito, y `field` que no sea
+identificador. Numeric se conserva como `serde_json::Number`, sin redondear. `in` exige de 1 a
+`in_values` escalares. Todo rechazo es `invalid_filter`; tipos contra columnas y SQL: #221.
+`and`/`or`/`not` cuentan profundidad y nodos antes de descender, así que la recursión queda
+acotada por `filter_depth` (máximo 128); un JSON anidado sin límite falla en serde_json sin
+desbordar la pila.
+`intersects`/`within` validan solo la estructura de Polygon/MultiPolygon: anillos cerrados de al
+menos cuatro posiciones XY finitas y `xy_pairs` en todo el filtro. La validez topológica se
+comprueba en PostGIS (#222); no hay motor geométrico en Rust.
+
+## Filtros en SQL (#221)
+
+`postgis::predicates::compile` escribe un `Predicate` en un `QueryBuilder`. Solo admite atributos
+publicados según la introspección, con identificadores citados y valores enlazados como texto con
+cast explícito al tipo de la columna (`$n::int8`, `$n::numeric`…), así que bigint y numeric no
+pasan por f64. Tipos estrictos: enteros dentro del rango de su columna, `like`/`ilike` solo en
+texto, fechas ISO. Bbox y selecciones espaciales: #222.
+`restrict` une con AND el filtro fijo de la publicación y el del usuario, cada uno entre
+paréntesis: ningún `or`/`not` del usuario amplía lo publicado; sin filtros escribe `TRUE`.
+`query_error` traduce los errores de datos de PostgreSQL (SQLSTATE 22, p. ej. 2026-02-30) a
+`invalid_filter`.
+
+## Publicaciones (#218)
+
+`services::publications::Publications` valida antes de tocar el catálogo: JSON cerrado (claves
+duplicadas o desconocidas son `invalid_request`), `Dataset::validate`, introspección de la fuente
+(inexistente o fuera de `allowed_schemas` es `invalid_request`) y el filtro fijo preparado con
+`selection::prepare`, que lo compila contra los atributos publicados y valida su geometría en
+PostGIS. `list` ordena por id con `catalog_default`/`catalog_max`; `document` arma la respuesta
+administrativa (`config`, `revision` y `metadata` pública). Borrar conserva la tabla.
+`update` aplica Merge Patch (RFC 7386) sobre la configuración vigente: lo omitido se conserva,
+`null` borra opcionales, `id` no se acepta y `filter` se reemplaza entero. Las claves duplicadas se
+rechazan también dentro del parche. Una revisión distinta es `revision_mismatch` antes de
+reinspeccionar; la configuración resultante se valida como en `create`.
+PATCH conserva el filtro como JSON original hasta validarlo: un objeto nunca se
+normaliza a número mediante el marcador interno de Serde y numeric mantiene precisión.
+
+## Rutas administrativas (#218)
+
+`api::admin::router` monta `/api/v1/admin/datasets` y `/{id}`; exige `atlas-admin` (403) y responde `no-store`.
+Detalle con ETag; listado con `limit`/`offset` únicos; errores `{code,message,request_id}`.
+POST, GET y PATCH devuelven el ETag; PATCH y DELETE exigen un único `If-Match` con la revisión
+entre comillas (ausente o malformado 400, distinta 412) y DELETE responde 204. Cuerpos mayores
+que `admin_body_bytes` son 413 `query_too_large`.

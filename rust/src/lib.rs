@@ -1,6 +1,9 @@
+pub mod api;
 pub mod auth;
 pub mod catalog;
 pub mod config;
 pub mod domain;
 pub mod migrations;
 pub mod postgis;
+pub mod query;
+pub mod services;
