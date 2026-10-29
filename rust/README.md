@@ -30,6 +30,33 @@ en Unix, SIGTERM detienen aceptación y esperan conexiones mediante el shutdown
 de Axum. Logs JSON mínimos en stderr, sin registrar solicitudes ni cabeceras.
 El cierre del servidor espera las conexiones prestadas y cierra el pool.
 
+## Contenedor de desarrollo
+
+Sin Rust instalado en el host: el perfil `rust` de `compose.yaml` construye `rust/Dockerfile`
+(toolchain fijado, CMake para AWS-LC y dependencias de `Cargo.lock` ya descargadas) y monta el
+repositorio en `/work`. Cargo corre sin red; si cambia `Cargo.lock`, reconstruir la imagen.
+`postgis-rust` es una BD descartable en tmpfs para `ATLAS_TEST_DATABASE_URL`, como en CI;
+`ATLAS_DATABASE_URL` apunta al `postgis` de desarrollo con `scripts/seed.sql`.
+Corre con el uid/gid `ATLAS_UID`/`ATLAS_GID` y deja `target` en un volumen. El `Makefile` de la
+raíz los toma del usuario actual y agrupa los comandos:
+
+| Comando | Qué hace |
+|---|---|
+| `make build` | Construye la imagen de desarrollo |
+| `make check` | `fmt`, `lint` y `test`, los mismos pasos que CI |
+| `make fmt` / `make lint` / `make test` | Cada paso por separado |
+| `make migrate` | Crea el catálogo en el `postgis` de desarrollo |
+| `make up` | Levanta el servicio `atlas` en segundo plano: migra y sirve en `127.0.0.1:${ATLAS_PORT:-8080}` |
+| `make serve` | Lo mismo en primer plano |
+| `make logs` / `make restart` | Sigue los logs / reinicia y recompila |
+| `make down` | Detiene los contenedores sin borrar volúmenes |
+| `make shell` | Bash dentro del contenedor |
+| `make backup` | `pg_dump` del `postgis` de desarrollo a `backups/<bd>-<fecha>.dump` (ignorado por git) |
+| `make restore` | Restaura el respaldo más reciente, o `FILE=ruta.dump`, en una sola transacción |
+
+`rust` es el servicio de herramientas y tests; `atlas` es el servidor. La BD de tests es
+descartable y no se respalda.
+
 ## Configuración y dominio (#212)
 
 `serve --config archivo.toml` admite `listen`, `database_url`, `allowed_schemas`
