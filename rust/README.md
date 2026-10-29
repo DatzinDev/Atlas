@@ -176,3 +176,7 @@ publicados según la introspección, con identificadores citados y valores enlaz
 cast explícito al tipo de la columna (`$n::int8`, `$n::numeric`…), así que bigint y numeric no
 pasan por f64. Tipos estrictos: enteros dentro del rango de su columna, `like`/`ilike` solo en
 texto, fechas ISO. Bbox y selecciones espaciales: #222.
+`restrict` une con AND el filtro fijo de la publicación y el del usuario, cada uno entre
+paréntesis: ningún `or`/`not` del usuario amplía lo publicado; sin filtros escribe `TRUE`.
+`query_error` traduce los errores de datos de PostgreSQL (SQLSTATE 22, p. ej. 2026-02-30) a
+`invalid_filter`.

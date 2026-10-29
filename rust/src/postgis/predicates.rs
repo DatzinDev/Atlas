@@ -1,4 +1,4 @@
-use super::introspection::quote_identifier;
+use super::{connection::error, introspection::quote_identifier};
 use crate::{
     domain::{Error, Metadata},
     query::predicate::{Comparison, Predicate, Scalar},
@@ -13,6 +13,25 @@ enum Kind {
     Float(f64),
     Numeric,
     Bool,
+}
+
+pub fn restrict(
+    builder: &mut QueryBuilder<Postgres>,
+    fixed: Option<&Predicate>,
+    user: Option<&Predicate>,
+    meta: &Metadata,
+) -> Result<(), Error> {
+    let predicates: Vec<_> = [fixed, user].into_iter().flatten().collect();
+    if predicates.is_empty() {
+        builder.push("TRUE");
+    }
+    for (i, predicate) in predicates.into_iter().enumerate() {
+        if i > 0 {
+            builder.push(" AND ");
+        }
+        compile(builder, predicate, meta)?;
+    }
+    Ok(())
 }
 
 pub fn compile(
@@ -83,6 +102,17 @@ pub fn compile(
     }
     builder.push(")");
     Ok(())
+}
+
+pub fn query_error(failure: sqlx::Error) -> Error {
+    match failure {
+        sqlx::Error::Database(ref database)
+            if database.code().is_some_and(|code| code.starts_with("22")) =>
+        {
+            Error::InvalidFilter
+        }
+        other => error(other),
+    }
 }
 
 fn column<'m>(field: &str, meta: &'m Metadata) -> Result<(String, Kind, &'m str), Error> {
