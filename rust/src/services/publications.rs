@@ -4,7 +4,11 @@ use crate::{
     domain::{Dataset, Error},
     postgis::{connection::Database, introspection::inspect, selection::prepare},
 };
-use serde_json::{Value, json};
+use serde::{
+    Deserialize, Deserializer,
+    de::{self, DeserializeOwned, MapAccess, SeqAccess, Visitor},
+};
+use serde_json::{Map, Value, json};
 
 #[derive(Clone)]
 pub struct Publications {
@@ -43,9 +47,31 @@ impl Publications {
     }
 
     pub async fn create(&self, body: &[u8]) -> Result<Publication, Error> {
-        let dataset: Dataset = serde_json::from_slice(body).map_err(|_| Error::InvalidRequest)?;
+        let dataset: Dataset = decode(body)?;
         self.check(&dataset).await?;
         self.catalog.create(&dataset).await
+    }
+
+    pub async fn update(&self, id: &str, body: &[u8], revision: i64) -> Result<Publication, Error> {
+        let Value::Object(mut patch) = decode(body)? else {
+            return Err(Error::InvalidRequest);
+        };
+        if patch.contains_key("id") {
+            return Err(Error::InvalidRequest);
+        }
+        let current = self.catalog.get(id).await?;
+        if current.revision != revision {
+            return Err(Error::RevisionMismatch);
+        }
+        let filter = patch.remove("filter");
+        let mut config = serde_json::to_value(&current.config).map_err(|_| Error::InternalError)?;
+        merge(&mut config, Value::Object(patch));
+        if let (Some(filter), Value::Object(fields)) = (filter, &mut config) {
+            fields.insert("filter".into(), filter);
+        }
+        let dataset: Dataset = serde_json::from_value(config).map_err(|_| Error::InvalidRequest)?;
+        self.check(&dataset).await?;
+        self.catalog.update(&dataset, revision).await
     }
 
     pub async fn delete(&self, id: &str, revision: i64) -> Result<(), Error> {
@@ -78,4 +104,86 @@ pub fn document(publication: &Publication) -> Value {
         "metadata": {"id": config.id, "title": config.title, "description": config.description,
             "geometry_type": meta.geometry_type, "srid": meta.srid, "attributes": attributes,
             "formats": ["geojson", "mvt"]}})
+}
+
+fn decode<T: DeserializeOwned>(body: &[u8]) -> Result<T, Error> {
+    serde_json::from_slice::<Unique>(body).map_err(|_| Error::InvalidRequest)?;
+    serde_json::from_slice(body).map_err(|_| Error::InvalidRequest)
+}
+
+fn merge(target: &mut Value, patch: Value) {
+    let Value::Object(fields) = patch else {
+        *target = patch;
+        return;
+    };
+    if !target.is_object() {
+        *target = Value::Object(Map::new());
+    }
+    if let Value::Object(object) = target {
+        for (key, value) in fields {
+            if value.is_null() {
+                object.remove(&key);
+            } else {
+                merge(object.entry(key).or_insert(Value::Null), value);
+            }
+        }
+    }
+}
+
+struct Unique;
+
+impl<'de> Deserialize<'de> for Unique {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(UniqueVisitor)
+    }
+}
+
+struct UniqueVisitor;
+
+impl<'de> Visitor<'de> for UniqueVisitor {
+    type Value = Unique;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("JSON without duplicate keys")
+    }
+
+    fn visit_bool<E>(self, _: bool) -> Result<Unique, E> {
+        Ok(Unique)
+    }
+
+    fn visit_i64<E>(self, _: i64) -> Result<Unique, E> {
+        Ok(Unique)
+    }
+
+    fn visit_u64<E>(self, _: u64) -> Result<Unique, E> {
+        Ok(Unique)
+    }
+
+    fn visit_f64<E>(self, _: f64) -> Result<Unique, E> {
+        Ok(Unique)
+    }
+
+    fn visit_str<E>(self, _: &str) -> Result<Unique, E> {
+        Ok(Unique)
+    }
+
+    fn visit_unit<E>(self) -> Result<Unique, E> {
+        Ok(Unique)
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Unique, A::Error> {
+        while seq.next_element::<Unique>()?.is_some() {}
+        Ok(Unique)
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Unique, A::Error> {
+        let mut keys = std::collections::HashSet::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if !keys.insert(key) {
+                return Err(de::Error::custom("duplicate key"));
+            }
+            map.next_value::<Unique>()?;
+        }
+        Ok(Unique)
+    }
 }

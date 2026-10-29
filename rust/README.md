@@ -205,3 +205,7 @@ duplicadas o desconocidas son `invalid_request`), `Dataset::validate`, introspec
 `selection::prepare`, que lo compila contra los atributos publicados y valida su geometría en
 PostGIS. `list` ordena por id con `catalog_default`/`catalog_max`; `document` arma la respuesta
 administrativa (`config`, `revision` y `metadata` pública). Borrar conserva la tabla.
+`update` aplica Merge Patch (RFC 7386) sobre la configuración vigente: lo omitido se conserva,
+`null` borra opcionales, `id` no se acepta y `filter` se reemplaza entero. Las claves duplicadas se
+rechazan también dentro del parche. Una revisión distinta es `revision_mismatch` antes de
+reinspeccionar; la configuración resultante se valida como en `create`.

@@ -33,7 +33,7 @@ async fn setup() -> (Database, Publications) {
 }
 
 #[tokio::test]
-async fn publications_validate_before_persisting() {
+async fn publications_validate_before_persisting_and_patch_with_revision() {
     let (db, service) = setup().await;
     let created = service.create(ROADS.as_bytes()).await.unwrap();
     assert_eq!(created.revision, 1);
@@ -89,6 +89,54 @@ async fn publications_validate_before_persisting() {
         Some(Error::DatasetNotFound)
     );
 
+    let patched = service
+        .update(
+            "svc_roads",
+            br#"{"title":"New","description":null,"access":{"public":true}}"#,
+            1,
+        )
+        .await
+        .unwrap();
+    assert_eq!(patched.revision, 2);
+    assert_eq!(patched.config.title, "New");
+    assert_eq!(patched.config.properties, ["name", "lanes"]);
+    assert!(patched.config.access.public && patched.config.access.view_roles == ["viewer"]);
+    let replaced = service
+        .update(
+            "svc_roads",
+            br#"{"filter":{"op":"is_null","field":"name"}}"#,
+            2,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(replaced.config.filter.unwrap().get()).unwrap(),
+        serde_json::json!({"op": "is_null", "field": "name"})
+    );
+    for (body, revision, expected) in [
+        (&br#"{"title":"Stale"}"#[..], 2, Error::RevisionMismatch),
+        (br#"{"id":"svc_renamed"}"#, 3, Error::InvalidRequest),
+        (br#"{"title":null}"#, 3, Error::InvalidRequest),
+        (br#"{"unknown":1}"#, 3, Error::InvalidRequest),
+        (br#"{"title":"A","title":"B"}"#, 3, Error::InvalidRequest),
+        (br#"["title"]"#, 3, Error::InvalidRequest),
+        (
+            br#"{"filter":{"op":"eq","field":"secret","value":1}}"#,
+            3,
+            Error::InvalidFilter,
+        ),
+    ] {
+        assert_eq!(
+            service.update("svc_roads", body, revision).await.err(),
+            Some(expected)
+        );
+    }
+    let cleared = service
+        .update("svc_roads", br#"{"filter":null}"#, 3)
+        .await
+        .unwrap();
+    assert!(cleared.config.filter.is_none() && cleared.revision == 4);
+
     service
         .create(ROADS.replace("svc_roads", "svc_second").as_bytes())
         .await
@@ -109,10 +157,10 @@ async fn publications_validate_before_persisting() {
     }
 
     assert_eq!(
-        service.delete("svc_roads", 2).await.err(),
+        service.delete("svc_roads", 3).await.err(),
         Some(Error::RevisionMismatch)
     );
-    service.delete("svc_roads", 1).await.unwrap();
+    service.delete("svc_roads", 4).await.unwrap();
     assert_eq!(
         service.get("svc_roads").await.err(),
         Some(Error::DatasetNotFound)
