@@ -28,6 +28,14 @@ pub enum Comparison {
     Ilike,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Spatial {
+    Intersects,
+    Within,
+}
+
+pub type Polygon = Vec<Vec<[f64; 2]>>;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Predicate {
     Compare {
@@ -46,6 +54,10 @@ pub enum Predicate {
     And(Vec<Predicate>),
     Or(Vec<Predicate>),
     Not(Box<Predicate>),
+    Spatial {
+        op: Spatial,
+        polygons: Vec<Polygon>,
+    },
 }
 
 pub fn parse(text: &str, limits: &Limits) -> Result<Predicate, Error> {
@@ -53,12 +65,18 @@ pub fn parse(text: &str, limits: &Limits) -> Result<Predicate, Error> {
         return Err(Error::InvalidFilter);
     }
     let raw: &RawValue = serde_json::from_str(text).map_err(invalid)?;
-    Parser { limits, nodes: 0 }.predicate(raw, 1)
+    Parser {
+        limits,
+        nodes: 0,
+        xy: 0,
+    }
+    .predicate(raw, 1)
 }
 
 struct Parser<'l> {
     limits: &'l Limits,
     nodes: usize,
+    xy: usize,
 }
 
 impl Parser<'_> {
@@ -112,6 +130,17 @@ impl Parser<'_> {
                     negated: op == "is_not_null",
                 }
             }
+            "intersects" | "within" => {
+                let [_, geometry] = take(&pairs, ["op", "geometry"])?;
+                Predicate::Spatial {
+                    op: if op == "within" {
+                        Spatial::Within
+                    } else {
+                        Spatial::Intersects
+                    },
+                    polygons: self.geometry(geometry)?,
+                }
+            }
             other => {
                 let op = serde_json::from_value(other.into()).map_err(invalid)?;
                 let [_, field, value] = take(&pairs, ["op", "field", "value"])?;
@@ -122,6 +151,30 @@ impl Parser<'_> {
                 }
             }
         })
+    }
+
+    fn geometry(&mut self, raw: &RawValue) -> Result<Vec<Polygon>, Error> {
+        let Pairs(pairs) = serde_json::from_str(raw.get()).map_err(invalid)?;
+        let [kind, coordinates] = take(&pairs, ["type", "coordinates"])?;
+        let polygons: Vec<Polygon> = match text(kind)?.as_str() {
+            "Polygon" => vec![serde_json::from_str(coordinates.get()).map_err(invalid)?],
+            "MultiPolygon" => serde_json::from_str(coordinates.get()).map_err(invalid)?,
+            _ => return Err(Error::InvalidFilter),
+        };
+        if polygons.is_empty() || polygons.iter().any(Vec::is_empty) {
+            return Err(Error::InvalidFilter);
+        }
+        for ring in polygons.iter().flatten() {
+            self.xy += ring.len();
+            if ring.len() < 4
+                || ring.first() != ring.last()
+                || self.xy > self.limits.xy_pairs as usize
+                || ring.iter().flatten().any(|v| !v.is_finite())
+            {
+                return Err(Error::InvalidFilter);
+            }
+        }
+        Ok(polygons)
     }
 }
 
