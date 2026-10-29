@@ -135,3 +135,6 @@ Mide bytes antes de parsear; rechaza claves duplicadas, desconocidas o faltantes
 desconocidos, valores que no sean texto, booleano o número finito, y `field` que no sea
 identificador. Numeric se conserva como `serde_json::Number`, sin redondear. `in` exige de 1 a
 `in_values` escalares. Todo rechazo es `invalid_filter`; tipos contra columnas y SQL: #221.
+`and`/`or`/`not` cuentan profundidad y nodos antes de descender, así que la recursión queda
+acotada por `filter_depth` (máximo 128); un JSON anidado sin límite falla en serde_json sin
+desbordar la pila.

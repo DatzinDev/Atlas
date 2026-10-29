@@ -43,6 +43,9 @@ pub enum Predicate {
         field: String,
         negated: bool,
     },
+    And(Vec<Predicate>),
+    Or(Vec<Predicate>),
+    Not(Box<Predicate>),
 }
 
 pub fn parse(text: &str, limits: &Limits) -> Result<Predicate, Error> {
@@ -71,6 +74,26 @@ impl Parser<'_> {
             .ok_or(Error::InvalidFilter)
             .and_then(|(_, v)| text(v))?;
         Ok(match op.as_str() {
+            "and" | "or" => {
+                let [_, args] = take(&pairs, ["op", "args"])?;
+                let args: Vec<&RawValue> = serde_json::from_str(args.get()).map_err(invalid)?;
+                if args.is_empty() || self.nodes + args.len() > self.limits.filter_nodes as usize {
+                    return Err(Error::InvalidFilter);
+                }
+                let args = args
+                    .into_iter()
+                    .map(|arg| self.predicate(arg, depth + 1))
+                    .collect::<Result<_, _>>()?;
+                if op == "and" {
+                    Predicate::And(args)
+                } else {
+                    Predicate::Or(args)
+                }
+            }
+            "not" => {
+                let [_, arg] = take(&pairs, ["op", "arg"])?;
+                Predicate::Not(Box::new(self.predicate(arg, depth + 1)?))
+            }
             "in" => {
                 let [_, field, values] = take(&pairs, ["op", "field", "value"])?;
                 let values: Vec<&RawValue> = serde_json::from_str(values.get()).map_err(invalid)?;
