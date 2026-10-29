@@ -40,6 +40,8 @@ No se necesitan dependencias nuevas ni modificar el runtime Python.
   LIKE/ILIKE, nombres con comillas, columnas ocultas y entradas ofensivas rechazadas.
 - Espacio: topología inválida, huecos, borde incluido en intersects y excluido en within,
   reproyección 4326 a 3857, CRS desconocido y selección fuera del dominio geográfico.
+  Incluye MultiPolygon, anillo degenerado, hueco fuera del exterior y polos: válidos
+  en 4326, rechazados al transformar a Web Mercator, donde la proyección es indefinida.
 - Composición: OR/NOT mezclado con espacio nunca amplía el filtro fijo; bbox se suma
   como AND. Se prueban IDs efectivos contra PostGIS, no solo texto SQL.
 - EXPLAIN con enable_seqscan deshabilitado confirma elegibilidad de GIST.

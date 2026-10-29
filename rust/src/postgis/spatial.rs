@@ -46,6 +46,8 @@ pub async fn prepare(
                         || !y.is_finite()
                         || !(-180.0..=180.0).contains(x)
                         || !(-90.0..=90.0).contains(y)
+                // Web Mercator is undefined at the poles, even if PROJ returns a large finite ordinate.
+                || (srid == 3857 && y.abs() == 90.0)
                 })
         })
     {

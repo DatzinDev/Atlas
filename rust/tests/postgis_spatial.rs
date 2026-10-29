@@ -100,6 +100,36 @@ async fn topology_transform_and_indexable_predicates() {
         Err(Error::SchemaChanged)
     ));
     assert!(bbox([2., 0., 1., 1.]).is_err());
+    let mut exterior_hole = polygon.clone();
+    exterior_hole[0].push(bbox([5., 5., 6., 6.]).unwrap().remove(0).remove(0));
+    for invalid in [exterior_hole, bbox([0., 0., 0., 1.]).unwrap()] {
+        assert!(matches!(
+            prepare(&mut tx, &invalid, 4326).await,
+            Err(Error::InvalidFilter)
+        ));
+    }
+    let poles = bbox([0., 85., 1., 90.]).unwrap();
+    assert!(prepare(&mut tx, &poles, 4326).await.is_ok());
+    assert!(matches!(
+        prepare(&mut tx, &poles, 3857).await,
+        Err(Error::InvalidFilter)
+    ));
+    let mut multi = polygon.clone();
+    multi.extend(bbox([2.5, 2.5, 3.5, 3.5]).unwrap());
+    let geometry = prepare(&mut tx, &multi, 3857).await.unwrap();
+    let mut query = QueryBuilder::new("SELECT id FROM spatial_places WHERE ");
+    geometry
+        .append(&mut query, "geom", Spatial::Within)
+        .unwrap();
+    query.push(" ORDER BY id");
+    assert_eq!(
+        query
+            .build_query_scalar::<i32>()
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap(),
+        vec![1, 3]
+    );
     tx.rollback().await.unwrap();
     db.close().await;
 }
