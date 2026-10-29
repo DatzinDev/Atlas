@@ -30,3 +30,6 @@ rust/target/
 .pypirc
 pip.conf
 credentials.json
+
+# Local database dumps from make backup.
+/backups/

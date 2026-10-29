@@ -1,3 +1,18 @@
+x-rust: &rust
+  profiles: [rust]
+  build:
+    context: ./rust
+    target: dev
+  image: atlas-rust-dev
+  user: "${ATLAS_UID:-1000}:${ATLAS_GID:-1000}"
+  environment: &rust-env
+    CARGO_NET_OFFLINE: "true"
+    ATLAS_DATABASE_URL: postgresql://${POSTGRES_USER:-atlas}:${POSTGRES_PASSWORD:-atlas}@postgis:5432/${POSTGRES_DB:-atlas}
+  volumes:
+    - .:/work
+    - atlas-cargo-registry:/usr/local/cargo/registry
+    - atlas-rust-target:/target
+
 services:
   postgis:
     image: postgis/postgis:16-3.4
@@ -19,5 +34,46 @@ services:
       retries: 10
       start_period: 120s
 
+  postgis-rust:
+    profiles: [rust]
+    image: postgis/postgis:16-3.4@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5
+    environment:
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: atlas
+      POSTGRES_DB: atlas_rust_test
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U atlas -d atlas_rust_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  rust:
+    <<: *rust
+    environment:
+      <<: *rust-env
+      ATLAS_TEST_DATABASE_URL: postgresql://atlas:atlas@postgis-rust:5432/atlas_rust_test
+    depends_on:
+      postgis:
+        condition: service_healthy
+      postgis-rust:
+        condition: service_healthy
+
+  atlas:
+    <<: *rust
+    command:
+      - sh
+      - -c
+      - cargo run --locked -- migrate && exec cargo run --locked -- serve --listen 0.0.0.0:8080
+    ports:
+      - "127.0.0.1:${ATLAS_PORT:-8080}:8080"
+    depends_on:
+      postgis:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   atlas-postgis-data:
+  atlas-cargo-registry:
+  atlas-rust-target:
