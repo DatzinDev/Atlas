@@ -12,6 +12,20 @@ fn rejected(json: &str, limits: &Limits) -> bool {
     parse(json, limits) == Err(Error::InvalidFilter)
 }
 
+fn nested(levels: usize) -> String {
+    let leaf = r#"{"op":"is_null","field":"a"}"#;
+    format!(
+        "{}{leaf}{}",
+        r#"{"op":"not","arg":"#.repeat(levels),
+        "}".repeat(levels)
+    )
+}
+
+fn group(args: usize) -> String {
+    let leaf = r#"{"op":"eq","field":"a","value":1}"#;
+    format!(r#"{{"op":"or","args":[{}]}}"#, vec![leaf; args].join(","))
+}
+
 #[test]
 fn parses_attribute_predicates_and_preserves_numbers() {
     for op in ["eq", "ne", "gt", "gte", "lt", "lte", "like", "ilike"] {
@@ -42,6 +56,20 @@ fn parses_attribute_predicates_and_preserves_numbers() {
 }
 
 #[test]
+fn parses_logical_groups() {
+    let Predicate::And(args) = ok(
+        r#"{"op":"and","args":[{"op":"gte","field":"poblacion","value":100000},{"op":"is_not_null","field":"nombre"}]}"#,
+    ) else {
+        panic!("and")
+    };
+    assert_eq!(args.len(), 2);
+    assert!(matches!(
+        ok(r#"{"op":"not","arg":{"op":"or","args":[{"op":"is_null","field":"a"}]}}"#),
+        Predicate::Not(inner) if matches!(&*inner, Predicate::Or(args) if args.len() == 1)
+    ));
+}
+
+#[test]
 fn rejects_malformed_keys_types_and_operators() {
     let limits = Limits::default();
     for invalid in [
@@ -63,6 +91,10 @@ fn rejects_malformed_keys_types_and_operators() {
         r#"{"op":"in","field":"a","value":[]}"#,
         r#"{"op":"in","field":"a","value":[[1]]}"#,
         r#"{"op":"in","field":"a","value":1}"#,
+        r#"{"op":"and","args":[]}"#,
+        r#"{"op":"and","args":{"op":"is_null","field":"a"}}"#,
+        r#"{"op":"or","args":[{"op":"is_null","field":"a"},{"op":"is_null","field":"a","x":1}]}"#,
+        r#"{"op":"not","arg":"a"}"#,
         r#"{"op":"is_null","field":"a"} {}"#,
         r#"[{"op":"is_null","field":"a"}]"#,
         "true",
@@ -75,6 +107,13 @@ fn rejects_malformed_keys_types_and_operators() {
 #[test]
 fn enforces_exact_budgets() {
     let mut limits = Limits::default();
+    let depth = limits.filter_depth as usize;
+    assert!(parse(&nested(depth - 1), &limits).is_ok());
+    assert!(rejected(&nested(depth), &limits));
+    let nodes = limits.filter_nodes as usize;
+    assert!(parse(&group(nodes - 1), &limits).is_ok());
+    assert!(rejected(&group(nodes), &limits));
+
     let values = vec!["1"; limits.in_values as usize].join(",");
     let membership = format!(r#"{{"op":"in","field":"a","value":[{values}]}}"#);
     assert!(parse(&membership, &limits).is_ok());
@@ -94,6 +133,7 @@ fn deep_inputs_fail_without_stack_overflow() {
         filter_nodes: u32::MAX,
         ..Limits::default()
     };
+    assert!(rejected(&nested(10_000), &limits));
     assert!(rejected(&"[".repeat(1_000_000), &limits));
     let arrays = format!(
         r#"{{"op":"in","field":"a","value":{}{}}}"#,
