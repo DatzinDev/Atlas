@@ -39,6 +39,20 @@ pub fn compile(
     predicate: &Predicate,
     meta: &Metadata,
 ) -> Result<(), Error> {
+    compile_using(builder, predicate, meta, &mut |_, _| {
+        Err(Error::InvalidFilter)
+    })
+}
+
+pub(crate) fn compile_using<F>(
+    builder: &mut QueryBuilder<Postgres>,
+    predicate: &Predicate,
+    meta: &Metadata,
+    spatial: &mut F,
+) -> Result<(), Error>
+where
+    F: FnMut(&mut QueryBuilder<Postgres>, crate::query::predicate::Spatial) -> Result<(), Error>,
+{
     builder.push("(");
     match predicate {
         Predicate::And(args) | Predicate::Or(args) => {
@@ -51,12 +65,12 @@ pub fn compile(
                 if i > 0 {
                     builder.push(joiner);
                 }
-                compile(builder, arg, meta)?;
+                compile_using(builder, arg, meta, spatial)?;
             }
         }
         Predicate::Not(arg) => {
             builder.push("NOT ");
-            compile(builder, arg, meta)?;
+            compile_using(builder, arg, meta, spatial)?;
         }
         Predicate::Null { field, negated } => {
             let (column, _, _) = column(field, meta)?;
@@ -98,7 +112,7 @@ pub fn compile(
                 .push("::")
                 .push(cast);
         }
-        Predicate::Spatial { .. } => return Err(Error::InvalidFilter),
+        Predicate::Spatial { op, .. } => spatial(builder, *op)?,
     }
     builder.push(")");
     Ok(())

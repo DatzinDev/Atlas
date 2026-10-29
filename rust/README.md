@@ -6,6 +6,12 @@ geometrías. La selección exige XY en el dominio geográfico; el predicado comb
 `&&` y la relación exacta sobre la columna nativa. EXPLAIN prueba elegibilidad GIST,
 sin garantizar el plan elegido en producción ni latencia.
 
+`selection::prepare(tx, fixed, user, bbox, metadata, limits)` es la entrada común
+para combinar restricciones tras autorizar: interpreta los filtros con presupuestos,
+valida atributos y topología, y devuelve `Selection::append` para el WHERE SQLx.
+Usar la misma transacción de solo lectura al seleccionar filas. Conserva AND entre
+publicación, usuario y bbox incluso con OR/NOT anidados. Sin nuevas rutas HTTP.
+
 Desde `rust/` (también en CI), rustup lee `rust-toolchain.toml`: Rust 1.99.1,
 estable al iniciar esta implementación. `Cargo.lock` fija la resolución.
 Dependencias y features del motor aprobadas por ADR 0008; Serde/TOML y SQLx
