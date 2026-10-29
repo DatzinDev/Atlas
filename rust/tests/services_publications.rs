@@ -24,6 +24,7 @@ async fn setup() -> (Database, Publications) {
         "CREATE SCHEMA publication_test",
         "CREATE TABLE publication_test.roads(id integer PRIMARY KEY, name text, lanes int2, geom geometry(LineString,4326))",
         "INSERT INTO publication_test.roads VALUES (1,'a',2,NULL)",
+        "ALTER TABLE publication_test.roads ADD amount numeric",
         "DELETE FROM atlas_catalog.datasets WHERE config->'source'->>'schema' <> 'publication_test' OR id LIKE 'svc\\_%'",
     ] {
         sqlx::query(statement).execute(&mut *tx).await.unwrap();
@@ -36,6 +37,31 @@ async fn setup() -> (Database, Publications) {
 async fn publications_validate_before_persisting_and_patch_with_revision() {
     let (db, service) = setup().await;
     let created = service.create(ROADS.as_bytes()).await.unwrap();
+    let numbers = ROADS
+        .replace("svc_roads", "svc_numeric")
+        .replace(r#"["name","lanes"]"#, r#"["name","lanes","amount"]"#);
+    service.create(numbers.as_bytes()).await.unwrap();
+    let numeric = service
+        .update(
+            "svc_numeric",
+            br#"{"filter":{"op":"eq","field":"amount","value":12345678901234567890.123}}"#,
+            1,
+        )
+        .await
+        .unwrap();
+    assert!(
+        numeric
+            .config
+            .filter
+            .as_ref()
+            .unwrap()
+            .get()
+            .contains("12345678901234567890.123")
+    );
+    service
+        .delete("svc_numeric", numeric.revision)
+        .await
+        .unwrap();
     assert_eq!(created.revision, 1);
     let doc = document(&created);
     assert_eq!(doc["metadata"]["srid"], 4326);
@@ -120,6 +146,8 @@ async fn publications_validate_before_persisting_and_patch_with_revision() {
         (br#"{"unknown":1}"#, 3, Error::InvalidRequest),
         (br#"{"title":"A","title":"B"}"#, 3, Error::InvalidRequest),
         (br#"["title"]"#, 3, Error::InvalidRequest),
+        (br#"{"filter":{"op":"eq","field":"lanes","value":{"$serde_json::private::Number":"2"}}}"#, 3, Error::InvalidFilter),
+        (br#"{"filter":{"op":"in","field":"lanes","value":[{"$serde_json::private::Number":"2"}]}}"#, 3, Error::InvalidFilter),
         (
             br#"{"filter":{"op":"eq","field":"secret","value":1}}"#,
             3,

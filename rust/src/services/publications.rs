@@ -53,9 +53,8 @@ impl Publications {
     }
 
     pub async fn update(&self, id: &str, body: &[u8], revision: i64) -> Result<Publication, Error> {
-        let Value::Object(mut patch) = decode(body)? else {
-            return Err(Error::InvalidRequest);
-        };
+        let mut patch: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
+            decode(body)?;
         if patch.contains_key("id") {
             return Err(Error::InvalidRequest);
         }
@@ -64,12 +63,19 @@ impl Publications {
             return Err(Error::RevisionMismatch);
         }
         let filter = patch.remove("filter");
+        let patch = patch
+            .into_iter()
+            .map(|(key, raw)| serde_json::from_str(raw.get()).map(|value| (key, value)))
+            .collect::<Result<Map<String, Value>, _>>()
+            .map_err(|_| Error::InvalidRequest)?;
         let mut config = serde_json::to_value(&current.config).map_err(|_| Error::InternalError)?;
         merge(&mut config, Value::Object(patch));
-        if let (Some(filter), Value::Object(fields)) = (filter, &mut config) {
-            fields.insert("filter".into(), filter);
+        let mut dataset: Dataset =
+            serde_json::from_value(config).map_err(|_| Error::InvalidRequest)?;
+        // Preserve the filter's wire types until the strict predicate parser checks them.
+        if let Some(filter) = filter {
+            dataset.filter = (filter.get().trim() != "null").then_some(filter);
         }
-        let dataset: Dataset = serde_json::from_value(config).map_err(|_| Error::InvalidRequest)?;
         self.check(&dataset).await?;
         self.catalog.update(&dataset, revision).await
     }

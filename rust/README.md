@@ -209,6 +209,8 @@ administrativa (`config`, `revision` y `metadata` pública). Borrar conserva la 
 `null` borra opcionales, `id` no se acepta y `filter` se reemplaza entero. Las claves duplicadas se
 rechazan también dentro del parche. Una revisión distinta es `revision_mismatch` antes de
 reinspeccionar; la configuración resultante se valida como en `create`.
+PATCH conserva el filtro como JSON original hasta validarlo: un objeto nunca se
+normaliza a número mediante el marcador interno de Serde y numeric mantiene precisión.
 
 ## Rutas administrativas (#218)
 
