@@ -1,5 +1,11 @@
 # Atlas Rust: arranque inicial (#211)
 
+Selección espacial (#222): `spatial::prepare` valida topología y transforma únicamente
+la selección 4326 al CRS nativo, dentro de una transacción con timeout. No repara
+geometrías. La selección exige XY en el dominio geográfico; el predicado combina
+`&&` y la relación exacta sobre la columna nativa. EXPLAIN prueba elegibilidad GIST,
+sin garantizar el plan elegido en producción ni latencia.
+
 Desde `rust/` (también en CI), rustup lee `rust-toolchain.toml`: Rust 1.99.1,
 estable al iniciar esta implementación. `Cargo.lock` fija la resolución.
 Dependencias y features del motor aprobadas por ADR 0008; Serde/TOML y SQLx
