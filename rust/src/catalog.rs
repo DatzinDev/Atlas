@@ -109,6 +109,18 @@ impl Catalog {
         Ok(record)
     }
 
+    pub async fn list(&self, limit: u32, offset: u32) -> Result<Vec<Publication>, Error> {
+        let mut tx = self.database.begin_read().await?;
+        let rows = sqlx::query("SELECT id, config, metadata, revision FROM atlas_catalog.datasets ORDER BY id LIMIT $1 OFFSET $2")
+            .bind(i64::from(limit))
+            .bind(i64::from(offset))
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(error)?;
+        tx.rollback().await.map_err(error)?;
+        rows.into_iter().map(|row| self.decode(row)).collect()
+    }
+
     pub async fn create(&self, dataset: &Dataset) -> Result<Publication, Error> {
         let metadata = inspect(&self.database, &self.config, dataset).await?;
         let mut tx = self.database.begin_catalog().await?;

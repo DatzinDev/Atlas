@@ -196,3 +196,12 @@ texto, fechas ISO. Bbox y selecciones espaciales: #222.
 paréntesis: ningún `or`/`not` del usuario amplía lo publicado; sin filtros escribe `TRUE`.
 `query_error` traduce los errores de datos de PostgreSQL (SQLSTATE 22, p. ej. 2026-02-30) a
 `invalid_filter`.
+
+## Publicaciones (#218)
+
+`services::publications::Publications` valida antes de tocar el catálogo: JSON cerrado (claves
+duplicadas o desconocidas son `invalid_request`), `Dataset::validate`, introspección de la fuente
+(inexistente o fuera de `allowed_schemas` es `invalid_request`) y el filtro fijo preparado con
+`selection::prepare`, que lo compila contra los atributos publicados y valida su geometría en
+PostGIS. `list` ordena por id con `catalog_default`/`catalog_max`; `document` arma la respuesta
+administrativa (`config`, `revision` y `metadata` pública). Borrar conserva la tabla.
