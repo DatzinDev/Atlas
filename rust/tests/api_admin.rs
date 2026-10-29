@@ -83,7 +83,7 @@ async fn server() -> (SocketAddr, Publications) {
     )
     .unwrap();
     let service = Publications::new(db, config).unwrap();
-    let app = router(service.clone()).layer(axum::middleware::from_fn_with_state(
+    let app = router(service.clone(), 1024).layer(axum::middleware::from_fn_with_state(
         Arc::new(Some(verifier)),
         authenticate,
     ));
@@ -95,9 +95,30 @@ async fn server() -> (SocketAddr, Publications) {
 
 #[tokio::test]
 async fn admin_routes_over_real_http() {
-    let (a, service) = server().await;
-    service.create(BODY.as_bytes()).await.unwrap();
+    let (a, _) = server().await;
     let (admin, viewer) = (bearer(&["atlas-admin"]), bearer(&["viewer"]));
+    let revision = |n: &str| format!("{admin}If-Match: {n}\r\n");
+    let large = BODY.replace("Roads", &"x".repeat(1024));
+    let unknown = BODY.replace("\"properties\"", "\"extra\":1,\"properties\"");
+    let title = r#"{"title":"New"}"#;
+    expect(a, ("POST", LIST, "", BODY), "403", "permission_denied").await;
+    expect(a, ("POST", LIST, &viewer, BODY), "403", "permission_denied").await;
+    expect(a, ("POST", LIST, &admin, BODY), "201", "etag: \"1\"").await;
+    expect(
+        a,
+        ("POST", LIST, &admin, BODY),
+        "409",
+        "publication_conflict",
+    )
+    .await;
+    expect(
+        a,
+        ("POST", LIST, &admin, &unknown),
+        "400",
+        "invalid_request",
+    )
+    .await;
+    expect(a, ("POST", LIST, &admin, &large), "413", "query_too_large").await;
     let paged = |query: &str| format!("{LIST}?{query}");
     expect(a, ("GET", ITEM, "", ""), "403", "permission_denied").await;
     expect(a, ("GET", ITEM, &viewer, ""), "403", "permission_denied").await;
@@ -139,4 +160,41 @@ async fn admin_routes_over_real_http() {
         )
         .await;
     }
+    expect(a, ("PATCH", ITEM, &admin, title), "400", "invalid_request").await;
+    expect(
+        a,
+        ("PATCH", ITEM, &revision("W/\"1\""), title),
+        "400",
+        "invalid_request",
+    )
+    .await;
+    expect(
+        a,
+        ("PATCH", ITEM, &revision("\"9\""), title),
+        "412",
+        "revision_mismatch",
+    )
+    .await;
+    expect(
+        a,
+        ("PATCH", ITEM, &revision("\"1\""), title),
+        "200",
+        "etag: \"2\"",
+    )
+    .await;
+    expect(
+        a,
+        ("DELETE", ITEM, &revision("\"1\""), ""),
+        "412",
+        "revision_mismatch",
+    )
+    .await;
+    expect(
+        a,
+        ("DELETE", ITEM, &revision("\"2\""), ""),
+        "204",
+        "cache-control: no-store",
+    )
+    .await;
+    expect(a, ("GET", ITEM, &admin, ""), "404", "dataset_not_found").await;
 }

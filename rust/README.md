@@ -214,3 +214,6 @@ reinspeccionar; la configuración resultante se valida como en `create`.
 
 `api::admin::router` monta `/api/v1/admin/datasets` y `/{id}`; exige `atlas-admin` (403) y responde `no-store`.
 Detalle con ETag; listado con `limit`/`offset` únicos; errores `{code,message,request_id}`.
+POST, GET y PATCH devuelven el ETag; PATCH y DELETE exigen un único `If-Match` con la revisión
+entre comillas (ausente o malformado 400, distinta 412) y DELETE responde 204. Cuerpos mayores
+que `admin_body_bytes` son 413 `query_too_large`.
