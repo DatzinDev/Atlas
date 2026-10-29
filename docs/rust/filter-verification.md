@@ -49,6 +49,21 @@ No se necesitan dependencias nuevas ni modificar el runtime Python.
 ## Límites de la evidencia
 
 EXPLAIN no garantiza el plan de producción ni demuestra mejoras de latencia.
-No se han medido cargas nuevas ni comparado GeoServer. Paginación, rutas HTTP,
-exports y tiles se integran en issues posteriores. No hay cambios de consumidores,
+No se han medido cargas nuevas ni comparado GeoServer. Consulta pública, paginación
+de datos, exports y tiles se integran en issues posteriores. No hay cambios de consumidores,
 merge automático ni despliegue. El borrador local inicial se conserva fuera del stack.
+
+## Integración con administración (#218)
+
+Los PRs #286–#289 continúan después de #285 en el mismo stack. Se conserva la
+revisión de GHEgar que usa `selection::prepare`; las APIs espaciales anteriores
+no se reintroducen. La suite integrada ejecuta 27 tests Rust contra PostGIS real.
+
+HTTP verifica POST con atributos y polígono, PATCH espacial, rechazo de topología
+inválida y campos no publicados sin avanzar ETag; también roles, If-Match y borrado
+sin eliminar la fuente. El servicio prueba PATCH con numeric de 23 dígitos y rechaza
+el marcador interno de números de Serde en comparación e IN. El filtro del parche
+se conserva como RawValue hasta su validación, evitando normalización antes del parser.
+
+Reproducir con los mismos comandos de la sección anterior sobre la cabeza del stack.
+La CI por PR debe corresponder a los commits reordenados, no a las bases antiguas.

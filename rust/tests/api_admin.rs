@@ -101,9 +101,15 @@ async fn admin_routes_over_real_http() {
     let large = BODY.replace("Roads", &"x".repeat(1024));
     let unknown = BODY.replace("\"properties\"", "\"extra\":1,\"properties\"");
     let title = r#"{"title":"New"}"#;
+    let polygon = serde_json::json!({"op":"within", "geometry":{"type":"Polygon",
+        "coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}});
+    let mut published: serde_json::Value = serde_json::from_str(BODY).unwrap();
+    published["filter"] = serde_json::json!({"op":"and", "args":[
+        {"op":"eq","field":"name","value":"a"}, polygon.clone()]});
+    let published = published.to_string();
     expect(a, ("POST", LIST, "", BODY), "403", "permission_denied").await;
     expect(a, ("POST", LIST, &viewer, BODY), "403", "permission_denied").await;
-    expect(a, ("POST", LIST, &admin, BODY), "201", "etag: \"1\"").await;
+    expect(a, ("POST", LIST, &admin, &published), "201", "etag: \"1\"").await;
     expect(
         a,
         ("POST", LIST, &admin, BODY),
@@ -189,9 +195,34 @@ async fn admin_routes_over_real_http() {
         "revision_mismatch",
     )
     .await;
+    let spatial_patch = serde_json::json!({"filter":polygon}).to_string();
     expect(
         a,
-        ("DELETE", ITEM, &revision("\"2\""), ""),
+        ("PATCH", ITEM, &revision("\"2\""), &spatial_patch),
+        "200",
+        "etag: \"3\"",
+    )
+    .await;
+    let invalid = r#"{"filter":{"op":"within","geometry":{"type":"Polygon","coordinates":[[[0,0],[2,2],[0,2],[2,0],[0,0]]]}}}"#;
+    expect(
+        a,
+        ("PATCH", ITEM, &revision("\"3\""), invalid),
+        "400",
+        "invalid_filter",
+    )
+    .await;
+    let hidden = r#"{"filter":{"op":"is_null","field":"secret"}}"#;
+    expect(
+        a,
+        ("PATCH", ITEM, &revision("\"3\""), hidden),
+        "400",
+        "invalid_filter",
+    )
+    .await;
+    expect(a, ("GET", ITEM, &admin, ""), "200", "etag: \"3\"").await;
+    expect(
+        a,
+        ("DELETE", ITEM, &revision("\"3\""), ""),
         "204",
         "cache-control: no-store",
     )
