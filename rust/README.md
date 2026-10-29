@@ -168,3 +168,11 @@ desbordar la pila.
 `intersects`/`within` validan solo la estructura de Polygon/MultiPolygon: anillos cerrados de al
 menos cuatro posiciones XY finitas y `xy_pairs` en todo el filtro. La validez topológica se
 comprueba en PostGIS (#222); no hay motor geométrico en Rust.
+
+## Filtros en SQL (#221)
+
+`postgis::predicates::compile` escribe un `Predicate` en un `QueryBuilder`. Solo admite atributos
+publicados según la introspección, con identificadores citados y valores enlazados como texto con
+cast explícito al tipo de la columna (`$n::int8`, `$n::numeric`…), así que bigint y numeric no
+pasan por f64. Tipos estrictos: enteros dentro del rango de su columna, `like`/`ilike` solo en
+texto, fechas ISO. Bbox y selecciones espaciales: #222.
