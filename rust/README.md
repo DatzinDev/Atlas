@@ -212,6 +212,5 @@ reinspeccionar; la configuración resultante se valida como en `create`.
 
 ## Rutas administrativas (#218)
 
-`api::admin::router` monta `/api/v1/admin/datasets` y `/{id}`: exigen `atlas-admin` (si no, 403),
-responden `no-store` y el detalle lleva `ETag: "<revision>"`. El listado solo admite `limit` y
-`offset` una vez cada uno. `Error` responde el cuerpo uniforme `{code,message,request_id}`.
+`api::admin::router` monta `/api/v1/admin/datasets` y `/{id}`; exige `atlas-admin` (403) y responde `no-store`.
+Detalle con ETag; listado con `limit`/`offset` únicos; errores `{code,message,request_id}`.
