@@ -153,3 +153,11 @@ texto, fechas ISO. Bbox y selecciones espaciales: #222.
 paréntesis: ningún `or`/`not` del usuario amplía lo publicado; sin filtros escribe `TRUE`.
 `query_error` traduce los errores de datos de PostgreSQL (SQLSTATE 22, p. ej. 2026-02-30) a
 `invalid_filter`.
+
+## Selección espacial (#222)
+
+`postgis::spatial` agrega el bbox (último término del AND de `restrict`) e `intersects`/`within`
+en EPSG:4326 dentro de ±180/±90, transformados al SRID nativo. La columna nunca se transforma:
+`&&` usa su índice GiST y `ST_Intersects`/`ST_Within` confirman. Antes de ejecutar, `validate`
+exige en PostGIS, con el timeout de la transacción, selecciones válidas, no vacías y
+transformables; si no, `invalid_filter`, sin reparar.

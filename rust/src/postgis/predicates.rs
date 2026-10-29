@@ -1,4 +1,4 @@
-use super::{connection::error, introspection::quote_identifier};
+use super::{connection::error, introspection::quote_identifier, spatial};
 use crate::{
     domain::{Error, Metadata},
     query::predicate::{Comparison, Predicate, Scalar},
@@ -19,17 +19,23 @@ pub fn restrict(
     builder: &mut QueryBuilder<Postgres>,
     fixed: Option<&Predicate>,
     user: Option<&Predicate>,
+    bbox: Option<&[f64; 4]>,
     meta: &Metadata,
 ) -> Result<(), Error> {
     let predicates: Vec<_> = [fixed, user].into_iter().flatten().collect();
-    if predicates.is_empty() {
+    if predicates.is_empty() && bbox.is_none() {
         builder.push("TRUE");
     }
-    for (i, predicate) in predicates.into_iter().enumerate() {
+    for (i, predicate) in predicates.iter().enumerate() {
         if i > 0 {
             builder.push(" AND ");
         }
         compile(builder, predicate, meta)?;
+    }
+    if let Some(bbox) = bbox {
+        builder.push(if predicates.is_empty() { "(" } else { " AND (" });
+        spatial::bbox(builder, bbox, meta)?;
+        builder.push(")");
     }
     Ok(())
 }
@@ -98,7 +104,7 @@ pub fn compile(
                 .push("::")
                 .push(cast);
         }
-        Predicate::Spatial { .. } => return Err(Error::InvalidFilter),
+        Predicate::Spatial { op, polygons } => spatial::selection(builder, *op, polygons, meta)?,
     }
     builder.push(")");
     Ok(())

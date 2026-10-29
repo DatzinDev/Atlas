@@ -20,7 +20,7 @@ fn select(
     meta: &Metadata,
 ) -> Result<QueryBuilder<Postgres>, Error> {
     let mut builder = QueryBuilder::new("SELECT id FROM predicates_test.places WHERE ");
-    restrict(&mut builder, fixed, user, meta)?;
+    restrict(&mut builder, fixed, user, None, meta)?;
     builder.push(" ORDER BY id");
     Ok(builder)
 }
@@ -166,7 +166,6 @@ fn offensive_fields_operators_and_values_are_rejected(meta: &Metadata) {
         r#"{"op":"eq","field":"day","value":"Jan 1 2026"}"#,
         r#"{"op":"in","field":"small","value":[1,"2"]}"#,
         r#"{"op":"and","args":[{"op":"is_null","field":"small"},{"op":"is_null","field":"secret"}]}"#,
-        r#"{"op":"intersects","geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]}}"#,
     ] {
         assert!(
             matches!(compile(json, meta), Err(Error::InvalidFilter)),
