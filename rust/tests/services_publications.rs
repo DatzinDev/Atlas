@@ -24,7 +24,7 @@ async fn setup() -> (Database, Publications) {
         "CREATE SCHEMA publication_test",
         "CREATE TABLE publication_test.roads(id integer PRIMARY KEY, name text, lanes int2, geom geometry(LineString,4326))",
         "INSERT INTO publication_test.roads VALUES (1,'a',2,NULL)",
-        "DELETE FROM atlas_catalog.datasets WHERE id LIKE 'svc\\_%'",
+        "DELETE FROM atlas_catalog.datasets WHERE config->'source'->>'schema' <> 'publication_test' OR id LIKE 'svc\\_%'",
     ] {
         sqlx::query(statement).execute(&mut *tx).await.unwrap();
     }

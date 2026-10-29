@@ -83,6 +83,15 @@ async fn serve(config: Config) -> Result<(), &'static str> {
                 }
             }),
         );
+    let publications = database
+        .clone()
+        .map(|db| atlas::services::publications::Publications::new(db, config.clone()))
+        .transpose()
+        .map_err(|_| "invalid configuration")?;
+    let router = match publications {
+        Some(service) => router.merge(atlas::api::admin::router(service)),
+        None => router,
+    };
     let router = router.layer(axum::middleware::from_fn_with_state(
         verifier,
         atlas::auth::http::authenticate,

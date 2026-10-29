@@ -209,3 +209,9 @@ administrativa (`config`, `revision` y `metadata` pública). Borrar conserva la 
 `null` borra opcionales, `id` no se acepta y `filter` se reemplaza entero. Las claves duplicadas se
 rechazan también dentro del parche. Una revisión distinta es `revision_mismatch` antes de
 reinspeccionar; la configuración resultante se valida como en `create`.
+
+## Rutas administrativas (#218)
+
+`api::admin::router` monta `/api/v1/admin/datasets` y `/{id}`: exigen `atlas-admin` (si no, 403),
+responden `no-store` y el detalle lleva `ETag: "<revision>"`. El listado solo admite `limit` y
+`offset` una vez cada uno. `Error` responde el cuerpo uniforme `{code,message,request_id}`.
