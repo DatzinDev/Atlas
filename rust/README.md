@@ -154,3 +154,11 @@ DatasetNotFound; operación faltante sobre visible, PermissionDenied. atlas-admi
 solo administración, sin bypass de datos; roles de un Principal anónimo no conceden acceso.
 El listado filtra por view antes de paginar. Los filtros de datos nunca conceden permisos.
 Integración de estas funciones en rutas administrativas/datos: #218–#219 y siguientes.
+
+## Filtros (#220)
+
+`query::predicate::parse` convierte el filtro JSON en un `Predicate` cerrado antes de tocar SQL.
+Mide bytes antes de parsear; rechaza claves duplicadas, desconocidas o faltantes, operadores
+desconocidos, valores que no sean texto, booleano o número finito, y `field` que no sea
+identificador. Numeric se conserva como `serde_json::Number`, sin redondear. `in` exige de 1 a
+`in_values` escalares. Todo rechazo es `invalid_filter`; tipos contra columnas y SQL: #221.
