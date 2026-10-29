@@ -93,6 +93,8 @@ fn rejects_malformed_keys_types_and_operators() {
         r#"{"op":"eq","field":"a","value":null}"#,
         r#"{"op":"eq","field":"a","value":[1]}"#,
         r#"{"op":"eq","field":"a","value":{"x":1}}"#,
+        r#"{"op":"eq","field":"a","value":{"$serde_json::private::Number":"1"}}"#,
+        r#"{"op":"in","field":"a","value":[{"$serde_json::private::Number":"1"}]}"#,
         r#"{"op":"eq","field":"a","value":1e999}"#,
         r#"{"op":"eq","field":"a","value":NaN}"#,
         r#"{"op":"is_null","field":"a","value":true}"#,

@@ -12,6 +12,10 @@ valida atributos y topología, y devuelve `Selection::append` para el WHERE SQLx
 Usar la misma transacción de solo lectura al seleccionar filas. Conserva AND entre
 publicación, usuario y bbox incluso con OR/NOT anidados. Sin nuevas rutas HTTP.
 
+El parser valida los presupuestos configurados y rechaza objetos usados como escalares,
+incluido el marcador interno de números de Serde: preservar numeric no permite coerción
+de objetos JSON a números. Las pruebas incluyen este caso ofensivo en comparación e IN.
+
 Desde `rust/` (también en CI), rustup lee `rust-toolchain.toml`: Rust 1.99.1,
 estable al iniciar esta implementación. `Cargo.lock` fija la resolución.
 Dependencias y features del motor aprobadas por ADR 0008; Serde/TOML y SQLx
@@ -82,7 +86,7 @@ Domain no importa HTTP/SQL: Dataset/Source/AccessPolicy/Principal, Query y Error
 Después de deserializar se llama `validate` con schemas/límites del servidor;
 la introspección posterior verifica propiedades y tipos reales. Los filtros se
 conservan como RawValue sin redondear numeric: su parser acotado y validación
-semántica pertenecen a #220, antes de exponer publicaciones o consultas por HTTP.
+semántica se implementan en #220; `selection::prepare` los valida antes de consultar.
 
 ```bash
 cargo fmt --check

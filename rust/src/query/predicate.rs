@@ -61,6 +61,7 @@ pub enum Predicate {
 }
 
 pub fn parse(text: &str, limits: &Limits) -> Result<Predicate, Error> {
+    limits.validate().map_err(|_| Error::InvalidFilter)?;
     if text.len() > limits.filter_bytes as usize {
         return Err(Error::InvalidFilter);
     }
@@ -195,6 +196,13 @@ fn name(raw: &RawValue) -> Result<String, Error> {
 }
 
 fn scalar(raw: &RawValue) -> Result<Scalar, Error> {
+    // arbitrary_precision recognizes a private map representation; client objects are never scalars.
+    if matches!(
+        raw.get().trim_start().as_bytes().first(),
+        Some(b'{') | Some(b'[')
+    ) {
+        return Err(Error::InvalidFilter);
+    }
     match serde_json::from_str(raw.get()).map_err(invalid)? {
         Value::String(s) => Ok(Scalar::Text(s)),
         Value::Bool(b) => Ok(Scalar::Bool(b)),
