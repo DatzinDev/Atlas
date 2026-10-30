@@ -3,8 +3,104 @@ use atlas::{
     domain::{Dataset, Error, Metadata},
     postgis::{connection::Database, introspection::inspect, mvt::tile, selection::prepare},
 };
+use std::collections::BTreeMap;
 
 type Source = (Dataset, Metadata);
+
+#[derive(Debug, PartialEq)]
+struct Feature {
+    id: Option<u64>,
+    properties: BTreeMap<String, String>,
+}
+
+fn varint(buf: &[u8], pos: &mut usize) -> u64 {
+    let (mut value, mut shift) = (0, 0);
+    loop {
+        let byte = buf[*pos];
+        *pos += 1;
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte < 0x80 {
+            return value;
+        }
+        shift += 7;
+    }
+}
+
+fn fields(buf: &[u8]) -> Vec<(u64, u64, &[u8])> {
+    let (mut pos, mut out) = (0, Vec::new());
+    while pos < buf.len() {
+        let key = varint(buf, &mut pos);
+        let (number, bytes) = match key & 7 {
+            0 => (varint(buf, &mut pos), &buf[0..0]),
+            1 | 5 => {
+                let size = if key & 7 == 1 { 8 } else { 4 };
+                pos += size;
+                (0, &buf[pos - size..pos])
+            }
+            2 => {
+                let size = varint(buf, &mut pos) as usize;
+                pos += size;
+                (0, &buf[pos - size..pos])
+            }
+            wire => panic!("unexpected wire type {wire}"),
+        };
+        out.push((key >> 3, number, bytes));
+    }
+    out
+}
+
+fn packed(buf: &[u8]) -> Vec<u64> {
+    let (mut pos, mut out) = (0, Vec::new());
+    while pos < buf.len() {
+        out.push(varint(buf, &mut pos));
+    }
+    out
+}
+
+fn value(buf: &[u8]) -> String {
+    let (field, number, bytes) = fields(buf)[0];
+    match field {
+        1 => String::from_utf8(bytes.to_vec()).unwrap(),
+        2 => f32::from_le_bytes(bytes.try_into().unwrap()).to_string(),
+        3 => f64::from_le_bytes(bytes.try_into().unwrap()).to_string(),
+        4 => (number as i64).to_string(),
+        6 => ((number >> 1) as i64 ^ -((number & 1) as i64)).to_string(),
+        7 => (number != 0).to_string(),
+        _ => number.to_string(),
+    }
+}
+
+fn decode(tile: &[u8]) -> BTreeMap<String, (u64, Vec<Feature>)> {
+    let mut layers = BTreeMap::new();
+    for (_, _, layer) in fields(tile).into_iter().filter(|f| f.0 == 3) {
+        let parts = fields(layer);
+        let text = |n| parts.iter().filter(move |f| f.0 == n).map(|f| f.2);
+        let name = String::from_utf8(text(1).next().unwrap().to_vec()).unwrap();
+        let keys: Vec<_> = text(3)
+            .map(|k| String::from_utf8(k.to_vec()).unwrap())
+            .collect();
+        let values: Vec<_> = text(4).map(value).collect();
+        let extent = parts.iter().find(|f| f.0 == 5).map_or(4096, |f| f.1);
+        let features = text(2)
+            .map(|feature| {
+                let parts = fields(feature);
+                let tags = parts
+                    .iter()
+                    .find(|f| f.0 == 2)
+                    .map_or(vec![], |f| packed(f.2));
+                Feature {
+                    id: parts.iter().find(|f| f.0 == 1).map(|f| f.1),
+                    properties: tags
+                        .chunks(2)
+                        .map(|t| (keys[t[0] as usize].clone(), values[t[1] as usize].clone()))
+                        .collect(),
+                }
+            })
+            .collect();
+        layers.insert(name, (extent, features));
+    }
+    layers
+}
 
 fn tile_of(lon: f64, lat: f64, z: u32) -> (u32, u32, u32) {
     let n = f64::from(1u32 << z);
@@ -68,15 +164,83 @@ async fn setup() -> (Database, Source, Source, Source) {
 
 #[tokio::test]
 async fn native_mvt_against_real_postgis() {
-    let (db, points, _, _) = setup().await;
+    let (db, points, utm, areas) = setup().await;
     let limits = Limits::default();
     let here = tile_of(10.1, 10.1, 4);
     let encoded = fetch(&db, &points, here, None, None, &limits)
         .await
         .unwrap();
-    assert!(!encoded.is_empty());
+    let layers = decode(&encoded);
+    let (extent, features) = &layers["points"];
+    assert_eq!((layers.len(), *extent, features.len()), (1, 4096, 3));
+    let first = features.iter().find(|f| f.id == Some(1)).unwrap();
+    let expected: BTreeMap<String, String> = [
+        ("name", "a"),
+        ("amount", "12345678901234567890.123"),
+        ("big", "9223372036854775807"),
+        ("day", "2026-01-01"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+    .collect();
+    assert_eq!(first.properties, expected);
+    let second = features.iter().find(|f| f.id == Some(2)).unwrap();
+    assert_eq!(second.properties["ratio"], "0.5");
+    assert!(
+        features
+            .iter()
+            .any(|f| f.id.is_none() && f.properties["name"] == "c")
+    );
+
+    let name = ["name".to_owned()];
+    let only = fetch(&db, &points, here, None, Some(&name), &limits)
+        .await
+        .unwrap();
+    assert!(
+        decode(&only)["points"]
+            .1
+            .iter()
+            .all(|f| f.properties.len() == 1)
+    );
+    let b = Some(r#"{"op":"eq","field":"name","value":"b"}"#);
+    let filtered = decode(&fetch(&db, &points, here, b, None, &limits).await.unwrap());
+    assert_eq!(
+        filtered["points"]
+            .1
+            .iter()
+            .map(|f| f.id)
+            .collect::<Vec<_>>(),
+        [Some(2)]
+    );
     let empty = fetch(&db, &points, tile_of(-100.0, -50.0, 4), None, None, &limits).await;
     assert_eq!(empty.unwrap(), Vec::<u8>::new());
+
+    let names = |tile: Vec<u8>| -> Vec<String> {
+        let layers = decode(&tile);
+        layers.get("points").map_or(vec![], |l| {
+            l.1.iter().map(|f| f.properties["name"].clone()).collect()
+        })
+    };
+    let east = fetch(&db, &points, (1, 1, 0), None, Some(&name), &limits)
+        .await
+        .unwrap();
+    assert!(names(east.clone()).contains(&"east".into()) && !names(east).contains(&"west".into()));
+    let west = fetch(&db, &points, (1, 0, 0), None, Some(&name), &limits)
+        .await
+        .unwrap();
+    assert!(names(west.clone()).contains(&"west".into()) && !names(west).contains(&"east".into()));
+    for xyz in [(0, 0, 0), tile_of(-103.35, 20.67, 10)] {
+        let local = decode(&fetch(&db, &utm, xyz, None, None, &limits).await.unwrap());
+        assert_eq!(local["utm"].1[0].properties["name"], "gdl", "{xyz:?}");
+    }
+    for xyz in [(1, 0, 0), (1, 1, 0), (1, 0, 1), (1, 1, 1)] {
+        let mosaic = decode(&fetch(&db, &areas, xyz, None, None, &limits).await.unwrap());
+        assert_eq!(
+            mosaic["areas"].1.iter().map(|f| f.id).collect::<Vec<_>>(),
+            [Some(1)]
+        );
+    }
+
     let mut tight = Limits {
         tile_candidates: 3,
         ..Limits::default()
