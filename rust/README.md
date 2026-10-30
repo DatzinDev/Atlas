@@ -249,3 +249,8 @@ query (`filter` como JSON codificado y `properties` separadas por comas, una vez
 consultar la base. Exige `view` y `query`, aplica el mismo predicado que GeoJSON (filtro fijo AND
 filtro del usuario) y responde `application/vnd.mapbox-vector-tile` con `no-store`; sin entidades,
 200 con cuerpo vacío.
+`GET /api/v1/datasets/{id}/tilejson.json` (TileJSON 3.0.0, mismas reglas de acceso) describe la
+capa con el id del dataset como `source-layer` y solo los campos publicados (`String`, `Number`,
+`Boolean`). La URL de teselas sale de `public_url` en TOML, que admite prefijo de despliegue
+(`https://host/prefijo`, sin barra final, query ni fragmento); sin ella es relativa. Las cabeceras
+`Forwarded`/`X-Forwarded-*` se ignoran.

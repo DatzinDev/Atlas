@@ -95,6 +95,30 @@ impl Publications {
         mvt::tile(&mut tx, config, meta, &selection, xyz, properties, limits).await
     }
 
+    pub fn tilejson(&self, publication: &Publication) -> Value {
+        let (config, meta) = (&publication.config, &publication.metadata);
+        let fields: Map<String, Value> = meta
+            .attributes
+            .iter()
+            .map(|a| {
+                let kind = match a.data_type.as_str() {
+                    "int2" | "int4" | "int8" | "float4" | "float8" => "Number",
+                    "bool" => "Boolean",
+                    _ => "String",
+                };
+                (a.name.clone(), json!(kind))
+            })
+            .collect();
+        let base = self.config.public_url.as_deref().unwrap_or_default();
+        let url = format!(
+            "{base}/api/v1/datasets/{}/tiles/{{z}}/{{x}}/{{y}}.mvt",
+            config.id
+        );
+        json!({"tilejson": "3.0.0", "name": config.title, "tiles": [url], "minzoom": 0,
+            "maxzoom": self.config.limits.tile_zoom,
+            "vector_layers": [{"id": config.id, "fields": fields}]})
+    }
+
     pub fn limits(&self) -> &Limits {
         &self.config.limits
     }

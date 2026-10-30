@@ -1,4 +1,4 @@
-use super::identifier;
+use super::{identifier, respond};
 use crate::{
     domain::{Error, Principal},
     postgis::mvt::bounds,
@@ -7,7 +7,7 @@ use crate::{
 use axum::{
     Extension, Router,
     extract::{Path, RawQuery, State},
-    http::header,
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -15,6 +15,7 @@ use axum::{
 pub fn router(service: Publications) -> Router {
     Router::new()
         .route("/api/v1/datasets/{id}/tiles/{z}/{x}/{tile}", get(vector))
+        .route("/api/v1/datasets/{id}/tilejson.json", get(tilejson))
         .with_state(service)
 }
 
@@ -38,6 +39,23 @@ async fn vector(
         (header::CACHE_CONTROL, "no-store"),
     ];
     Ok((headers, body).into_response())
+}
+
+async fn tilejson(
+    State(service): State<Publications>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<String>,
+    RawQuery(query): RawQuery,
+) -> Result<Response, Error> {
+    if query.is_some_and(|q| !q.is_empty()) {
+        return Err(Error::InvalidRequest);
+    }
+    let publication = service.detail(identifier(&id)?, &principal).await?;
+    Ok(respond(
+        StatusCode::OK,
+        Some(service.tilejson(&publication)),
+        None,
+    ))
 }
 
 fn number(text: &str) -> Result<u32, Error> {
