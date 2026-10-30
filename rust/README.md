@@ -227,3 +227,6 @@ que `admin_body_bytes` son 413 `query_too_large`.
 delatan datasets ocultos; las publicaciones que ya no validan se omiten (`Catalog::servable`).
 `detail` exige `view` (si no, 404) y `query` (si no, 403); una publicación que no valida también es
 404. `summary` es la vista pública: sin fuente, filtro fijo, roles ni revisión.
+`GET /api/v1/datasets` y `/{id}` exponen `visible` y `detail` con `no-store`. Un cambio
+administrativo se ve en la siguiente petición; quitar un rol de la política corta el acceso ahí
+mismo aunque el token ya emitido siga trayéndolo.

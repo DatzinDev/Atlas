@@ -90,7 +90,11 @@ fn http_startup_and_shutdown() {
         for (path, status, authorization) in [
             ("health", "200", ""),
             ("ready", if database.is_some() { "200" } else { "503" }, ""),
-            ("datasets", "404", ""),
+            (
+                "datasets",
+                if database.is_some() { "200" } else { "404" },
+                "",
+            ),
             ("health", "401", "Authorization: Bearer secret-token\r\n"),
         ] {
             let mut stream = TcpStream::connect(address).unwrap();
