@@ -110,6 +110,19 @@ impl Catalog {
     }
 
     pub async fn list(&self, limit: u32, offset: u32) -> Result<Vec<Publication>, Error> {
+        let rows = self.rows(limit, offset).await?;
+        rows.into_iter().map(|row| self.decode(row)).collect()
+    }
+
+    pub async fn servable(&self) -> Result<Vec<Publication>, Error> {
+        let rows = self.rows(u32::MAX, 0).await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| self.decode(row).ok())
+            .collect())
+    }
+
+    async fn rows(&self, limit: u32, offset: u32) -> Result<Vec<PgRow>, Error> {
         let mut tx = self.database.begin_read().await?;
         let rows = sqlx::query("SELECT id, config, metadata, revision FROM atlas_catalog.datasets ORDER BY id LIMIT $1 OFFSET $2")
             .bind(i64::from(limit))
@@ -118,7 +131,7 @@ impl Catalog {
             .await
             .map_err(error)?;
         tx.rollback().await.map_err(error)?;
-        rows.into_iter().map(|row| self.decode(row)).collect()
+        Ok(rows)
     }
 
     pub async fn create(&self, dataset: &Dataset) -> Result<Publication, Error> {

@@ -55,3 +55,33 @@ pub fn respond(status: StatusCode, body: Option<Value>, revision: Option<i64>) -
     }
     response
 }
+
+pub(crate) fn identifier(id: &str) -> Result<&str, Error> {
+    let valid = !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-');
+    valid.then_some(id).ok_or(Error::InvalidRequest)
+}
+
+pub(crate) fn paging(query: Option<&str>) -> Result<(Option<u32>, u32), Error> {
+    let (mut limit, mut offset) = (None, None);
+    for pair in query
+        .unwrap_or_default()
+        .split('&')
+        .filter(|p| !p.is_empty())
+    {
+        let (key, value) = pair.split_once('=').ok_or(Error::InvalidRequest)?;
+        let slot = match key {
+            "limit" if limit.is_none() => &mut limit,
+            "offset" if offset.is_none() => &mut offset,
+            _ => return Err(Error::InvalidRequest),
+        };
+        if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(Error::InvalidRequest);
+        }
+        *slot = Some(value.parse::<u32>().map_err(|_| Error::InvalidRequest)?);
+    }
+    Ok((limit, offset.unwrap_or(0)))
+}

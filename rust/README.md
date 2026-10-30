@@ -219,3 +219,11 @@ Detalle con ETag; listado con `limit`/`offset` únicos; errores `{code,message,r
 POST, GET y PATCH devuelven el ETag; PATCH y DELETE exigen un único `If-Match` con la revisión
 entre comillas (ausente o malformado 400, distinta 412) y DELETE responde 204. Cuerpos mayores
 que `admin_body_bytes` son 413 `query_too_large`.
+
+## Descubrimiento (#219)
+
+`Publications::visible` resuelve el catálogo vigente en cada llamada, sin caché, y filtra por
+`view` antes de paginar por id (`catalog_default`/`catalog_max`), así que totales y `hasMore` no
+delatan datasets ocultos; las publicaciones que ya no validan se omiten (`Catalog::servable`).
+`detail` exige `view` (si no, 404) y `query` (si no, 403); una publicación que no valida también es
+404. `summary` es la vista pública: sin fuente, filtro fijo, roles ni revisión.
