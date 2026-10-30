@@ -91,6 +91,7 @@ async fn serve(config: Config) -> Result<(), &'static str> {
     let router = match publications {
         Some(service) => router
             .merge(atlas::api::datasets::router(service.clone()))
+            .merge(atlas::api::tiles::router(service.clone()))
             .merge(atlas::api::admin::router(
                 service,
                 config.limits.admin_body_bytes,
