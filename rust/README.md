@@ -254,3 +254,11 @@ capa con el id del dataset como `source-layer` y solo los campos publicados (`St
 `Boolean`). La URL de teselas sale de `public_url` en TOML, que admite prefijo de despliegue
 (`https://host/prefijo`, sin barra final, query ni fragmento); sin ella es relativa. Las cabeceras
 `Forwarded`/`X-Forwarded-*` se ignoran.
+## Páginas de features (#223)
+
+`postgis::features::page` recibe la `Selection` preparada en la misma transacción de lectura y
+arma cada Feature en PostgreSQL con `json_build_object`: `id` siempre presente, geometría con
+`ST_AsGeoJSON` en EPSG:4326 y solo las propiedades publicadas pedidas (por defecto todas). Las
+filas llegan como texto JSON y se conservan como `RawValue`, así que bigint y numeric no pasan por
+f64. El orden pedido se valida contra atributos publicados (o el id) y el id desempata. Pide
+`limit + 1` para `more`, sin COUNT; offset no es un snapshot entre peticiones.
