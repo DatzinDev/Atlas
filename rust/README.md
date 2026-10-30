@@ -230,3 +230,12 @@ delatan datasets ocultos; las publicaciones que ya no validan se omiten (`Catalo
 `GET /api/v1/datasets` y `/{id}` exponen `visible` y `detail` con `no-store`. Un cambio
 administrativo se ve en la siguiente petición; quitar un rol de la política corta el acceso ahí
 mismo aunque el token ya emitido siga trayéndolo.
+## MVT nativo (#225)
+
+`postgis::mvt::tile` codifica en PostGIS con `ST_AsMVTGeom`/`ST_AsMVT` sobre la `Selection`
+preparada; Rust no materializa geometrías. Toma `tile_candidates + 1` candidatos dentro del sobre
+de la tesela más el buffer (recortado a ±H en los bordes del mundo; en z=0 un SRID local no usa
+sobre), y mide `octet_length` dentro de la base: si hay más candidatos o bytes que el presupuesto,
+`query_too_large` sin transferir la tesela; nunca un LIMIT parcial silencioso. Una tesela sin
+entidades es un `Vec` vacío. Numeric y fechas viajan como texto; floats NaN/infinitos se omiten;
+el id de la entidad solo sale de ids enteros entre 0 y 2^53−1.
