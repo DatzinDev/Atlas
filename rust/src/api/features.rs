@@ -6,16 +6,18 @@ use crate::{
 };
 use axum::{
     Extension, Router,
+    body::Bytes,
     extract::{Path, RawQuery, State},
     http::header,
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use serde_json::value::RawValue;
 
 pub fn router(service: Publications) -> Router {
     Router::new()
         .route("/api/v1/datasets/{id}/items", get(items))
+        .route("/api/v1/datasets/{id}/query", post(query))
         .with_state(service)
 }
 
@@ -27,6 +29,20 @@ async fn items(
 ) -> Result<Response, Error> {
     let id = identifier(&id)?;
     let selection = parse(raw.as_deref())?;
+    select(&service, &principal, id, &selection).await
+}
+
+async fn query(
+    State(service): State<Publications>,
+    Extension(principal): Extension<Principal>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Result<Response, Error> {
+    let id = identifier(&id)?;
+    if body.len() > service.limits().query_body_bytes as usize {
+        return Err(Error::QueryTooLarge);
+    }
+    let selection: Query = serde_json::from_slice(&body).map_err(|_| Error::InvalidRequest)?;
     select(&service, &principal, id, &selection).await
 }
 
