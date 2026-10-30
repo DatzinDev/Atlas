@@ -262,3 +262,11 @@ arma cada Feature en PostgreSQL con `json_build_object`: `id` siempre presente, 
 filas llegan como texto JSON y se conservan como `RawValue`, así que bigint y numeric no pasan por
 f64. El orden pedido se valida contra atributos publicados (o el id) y el id desempata. Pide
 `limit + 1` para `more`, sin COUNT; offset no es un snapshot entre peticiones.
+
+## Consultas GeoJSON (#224)
+
+`GET /api/v1/datasets/{id}/items` arma un `Query` con `filter` (JSON codificado), `bbox` y
+`properties` por comas, `sort` (`campo:asc,otro:desc`), `limit` y `offset`. Exige `view` y `query`
+y obtiene la página completa antes de enviar cabeceras: un error nunca sale como 200. Responde
+`application/geo+json` con `no-store`, `numberReturned` y `hasMore`; el filtro fijo siempre se
+combina con el del usuario.
