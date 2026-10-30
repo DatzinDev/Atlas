@@ -46,6 +46,7 @@ async fn server() -> SocketAddr {
     )
     .unwrap();
     config.allowed_schemas = vec!["tiles_test".into()];
+    config.public_url = Some("https://atlas.example.test/base".into());
     migrate(&config).await.unwrap();
     let db = Database::open(&config).await.unwrap();
     let mut tx = db.begin_catalog().await.unwrap();
@@ -147,4 +148,45 @@ async fn vector_tiles_over_real_http() {
             .0,
         "404"
     );
+
+    let tilejson = "/api/v1/datasets/tiles_public/tilejson.json";
+    let (status, head, body) = get(a, tilejson, "X-Forwarded-Host: evil.test\r\n").await;
+    assert!(
+        status == "200" && head.contains("cache-control: no-store"),
+        "{head}"
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let url = "https://atlas.example.test/base/api/v1/datasets/tiles_public/tiles/{z}/{x}/{y}.mvt";
+    assert_eq!(
+        (doc["tilejson"].as_str(), doc["tiles"][0].as_str()),
+        (Some("3.0.0"), Some(url))
+    );
+    assert_eq!(
+        (doc["minzoom"].as_u64(), doc["maxzoom"].as_u64()),
+        (Some(0), Some(22))
+    );
+    let layer = &doc["vector_layers"][0];
+    assert_eq!(layer["id"], "tiles_public");
+    assert_eq!(
+        layer["fields"],
+        serde_json::json!({"name": "String", "rank": "Number"})
+    );
+    assert!(
+        !String::from_utf8_lossy(&body).contains("evil")
+            && !body.windows(6).any(|w| w == b"secret")
+    );
+    let private = "/api/v1/datasets/tiles_private/tilejson.json";
+    assert_eq!(get(a, private, "").await.0, "404");
+    assert_eq!(get(a, private, &viewer).await.0, "200");
+    assert_eq!(get(a, &format!("{tilejson}?x=1"), "").await.0, "400");
+    for url in [
+        "ftp://atlas.test",
+        "https://atlas.test/",
+        "https://atlas.test?x",
+        "https://a test",
+    ] {
+        let text = format!("public_url = '{url}'");
+        assert!(Config::parse(&text, None, None).is_err(), "{url}");
+    }
+    assert!(Config::parse("public_url = 'http://localhost:8080/atlas'", None, None).is_ok());
 }

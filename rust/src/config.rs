@@ -142,6 +142,7 @@ pub struct Config {
     pub database_url: Option<String>,
     pub auth: Option<Auth>,
     pub allowed_schemas: Vec<String>,
+    pub public_url: Option<String>,
     pub limits: Limits,
 }
 
@@ -152,6 +153,7 @@ impl Default for Config {
             database_url: None,
             auth: None,
             allowed_schemas: vec!["public".into()],
+            public_url: None,
             limits: Limits::default(),
         }
     }
@@ -184,6 +186,12 @@ impl Config {
             || self.database_url.as_ref().is_some_and(|s| {
                 !(s.starts_with("postgres://") || s.starts_with("postgresql://"))
                     || s.chars().any(char::is_control)
+            })
+            || self.public_url.as_ref().is_some_and(|s| {
+                !(s.starts_with("https://") || s.starts_with("http://"))
+                    || s.ends_with('/')
+                    || s.contains(['?', '#'])
+                    || s.chars().any(|c| c.is_control() || c.is_whitespace())
             })
         {
             return Err(Error::InvalidRequest);
