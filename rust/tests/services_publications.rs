@@ -1,9 +1,9 @@
 use atlas::{
     config::Config,
-    domain::Error,
+    domain::{Error, Principal},
     migrations::migrate,
     postgis::connection::Database,
-    services::publications::{Publications, document},
+    services::publications::{Publications, document, summary},
 };
 
 const ROADS: &str = r#"{"id":"svc_roads","title":"Roads","source":{"schema":"publication_test","table":"roads"},"properties":["name","lanes"],"filter":{"op":"gte","field":"lanes","value":2},"access":{"view_roles":["viewer"]}}"#;
@@ -184,6 +184,39 @@ async fn publications_validate_before_persisting_and_patch_with_revision() {
         );
     }
 
+    let anonymous = Principal::default();
+    let viewer = Principal {
+        sub: Some("ana".into()),
+        roles: vec!["viewer".into()],
+    };
+    let visible = |page: Vec<atlas::catalog::Publication>| -> Vec<String> {
+        page.into_iter()
+            .map(|p| p.config.id)
+            .filter(|id| id.starts_with("svc_"))
+            .collect()
+    };
+    let open = visible(service.visible(&anonymous, None, 0).await.unwrap().0);
+    assert_eq!(open, ["svc_roads"]);
+    let seen = visible(service.visible(&viewer, None, 0).await.unwrap().0);
+    assert_eq!(seen, ["svc_roads", "svc_second"]);
+    let not_found = Some(Error::DatasetNotFound);
+    assert_eq!(
+        service.detail("svc_second", &anonymous).await.err(),
+        not_found
+    );
+    let denied = Some(Error::PermissionDenied);
+    assert_eq!(service.detail("svc_second", &viewer).await.err(), denied);
+    let public = service.get("svc_roads").await.unwrap();
+    assert_eq!(
+        service
+            .detail("svc_roads", &anonymous)
+            .await
+            .unwrap()
+            .revision,
+        public.revision
+    );
+    let shown = summary(&public).to_string();
+    assert!(!shown.contains("source") && !shown.contains("roles") && !shown.contains("revision"));
     assert_eq!(
         service.delete("svc_roads", 3).await.err(),
         Some(Error::RevisionMismatch)

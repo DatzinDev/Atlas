@@ -1,7 +1,8 @@
 use crate::{
+    auth::policy,
     catalog::{Catalog, Publication},
     config::Config,
-    domain::{Dataset, Error},
+    domain::{Dataset, Error, Principal},
     postgis::{connection::Database, introspection::inspect, selection::prepare},
 };
 use serde::{
@@ -40,6 +41,40 @@ impl Publications {
         let more = page.len() > limit as usize;
         page.truncate(limit as usize);
         Ok((page, more))
+    }
+
+    pub async fn visible(
+        &self,
+        principal: &Principal,
+        limit: Option<u32>,
+        offset: u32,
+    ) -> Result<(Vec<Publication>, bool), Error> {
+        let limits = &self.config.limits;
+        let limit = limit.unwrap_or(limits.catalog_default);
+        if limit == 0 || limit > limits.catalog_max || offset > limits.max_offset {
+            return Err(Error::InvalidRequest);
+        }
+        let mut page: Vec<_> = self
+            .catalog
+            .servable()
+            .await?
+            .into_iter()
+            .filter(|p| policy::view(&p.config, principal).is_ok())
+            .skip(offset as usize)
+            .take(limit as usize + 1)
+            .collect();
+        let more = page.len() > limit as usize;
+        page.truncate(limit as usize);
+        Ok((page, more))
+    }
+
+    pub async fn detail(&self, id: &str, principal: &Principal) -> Result<Publication, Error> {
+        let publication = self.catalog.get(id).await.map_err(|e| match e {
+            Error::SchemaChanged => Error::DatasetNotFound,
+            other => other,
+        })?;
+        policy::query(&publication.config, principal)?;
+        Ok(publication)
     }
 
     pub async fn get(&self, id: &str) -> Result<Publication, Error> {
@@ -100,16 +135,20 @@ impl Publications {
 }
 
 pub fn document(publication: &Publication) -> Value {
+    json!({"id": publication.config.id, "config": publication.config,
+        "revision": publication.revision, "metadata": summary(publication)})
+}
+
+pub fn summary(publication: &Publication) -> Value {
     let (config, meta) = (&publication.config, &publication.metadata);
     let attributes: Vec<_> = meta
         .attributes
         .iter()
         .map(|a| json!({"name": a.name, "type": a.data_type, "nullable": a.nullable}))
         .collect();
-    json!({"id": config.id, "config": config, "revision": publication.revision,
-        "metadata": {"id": config.id, "title": config.title, "description": config.description,
-            "geometry_type": meta.geometry_type, "srid": meta.srid, "attributes": attributes,
-            "formats": ["geojson", "mvt"]}})
+    json!({"id": config.id, "title": config.title, "description": config.description,
+        "geometry_type": meta.geometry_type, "srid": meta.srid, "attributes": attributes,
+        "formats": ["geojson", "mvt"]})
 }
 
 fn decode<T: DeserializeOwned>(body: &[u8]) -> Result<T, Error> {
