@@ -239,3 +239,5 @@ sobre), y mide `octet_length` dentro de la base: si hay más candidatos o bytes 
 `query_too_large` sin transferir la tesela; nunca un LIMIT parcial silencioso. Una tesela sin
 entidades es un `Vec` vacío. Numeric y fechas viajan como texto; floats NaN/infinitos se omiten;
 el id de la entidad solo sale de ids enteros entre 0 y 2^53−1.
+`tests/postgis_mvt.rs` decodifica las teselas con un lector protobuf propio, independiente de
+PostGIS, para comprobar ids, atributos, filtros, bordes del mundo, SRID local y mosaicos.
