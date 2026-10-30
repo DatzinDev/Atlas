@@ -67,6 +67,7 @@ async fn server() -> SocketAddr {
     )
     .unwrap();
     config.allowed_schemas = vec!["items_test".into()];
+    config.limits.query_body_bytes = 512;
     migrate(&config).await.unwrap();
     let db = Database::open(&config).await.unwrap();
     let mut tx = db.begin_catalog().await.unwrap();
@@ -111,10 +112,11 @@ async fn server() -> SocketAddr {
 }
 
 #[tokio::test]
-async fn items_over_real_http() {
+async fn items_and_query_over_real_http() {
     let a = server().await;
     let viewer = bearer(&["viewer"]);
     let items = "/api/v1/datasets/items_public/items";
+    let query = "/api/v1/datasets/items_public/query";
 
     let (status, head, page) = call(a, "GET", &format!("{items}?limit=2"), "", "").await;
     assert_eq!(status, "200", "{head}");
@@ -133,8 +135,11 @@ async fn items_over_real_http() {
     let get = format!(
         "{items}?filter={filter}&bbox=0,0,8.5,8.5&properties=name&sort=name:desc&limit=3&offset=1"
     );
-    let (status, _, by_get) = call(a, "GET", &get, "", "").await;
+    let post = r#"{"filter":{"op":"lte","field":"rank","value":1},"bbox":[0,0,8.5,8.5],"properties":["name"],"sort":[{"field":"name","direction":"desc"}],"limit":3,"offset":1}"#;
+    let (_, _, by_get) = call(a, "GET", &get, "", "").await;
+    let (status, _, by_post) = call(a, "POST", query, "", post).await;
     assert_eq!(status, "200");
+    assert_eq!(by_get, by_post);
     assert_eq!(
         (ids(&by_get), by_get["hasMore"].as_bool()),
         (vec![4, 1], Some(false))
@@ -143,8 +148,14 @@ async fn items_over_real_http() {
         by_get["features"][0]["properties"],
         serde_json::json!({"name": "p4"})
     );
-    let zero = "%7B%22op%22%3A%22eq%22%2C%22field%22%3A%22rank%22%2C%22value%22%3A0%7D";
-    let (_, _, empty) = call(a, "GET", &format!("{items}?filter={zero}"), "", "").await;
+    let (_, _, empty) = call(
+        a,
+        "POST",
+        query,
+        "",
+        r#"{"filter":{"op":"eq","field":"rank","value":0}}"#,
+    )
+    .await;
     assert_eq!(
         (ids(&empty), empty["numberReturned"].as_u64()),
         (vec![], Some(0))
@@ -157,6 +168,37 @@ async fn items_over_real_http() {
         ("GET", view, viewer.as_str(), "", "403"),
         ("GET", granted, viewer.as_str(), "", "200"),
         ("GET", "/api/v1/datasets/items_none/items", "", "", "404"),
+        ("GET", &format!("{items}?limit=1&limit=2"), "", "", "400"),
+        ("GET", &format!("{items}?unknown=1"), "", "", "400"),
+        ("GET", &format!("{items}?bbox=0,0,1"), "", "", "400"),
+        ("GET", &format!("{items}?bbox=2,0,1,1"), "", "", "400"),
+        ("GET", &format!("{items}?sort=name:up"), "", "", "400"),
+        ("GET", &format!("{items}?properties=secret"), "", "", "400"),
+        ("GET", &format!("{items}?limit=10001"), "", "", "400"),
+        ("GET", &format!("{items}?filter=%7B"), "", "", "400"),
+        (
+            "GET",
+            &format!("{items}?filter=%7B%22op%22%3A%22is_null%22%2C%22field%22%3A%22secret%22%7D"),
+            "",
+            "",
+            "400",
+        ),
+        ("POST", query, "", r#"{"limit":1,"extra":1}"#, "400"),
+        ("POST", query, "", r#"{"limit":1,"limit":2}"#, "400"),
+        (
+            "POST",
+            query,
+            "",
+            r#"{"filter":{"op":"eq","field":"rank","value":"1"}}"#,
+            "400",
+        ),
+        (
+            "POST",
+            query,
+            "",
+            &format!(r#"{{"properties":["{}"]}}"#, "n".repeat(600)),
+            "413",
+        ),
     ] {
         let (status, _, body) = call(a, method, target, headers, body).await;
         assert_eq!(status, expected, "{method} {target}: {body}");

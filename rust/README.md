@@ -270,3 +270,6 @@ f64. El orden pedido se valida contra atributos publicados (o el id) y el id des
 y obtiene la página completa antes de enviar cabeceras: un error nunca sale como 200. Responde
 `application/geo+json` con `no-store`, `numberReturned` y `hasMore`; el filtro fijo siempre se
 combina con el del usuario.
+`POST /api/v1/datasets/{id}/query` recibe el mismo `Query` como JSON cerrado y produce la misma
+selección: claves desconocidas o duplicadas 400, cuerpo mayor que `query_body_bytes` 413. En GET,
+parámetros desconocidos o repetidos son 400.
