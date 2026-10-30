@@ -1,4 +1,4 @@
-use super::{identifier, respond};
+use super::{decode, identifier, respond};
 use crate::{
     domain::{Error, Principal},
     postgis::mvt::bounds,
@@ -89,27 +89,4 @@ fn parameters(query: Option<&str>) -> Result<Parameters, Error> {
         }
     }
     Ok((filter, properties))
-}
-
-fn decode(text: &str) -> Result<String, Error> {
-    let (bytes, mut out, mut i) = (text.as_bytes(), Vec::new(), 0);
-    while i < bytes.len() {
-        match bytes[i] {
-            b'%' => {
-                let hex = bytes.get(i + 1..i + 3).ok_or(Error::InvalidRequest)?;
-                let hex = std::str::from_utf8(hex).map_err(|_| Error::InvalidRequest)?;
-                out.push(u8::from_str_radix(hex, 16).map_err(|_| Error::InvalidRequest)?);
-                i += 3;
-            }
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            byte => {
-                out.push(byte);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8(out).map_err(|_| Error::InvalidRequest)
 }

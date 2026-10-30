@@ -2,8 +2,14 @@ use crate::{
     auth::policy,
     catalog::{Catalog, Publication},
     config::{Config, Limits},
-    domain::{Dataset, Error, Principal},
-    postgis::{connection::Database, introspection::inspect, mvt, selection::prepare},
+    domain::{Dataset, Error, Principal, Query},
+    postgis::{
+        connection::Database,
+        features::{self, Page},
+        introspection::inspect,
+        mvt,
+        selection::prepare,
+    },
 };
 use serde::{
     Deserialize, Deserializer,
@@ -93,6 +99,19 @@ impl Publications {
         let fixed = config.filter.as_ref().map(|f| f.get());
         let selection = prepare(&mut tx, fixed, filter, None, meta, limits).await?;
         mvt::tile(&mut tx, config, meta, &selection, xyz, properties, limits).await
+    }
+
+    pub async fn features(&self, publication: &Publication, query: &Query) -> Result<Page, Error> {
+        let (config, meta, limits) = (
+            &publication.config,
+            &publication.metadata,
+            &self.config.limits,
+        );
+        let mut tx = self.database.begin_read().await?;
+        let fixed = config.filter.as_ref().map(|f| f.get());
+        let user = query.filter.as_ref().map(|f| f.get());
+        let selection = prepare(&mut tx, fixed, user, query.bbox, meta, limits).await?;
+        features::page(&mut tx, config, meta, &selection, query, limits).await
     }
 
     pub fn tilejson(&self, publication: &Publication) -> Value {
