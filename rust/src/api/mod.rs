@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod datasets;
+pub mod tiles;
 
 use crate::domain::Error;
 use axum::{

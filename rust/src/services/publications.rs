@@ -1,9 +1,9 @@
 use crate::{
     auth::policy,
     catalog::{Catalog, Publication},
-    config::Config,
+    config::{Config, Limits},
     domain::{Dataset, Error, Principal},
-    postgis::{connection::Database, introspection::inspect, selection::prepare},
+    postgis::{connection::Database, introspection::inspect, mvt, selection::prepare},
 };
 use serde::{
     Deserialize, Deserializer,
@@ -75,6 +75,28 @@ impl Publications {
         })?;
         policy::query(&publication.config, principal)?;
         Ok(publication)
+    }
+
+    pub async fn tile(
+        &self,
+        publication: &Publication,
+        xyz: (u32, u32, u32),
+        filter: Option<&str>,
+        properties: Option<&[String]>,
+    ) -> Result<Vec<u8>, Error> {
+        let (config, meta, limits) = (
+            &publication.config,
+            &publication.metadata,
+            &self.config.limits,
+        );
+        let mut tx = self.database.begin_read().await?;
+        let fixed = config.filter.as_ref().map(|f| f.get());
+        let selection = prepare(&mut tx, fixed, filter, None, meta, limits).await?;
+        mvt::tile(&mut tx, config, meta, &selection, xyz, properties, limits).await
+    }
+
+    pub fn limits(&self) -> &Limits {
+        &self.config.limits
     }
 
     pub async fn get(&self, id: &str) -> Result<Publication, Error> {
