@@ -117,6 +117,7 @@ async fn vector_tiles_over_real_http() {
 
     let dir = "/api/v1/datasets/tiles_none/tiles";
     let tile = format!("{dir}/4/0/0.mvt");
+    let signed = "%22op%22%3A%22is_null%22%2C%22field%22%3A%22name%22%7D";
     let hidden = "%7B%22op%22%3A%22is_null%22%2C%22field%22%3A%22secret%22%7D";
     let (req, bad, gone) = ("invalid_request", "invalid_filter", "dataset_not_found");
     for (target, code) in [
@@ -129,6 +130,9 @@ async fn vector_tiles_over_real_http() {
         (format!("{tile}?filter=%7B%7D&filter=%7B%7D"), req),
         (format!("{tile}?filter=%ZZ"), req),
         (format!("{tile}?properties=name,"), req),
+        (format!("{tile}?filter=%7B%+9{signed}"), req),
+        (format!("{tile}?properties=%+9name"), req),
+        (format!("{tile}?properties=%-1"), req),
         ("/api/v1/datasets/Bad/tiles/4/0/0.mvt".into(), req),
         (format!("{public}?properties=secret"), req),
         (format!("{public}?filter=%7B%22op%22%3A%22x%22%7D"), bad),

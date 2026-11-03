@@ -101,6 +101,9 @@ pub(crate) fn decode(text: &str) -> Result<String, Error> {
         match bytes[i] {
             b'%' => {
                 let hex = bytes.get(i + 1..i + 3).ok_or(Error::InvalidRequest)?;
+                if !hex.iter().all(u8::is_ascii_hexdigit) {
+                    return Err(Error::InvalidRequest);
+                }
                 let hex = std::str::from_utf8(hex).map_err(|_| Error::InvalidRequest)?;
                 out.push(u8::from_str_radix(hex, 16).map_err(|_| Error::InvalidRequest)?);
                 i += 3;
