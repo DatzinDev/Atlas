@@ -114,60 +114,33 @@ async fn vector_tiles_over_real_http() {
     assert_eq!(get(a, private, "").await.0, "404");
     assert_eq!(get(a, private, &viewer).await.0, "200");
 
-    let missing = "/api/v1/datasets/tiles_none/tiles";
-    for target in [
-        format!("{missing}/23/0/0.mvt"),
-        format!("{missing}/4/16/0.mvt"),
-        format!("{missing}/4/0/0.png"),
-        format!("{missing}/4/x/0.mvt"),
-        format!("{missing}/-1/0/0.mvt"),
-        format!("{missing}/4/0/0.mvt?bbox=0,0,1,1"),
-        format!("{missing}/4/0/0.mvt?filter=%7B%7D&filter=%7B%7D"),
-        format!("{missing}/4/0/0.mvt?filter=%ZZ"),
-        format!("{missing}/4/0/0.mvt?properties=name,"),
-        "/api/v1/datasets/Bad/tiles/4/0/0.mvt".into(),
+    let dir = "/api/v1/datasets/tiles_none/tiles";
+    let tile = format!("{dir}/4/0/0.mvt");
+    let hidden = "%7B%22op%22%3A%22is_null%22%2C%22field%22%3A%22secret%22%7D";
+    let (req, bad, gone) = ("invalid_request", "invalid_filter", "dataset_not_found");
+    for (target, code) in [
+        (format!("{dir}/23/0/0.mvt"), req),
+        (format!("{dir}/4/16/0.mvt"), req),
+        (format!("{dir}/4/0/0.png"), req),
+        (format!("{dir}/4/x/0.mvt"), req),
+        (format!("{dir}/-1/0/0.mvt"), req),
+        (format!("{tile}?bbox=0,0,1,1"), req),
+        (format!("{tile}?filter=%7B%7D&filter=%7B%7D"), req),
+        (format!("{tile}?filter=%ZZ"), req),
+        (format!("{tile}?properties=name,"), req),
+        ("/api/v1/datasets/Bad/tiles/4/0/0.mvt".into(), req),
+        (format!("{public}?properties=secret"), req),
+        (format!("{public}?filter=%7B%22op%22%3A%22x%22%7D"), bad),
+        (format!("{tile}?filter=%7B"), bad),
+        (format!("{tile}?filter=%7B%22op%22%3A%22bogus%22%7D"), bad),
+        (format!("{tile}?filter={hidden}"), gone),
+        (format!("{dir}/4/8/7.mvt"), gone),
     ] {
         let (status, _, body) = get(a, &target, "").await;
-        assert_eq!(
-            status,
-            "400",
-            "{target}: {}",
-            String::from_utf8_lossy(&body)
-        );
+        let expected = if code == gone { "404" } else { "400" };
+        let found = String::from_utf8_lossy(&body).contains(code);
+        assert!(status == expected && found, "{target}");
     }
-    assert_eq!(
-        get(a, &format!("{public}?properties=secret"), "").await.0,
-        "400"
-    );
-    assert_eq!(
-        get(a, &format!("{public}?filter=%7B%22op%22%3A%22x%22%7D"), "")
-            .await
-            .0,
-        "400"
-    );
-    for (filter, expected) in [
-        ("%7B", "400"),
-        ("%7B%22op%22%3A%22bogus%22%7D", "400"),
-        (
-            "%7B%22op%22%3A%22is_null%22%2C%22field%22%3A%22secret%22%7D",
-            "404",
-        ),
-    ] {
-        let target = format!("{missing}/4/0/0.mvt?filter={filter}");
-        let (status, _, body) = get(a, &target, "").await;
-        let body = String::from_utf8_lossy(&body);
-        assert_eq!(status, expected, "{target}: {body}");
-        assert!(
-            expected == "404" || body.contains("invalid_filter"),
-            "{body}"
-        );
-    }
-    assert_eq!(
-        get(a, "/api/v1/datasets/tiles_none/tiles/4/8/7.mvt", "")
-            .await
-            .0,
-        "404"
-    );
 
     let doomed = "/api/v1/datasets/tiles_doomed/tiles/4/8/7.mvt";
     assert_eq!(get(a, doomed, "").await.0, "200");
@@ -179,8 +152,7 @@ async fn vector_tiles_over_real_http() {
         sqlx::query(statement).execute(&mut *tx).await.unwrap();
         tx.commit().await.unwrap();
         let (status, _, body) = get(a, doomed, "").await;
-        let body = String::from_utf8_lossy(&body);
-        assert_eq!(status, "409", "{statement}: {body}");
-        assert!(body.contains("schema_changed"), "{body}");
+        let found = String::from_utf8_lossy(&body).contains("schema_changed");
+        assert!(status == "409" && found, "{statement}");
     }
 }
