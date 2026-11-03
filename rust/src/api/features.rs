@@ -7,17 +7,19 @@ use crate::{
 use axum::{
     Extension, Router,
     body::Bytes,
-    extract::{Path, RawQuery, State},
-    http::header,
+    extract::{DefaultBodyLimit, Path, RawQuery, State, rejection::BytesRejection},
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use serde_json::value::RawValue;
 
 pub fn router(service: Publications) -> Router {
+    let limit = service.limits().query_body_bytes as usize;
     Router::new()
         .route("/api/v1/datasets/{id}/items", get(items))
         .route("/api/v1/datasets/{id}/query", post(query))
+        .layer(DefaultBodyLimit::max(limit))
         .with_state(service)
 }
 
@@ -37,13 +39,14 @@ async fn query(
     Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
     RawQuery(raw): RawQuery,
-    body: Bytes,
+    body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, Error> {
     let id = identifier(&id)?;
     no_query(raw.as_deref())?;
-    if body.len() > service.limits().query_body_bytes as usize {
-        return Err(Error::QueryTooLarge);
-    }
+    let body = body.map_err(|rejection| match rejection.status() {
+        StatusCode::PAYLOAD_TOO_LARGE => Error::QueryTooLarge,
+        _ => Error::InvalidRequest,
+    })?;
     let selection: Query = serde_json::from_slice(&body).map_err(|_| Error::InvalidRequest)?;
     select(&service, &principal, id, &selection).await
 }

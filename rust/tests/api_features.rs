@@ -212,6 +212,29 @@ async fn items_and_query_over_real_http() {
     );
     assert!(body["request_id"].is_string());
 
+    let huge = format!(
+        "POST {query} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+        3 << 20
+    );
+    let response = tokio::task::spawn_blocking(move || {
+        let mut stream = TcpStream::connect(a).unwrap();
+        stream.write_all(huge.as_bytes()).unwrap();
+        stream.write_all(&[b' '; 4096]).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    })
+    .await
+    .unwrap();
+    let (head, body) = response.split_once("\r\n\r\n").unwrap();
+    let body: Value = serde_json::from_str(body).unwrap();
+    let head = head.to_lowercase();
+    assert!(head.starts_with("http/1.1 413"), "{head}");
+    assert!(head.contains("application/json") && head.contains("no-store"));
+    assert!(body["code"] == "query_too_large" && body["request_id"].is_string());
+    let exact = format!("{{}}{}", " ".repeat(510));
+    assert_eq!(call(a, "POST", query, "", &exact).await.0, "200");
+
     let doomed = "/api/v1/datasets/items_doomed/items";
     assert_eq!(call(a, "GET", doomed, "", "").await.0, "200");
     for statement in [
