@@ -29,6 +29,9 @@ async fn vector(
     let xyz = (number(&z)?, number(&x)?, number(y)?);
     bounds(xyz.0, xyz.1, xyz.2, service.limits().tile_zoom)?;
     let (filter, properties) = parameters(query.as_deref())?;
+    if let Some(filter) = &filter {
+        crate::query::predicate::parse(filter, service.limits())?;
+    }
     let publication = service.detail(id, &principal).await?;
     let body = service
         .tile(&publication, xyz, filter.as_deref(), properties.as_deref())

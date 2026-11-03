@@ -141,6 +141,23 @@ async fn vector_tiles_over_real_http() {
             .0,
         "400"
     );
+    for (filter, expected) in [
+        ("%7B", "400"),
+        ("%7B%22op%22%3A%22bogus%22%7D", "400"),
+        (
+            "%7B%22op%22%3A%22is_null%22%2C%22field%22%3A%22secret%22%7D",
+            "404",
+        ),
+    ] {
+        let target = format!("{missing}/4/0/0.mvt?filter={filter}");
+        let (status, _, body) = get(a, &target, "").await;
+        let body = String::from_utf8_lossy(&body);
+        assert_eq!(status, expected, "{target}: {body}");
+        assert!(
+            expected == "404" || body.contains("invalid_filter"),
+            "{body}"
+        );
+    }
     assert_eq!(
         get(a, "/api/v1/datasets/tiles_none/tiles/4/8/7.mvt", "")
             .await
