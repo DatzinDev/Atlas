@@ -164,6 +164,7 @@ async fn items_and_query_over_real_http() {
             r#"{"filter":{"op":"bogus"}}"#,
             "400",
         ),
+        ("POST", &format!("{query}?unknown=1"), "", "{}", "400"),
         ("GET", &format!("{items}?limit=1&limit=2"), "", "", "400"),
         ("GET", &format!("{items}?unknown=1"), "", "", "400"),
         ("GET", &format!("{items}?bbox=0,0,1"), "", "", "400"),
@@ -203,6 +204,13 @@ async fn items_and_query_over_real_http() {
         let filtered = expected == "400" && target.contains("items_none");
         assert!(!filtered || body["code"] == "invalid_filter", "{target}");
     }
+
+    let (status, _, body) = call(a, "POST", &format!("{missing_query}?unknown=1"), "", "{}").await;
+    assert_eq!(
+        (status.as_str(), &body["code"]),
+        ("400", &"invalid_request".into())
+    );
+    assert!(body["request_id"].is_string());
 
     let doomed = "/api/v1/datasets/items_doomed/items";
     assert_eq!(call(a, "GET", doomed, "", "").await.0, "200");

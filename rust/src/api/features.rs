@@ -1,4 +1,4 @@
-use super::{decode, identifier};
+use super::{decode, identifier, no_query};
 use crate::{
     domain::{Direction, Error, Principal, Query, SortField},
     postgis::features::Page,
@@ -36,9 +36,11 @@ async fn query(
     State(service): State<Publications>,
     Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
+    RawQuery(raw): RawQuery,
     body: Bytes,
 ) -> Result<Response, Error> {
     let id = identifier(&id)?;
+    no_query(raw.as_deref())?;
     if body.len() > service.limits().query_body_bytes as usize {
         return Err(Error::QueryTooLarge);
     }
