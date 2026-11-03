@@ -35,7 +35,9 @@ fn ids(page: &Page) -> Vec<i64> {
         .collect()
 }
 
-async fn setup() -> (Database, (Dataset, Metadata), (Dataset, Metadata)) {
+type Source = (Dataset, Metadata);
+
+async fn setup() -> (Database, Source, Source, Source) {
     let mut config = Config::parse(
         "",
         Some(std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required")),
@@ -51,14 +53,21 @@ async fn setup() -> (Database, (Dataset, Metadata), (Dataset, Metadata)) {
         "CREATE TABLE features_test.places(id integer PRIMARY KEY, \"we\"\"ird\" text, big int8, amount numeric, rank int4, secret text, geom geometry(Point,3857))",
         "INSERT INTO features_test.places SELECT n, 'p' || n, 9223372036854775807, 12345678901234567890.123, (ARRAY[10,20,20,NULL,10,NULL,30])[n], 'x', ST_Transform(ST_SetSRID(ST_Point(-103.35 + n, 20.67), 4326), 3857) FROM generate_series(1, 7) AS n",
         "CREATE VIEW features_test.places_view AS SELECT id * 10 AS vid, rank, geom FROM features_test.places",
+        "CREATE TABLE features_test.wide(id integer PRIMARY KEY, p int4, geom geometry(Point,4326))",
+        "DO $$ BEGIN FOR n IN 1..59 LOOP EXECUTE format('ALTER TABLE features_test.wide ADD c%s int4 DEFAULT %s', n, n); END LOOP; END $$",
+        "INSERT INTO features_test.wide(id, p, geom) VALUES (1, 0, ST_SetSRID(ST_Point(0, 0), 4326))",
     ] {
         sqlx::query(statement).execute(&mut *tx).await.unwrap();
     }
     tx.commit().await.unwrap();
+    let wide: Vec<String> = std::iter::once("p".to_string())
+        .chain((1..=59).map(|n| format!("c{n}")))
+        .collect();
     let mut sources = Vec::new();
     for (table, id, properties) in [
         ("places", None, vec!["we\"ird", "big", "amount", "rank"]),
         ("places_view", Some("vid"), vec!["rank"]),
+        ("wide", None, wide.iter().map(String::as_str).collect()),
     ] {
         let dataset: Dataset =
             serde_json::from_value(serde_json::json!({"id": table, "title": table,
@@ -68,13 +77,14 @@ async fn setup() -> (Database, (Dataset, Metadata), (Dataset, Metadata)) {
         let meta = inspect(&db, &config, &dataset).await.unwrap();
         sources.push((dataset, meta));
     }
+    let wide = sources.pop().unwrap();
     let view = sources.pop().unwrap();
-    (db, sources.pop().unwrap(), view)
+    (db, sources.pop().unwrap(), view, wide)
 }
 
 #[tokio::test]
 async fn feature_pages_against_real_postgis() {
-    let (db, places, view) = setup().await;
+    let (db, places, view, wide) = setup().await;
     let mut seen = Vec::new();
     for offset in [0, 3, 6] {
         let page = run(&db, &places, &format!(r#"{{"limit":3,"offset":{offset}}}"#))
@@ -128,6 +138,12 @@ async fn feature_pages_against_real_postgis() {
     assert_eq!(ids(&run(&db, &places, boxed).await.unwrap()), [1, 2]);
     let views = run(&db, &view, r#"{"limit":2,"offset":1}"#).await.unwrap();
     assert_eq!((ids(&views), views.more), (vec![20, 30], true));
+    let wide = &features(&run(&db, &wide, "{}").await.unwrap())[0]["properties"];
+    let wide = wide.as_object().unwrap();
+    assert_eq!(
+        (wide.len(), &wide["p"], &wide["c59"]),
+        (60, &0.into(), &59.into())
+    );
 
     for query in [
         r#"{"limit":10001}"#,

@@ -43,18 +43,14 @@ pub async fn page(
             .push(&geometry)
             .push(", 4326)");
     }
-    builder.push(")::json, 'properties', json_build_object(");
-    for (i, name) in properties.iter().enumerate() {
-        if i > 0 {
-            builder.push(", ");
-        }
-        builder
-            .push_bind(name.to_string())
-            .push("::text, ")
-            .push(quote_identifier(name));
-    }
+    let columns: Vec<_> = properties
+        .iter()
+        .map(|name| quote_identifier(name))
+        .collect();
     builder
-        .push("))::text FROM ")
+        .push(")::json, 'properties', (SELECT row_to_json(p.*) FROM (SELECT ")
+        .push(columns.join(", "))
+        .push(") p))::text FROM ")
         .push(quote_identifier(&dataset.source.schema))
         .push(".")
         .push(quote_identifier(&dataset.source.table))
