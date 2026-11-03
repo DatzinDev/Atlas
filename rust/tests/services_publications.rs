@@ -232,4 +232,50 @@ async fn publications_validate_before_persisting_and_patch_with_revision() {
         .await
         .unwrap();
     assert_eq!(rows, 1);
+    drop(tx);
+
+    let mut tx = db.begin_catalog().await.unwrap();
+    sqlx::query(
+        "INSERT INTO atlas_catalog.datasets(id,config,metadata) SELECT 'svc_b' || lpad(i::text,3,'0'), \
+         jsonb_set(jsonb_set(config,'{id}',to_jsonb('svc_b' || lpad(i::text,3,'0'))),'{access,public}',to_jsonb(i % 2 = 0)), \
+         CASE WHEN i = 300 THEN jsonb_set(metadata,'{srid}','0') ELSE metadata END \
+         FROM atlas_catalog.datasets, generate_series(1,600) i WHERE id='svc_second'",
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let walk = |principal: Principal, limit: u32| {
+        let service = &service;
+        async move {
+            let (mut ids, mut offset) = (Vec::new(), 0);
+            loop {
+                let (page, more) = service
+                    .visible(&principal, Some(limit), offset)
+                    .await
+                    .unwrap();
+                assert!(!more || page.len() == limit as usize);
+                offset += page.len() as u32;
+                ids.extend(visible(page));
+                if !more {
+                    return ids;
+                }
+            }
+        }
+    };
+    let even: Vec<_> = (1..=600)
+        .filter(|i| i % 2 == 0 && *i != 300)
+        .map(|i| format!("svc_b{i:03}"))
+        .collect();
+    assert_eq!(walk(anonymous.clone(), 7).await, even);
+    let mut all: Vec<_> = (1..=600)
+        .filter(|i| *i != 300)
+        .map(|i| format!("svc_b{i:03}"))
+        .collect();
+    all.push("svc_second".into());
+    assert_eq!(walk(viewer.clone(), 250).await, all);
+    let (last, more) = service.visible(&anonymous, Some(1), 298).await.unwrap();
+    assert_eq!((visible(last), more), (vec!["svc_b600".to_string()], false));
+    let (past, more) = service.visible(&anonymous, Some(5), 299).await.unwrap();
+    assert!(past.is_empty() && !more);
 }

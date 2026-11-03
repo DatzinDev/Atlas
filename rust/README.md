@@ -225,5 +225,8 @@ que `admin_body_bytes` son 413 `query_too_large`.
 `Publications::visible` resuelve el catálogo vigente en cada llamada, sin caché, y filtra por
 `view` antes de paginar por id (`catalog_default`/`catalog_max`), así que totales y `hasMore` no
 delatan datasets ocultos; las publicaciones que ya no validan se omiten (`Catalog::servable`).
+`servable` recorre el catálogo por lotes de 256 con clave (`id > $1`), aplica el filtro dentro del
+recorrido y para en cuanto tiene `offset + limit + 1` visibles: la memoria queda acotada, aunque un
+catálogo casi todo privado se recorre casi entero.
 `detail` exige `view` (si no, 404) y `query` (si no, 403); una publicación que no valida también es
 404. `summary` es la vista pública: sin fuente, filtro fijo, roles ni revisión.

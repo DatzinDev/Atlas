@@ -54,15 +54,14 @@ impl Publications {
         if limit == 0 || limit > limits.catalog_max || offset > limits.max_offset {
             return Err(Error::InvalidRequest);
         }
-        let mut page: Vec<_> = self
+        let mut page = self
             .catalog
-            .servable()
-            .await?
-            .into_iter()
-            .filter(|p| policy::view(&p.config, principal).is_ok())
-            .skip(offset as usize)
-            .take(limit as usize + 1)
-            .collect();
+            .servable(
+                |p| policy::view(&p.config, principal).is_ok(),
+                offset as usize,
+                limit as usize + 1,
+            )
+            .await?;
         let more = page.len() > limit as usize;
         page.truncate(limit as usize);
         Ok((page, more))
