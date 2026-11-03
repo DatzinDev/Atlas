@@ -83,15 +83,12 @@ async fn server() -> (SocketAddr, Database) {
     }
     tx.commit().await.unwrap();
     let service = Publications::new(db.clone(), config).unwrap();
+    let both = r#"{"view_roles":["viewer"],"query_roles":["viewer"]}"#;
     for (id, table, access) in [
         ("items_public", "places", r#"{"public":true}"#),
         ("items_doomed", "doomed", r#"{"public":true}"#),
         ("items_view", "places", r#"{"view_roles":["viewer"]}"#),
-        (
-            "items_query",
-            "places",
-            r#"{"view_roles":["viewer"],"query_roles":["viewer"]}"#,
-        ),
+        ("items_query", "places", both),
     ] {
         let body = format!(
             r#"{{"id":"{id}","title":"T","source":{{"schema":"items_test","table":"{table}"}},"properties":["name","rank"],"filter":{{"op":"gte","field":"rank","value":1}},"access":{access}}}"#
@@ -123,14 +120,9 @@ async fn items_over_real_http() {
     let (status, head, page) = call(a, "GET", &format!("{items}?limit=2"), "", "").await;
     assert_eq!(status, "200", "{head}");
     assert!(head.contains("application/geo+json") && head.contains("no-store"));
-    assert_eq!(
-        (page["type"].as_str(), ids(&page)),
-        (Some("FeatureCollection"), vec![1, 2])
-    );
-    assert_eq!(
-        (page["numberReturned"].as_u64(), page["hasMore"].as_bool()),
-        (Some(2), Some(true))
-    );
+    assert_eq!(page["type"], "FeatureCollection");
+    assert_eq!(ids(&page), [1, 2]);
+    assert!(page["numberReturned"] == 2 && page["hasMore"] == true);
     assert!(page.to_string().contains("\"name\":\"p1\"") && !page.to_string().contains("secret"));
 
     let filter = "%7B%22op%22%3A%22lte%22%2C%22field%22%3A%22rank%22%2C%22value%22%3A1%7D";
@@ -139,20 +131,12 @@ async fn items_over_real_http() {
     );
     let (status, _, by_get) = call(a, "GET", &get, "", "").await;
     assert_eq!(status, "200");
-    assert_eq!(
-        (ids(&by_get), by_get["hasMore"].as_bool()),
-        (vec![4, 1], Some(false))
-    );
-    assert_eq!(
-        by_get["features"][0]["properties"],
-        serde_json::json!({"name": "p4"})
-    );
+    assert!(ids(&by_get) == [4, 1] && by_get["hasMore"] == false);
+    let first = &by_get["features"][0]["properties"];
+    assert_eq!(first, &serde_json::json!({"name": "p4"}));
     let zero = "%7B%22op%22%3A%22eq%22%2C%22field%22%3A%22rank%22%2C%22value%22%3A0%7D";
     let (_, _, empty) = call(a, "GET", &format!("{items}?filter={zero}"), "", "").await;
-    assert_eq!(
-        (ids(&empty), empty["numberReturned"].as_u64()),
-        (vec![], Some(0))
-    );
+    assert!(ids(&empty).is_empty() && empty["numberReturned"] == 0);
 
     let view = "/api/v1/datasets/items_view/items";
     let missing = "/api/v1/datasets/items_none/items";
@@ -170,15 +154,9 @@ async fn items_over_real_http() {
     ] {
         let (status, _, body) = call(a, method, target, headers, body).await;
         assert_eq!(status, expected, "{method} {target}: {body}");
-        if expected != "200" {
-            assert!(
-                body.get("features").is_none() && body["request_id"].is_string(),
-                "{body}"
-            );
-        }
-        if expected == "400" {
-            assert_eq!(body["code"], "invalid_filter", "{target}");
-        }
+        let failed = body.get("features").is_none() && body["request_id"].is_string();
+        assert!(expected == "200" || failed, "{body}");
+        assert!(expected != "400" || body["code"] == "invalid_filter");
     }
 
     let doomed = "/api/v1/datasets/items_doomed/items";
@@ -191,7 +169,7 @@ async fn items_over_real_http() {
         sqlx::query(statement).execute(&mut *tx).await.unwrap();
         tx.commit().await.unwrap();
         let (status, _, body) = call(a, "GET", doomed, "", "").await;
-        assert_eq!(status, "409", "{statement}: {body}");
+        assert_eq!(status, "409", "{body}");
         assert_eq!(body["code"], "schema_changed");
     }
 }
