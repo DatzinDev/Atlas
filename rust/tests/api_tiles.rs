@@ -38,7 +38,7 @@ async fn get(address: SocketAddr, target: &str, headers: &str) -> (String, Strin
     (head[9..12].to_owned(), head, response[split + 4..].to_vec())
 }
 
-async fn server() -> SocketAddr {
+async fn server() -> (SocketAddr, Database) {
     let mut config = Config::parse(
         "",
         Some(std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required")),
@@ -54,21 +54,25 @@ async fn server() -> SocketAddr {
         "CREATE SCHEMA tiles_test",
         "CREATE TABLE tiles_test.points(id integer PRIMARY KEY, name text, rank int4, secret text, geom geometry(Point,4326))",
         "INSERT INTO tiles_test.points VALUES (1,'a',1,'x',ST_SetSRID(ST_Point(10,10),4326)), (2,'b',2,'x',ST_SetSRID(ST_Point(10.1,10.1),4326))",
+        "CREATE TABLE tiles_test.doomed AS TABLE tiles_test.points",
+        "ALTER TABLE tiles_test.doomed ADD PRIMARY KEY (id)",
         "DELETE FROM atlas_catalog.datasets WHERE config->'source'->>'schema' <> 'tiles_test' OR id LIKE 'tiles\\_%'",
     ] {
         sqlx::query(statement).execute(&mut *tx).await.unwrap();
     }
     tx.commit().await.unwrap();
-    let service = Publications::new(db, config).unwrap();
-    for (id, access) in [
-        ("tiles_public", r#"{"public":true}"#),
+    let service = Publications::new(db.clone(), config).unwrap();
+    for (id, table, access) in [
+        ("tiles_public", "points", r#"{"public":true}"#),
+        ("tiles_doomed", "doomed", r#"{"public":true}"#),
         (
             "tiles_private",
+            "points",
             r#"{"view_roles":["viewer"],"query_roles":["viewer"]}"#,
         ),
     ] {
         let body = format!(
-            r#"{{"id":"{id}","title":"T","source":{{"schema":"tiles_test","table":"points"}},"properties":["name","rank"],"filter":{{"op":"gte","field":"rank","value":2}},"access":{access}}}"#
+            r#"{{"id":"{id}","title":"T","source":{{"schema":"tiles_test","table":"{table}"}},"properties":["name","rank"],"filter":{{"op":"gte","field":"rank","value":2}},"access":{access}}}"#
         );
         service.create(body.as_bytes()).await.unwrap();
     }
@@ -85,12 +89,12 @@ async fn server() -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    address
+    (address, db)
 }
 
 #[tokio::test]
 async fn vector_tiles_over_real_http() {
-    let a = server().await;
+    let (a, db) = server().await;
     let viewer = bearer(&["viewer"]);
     let public = "/api/v1/datasets/tiles_public/tiles/4/8/7.mvt";
     let (status, head, full) = get(a, public, "").await;
@@ -164,4 +168,19 @@ async fn vector_tiles_over_real_http() {
             .0,
         "404"
     );
+
+    let doomed = "/api/v1/datasets/tiles_doomed/tiles/4/8/7.mvt";
+    assert_eq!(get(a, doomed, "").await.0, "200");
+    for statement in [
+        "ALTER TABLE tiles_test.doomed DROP COLUMN name",
+        "DROP TABLE tiles_test.doomed",
+    ] {
+        let mut tx = db.begin_catalog().await.unwrap();
+        sqlx::query(statement).execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        let (status, _, body) = get(a, doomed, "").await;
+        let body = String::from_utf8_lossy(&body);
+        assert_eq!(status, "409", "{statement}: {body}");
+        assert!(body.contains("schema_changed"), "{body}");
+    }
 }
