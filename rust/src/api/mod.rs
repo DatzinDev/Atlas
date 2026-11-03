@@ -66,6 +66,13 @@ pub(crate) fn identifier(id: &str) -> Result<&str, Error> {
     valid.then_some(id).ok_or(Error::InvalidRequest)
 }
 
+pub(crate) fn no_query(query: Option<&str>) -> Result<(), Error> {
+    match query {
+        Some(query) if !query.is_empty() => Err(Error::InvalidRequest),
+        _ => Ok(()),
+    }
+}
+
 pub(crate) fn paging(query: Option<&str>) -> Result<(Option<u32>, u32), Error> {
     let (mut limit, mut offset) = (None, None);
     for pair in query

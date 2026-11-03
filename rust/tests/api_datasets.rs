@@ -153,10 +153,18 @@ async fn discovery_lists_only_authorized_datasets_over_real_http() {
         ("?limit=1001", "", "400"),
         ("?offset=100001", "", "400"),
         ("?sort=id", "", "400"),
+        ("/disc_a_public?unknown=1", "", "400"),
+        ("/disc_a_public?limit=1&limit=2", "", "400"),
+        ("/disc_none?unknown=1", "", "400"),
+        ("/disc_none?limit=1&limit=2", viewer.as_str(), "400"),
+        ("/disc_a_public?", "", "200"),
         ("", "Authorization: Bearer forged\r\n", "401"),
     ] {
         let (status, body) = get(a, &format!("{LIST}{target}"), headers).await;
         assert_eq!(status, expected, "{target}: {body}");
+        if expected == "400" {
+            assert!(body["code"].is_string() && body["request_id"].is_string());
+        }
         assert!(!body.to_string().contains("discovery_test"));
     }
 

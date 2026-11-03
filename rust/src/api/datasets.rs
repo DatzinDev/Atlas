@@ -1,4 +1,4 @@
-use super::{identifier, paging, respond};
+use super::{identifier, no_query, paging, respond};
 use crate::{
     domain::{Error, Principal},
     services::publications::{Publications, summary},
@@ -35,7 +35,10 @@ async fn read(
     State(service): State<Publications>,
     Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
+    RawQuery(query): RawQuery,
 ) -> Result<Response, Error> {
-    let found = service.detail(identifier(&id)?, &principal).await?;
+    let id = identifier(&id)?;
+    no_query(query.as_deref())?;
+    let found = service.detail(id, &principal).await?;
     Ok(respond(StatusCode::OK, Some(summary(&found)), None))
 }
