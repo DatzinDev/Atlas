@@ -7,7 +7,7 @@ use crate::{
 use axum::{
     Extension, Router,
     body::Bytes,
-    extract::{Path, RawQuery, State},
+    extract::{DefaultBodyLimit, Path, RawQuery, State, rejection::BytesRejection},
     http::{HeaderMap, StatusCode, header},
     response::Response,
     routing::get,
@@ -17,7 +17,6 @@ use serde_json::json;
 #[derive(Clone)]
 struct Admin {
     service: Publications,
-    body_limit: usize,
 }
 
 pub fn router(service: Publications, body_limit: u32) -> Router {
@@ -27,10 +26,8 @@ pub fn router(service: Publications, body_limit: u32) -> Router {
             "/api/v1/admin/datasets/{id}",
             get(read).patch(update).delete(remove),
         )
-        .with_state(Admin {
-            service,
-            body_limit: body_limit as usize,
-        })
+        .layer(DefaultBodyLimit::max(body_limit as usize))
+        .with_state(Admin { service })
 }
 
 async fn list(
@@ -50,13 +47,11 @@ async fn create(
     State(state): State<Admin>,
     Extension(principal): Extension<Principal>,
     RawQuery(query): RawQuery,
-    body: Bytes,
+    body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, Error> {
     admin(&principal)?;
     no_query(query.as_deref())?;
-    if body.len() > state.body_limit {
-        return Err(Error::QueryTooLarge);
-    }
+    let body = body.map_err(rejected)?;
     let created = state.service.create(&body).await?;
     Ok(respond(
         StatusCode::CREATED,
@@ -87,13 +82,11 @@ async fn update(
     Path(id): Path<String>,
     RawQuery(query): RawQuery,
     headers: HeaderMap,
-    body: Bytes,
+    body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, Error> {
     admin(&principal)?;
     no_query(query.as_deref())?;
-    if body.len() > state.body_limit {
-        return Err(Error::QueryTooLarge);
-    }
+    let body = body.map_err(rejected)?;
     let revision = if_match(&headers)?;
     let updated = state
         .service
@@ -118,6 +111,13 @@ async fn remove(
     let revision = if_match(&headers)?;
     state.service.delete(identifier(&id)?, revision).await?;
     Ok(respond(StatusCode::NO_CONTENT, None, None))
+}
+
+fn rejected(rejection: BytesRejection) -> Error {
+    match rejection.status() {
+        StatusCode::PAYLOAD_TOO_LARGE => Error::QueryTooLarge,
+        _ => Error::InvalidRequest,
+    }
 }
 
 fn if_match(headers: &HeaderMap) -> Result<i64, Error> {
