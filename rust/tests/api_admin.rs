@@ -166,6 +166,35 @@ async fn admin_routes_over_real_http() {
         )
         .await;
     }
+    let item = format!("{ITEM}?unknown=1");
+    let other = BODY.replace("api_roads", "api_other");
+    for (method, target, headers, body) in [
+        ("GET", item.as_str(), admin.clone(), ""),
+        (
+            "GET",
+            "/api/v1/admin/datasets/api_no?unknown=1",
+            admin.clone(),
+            "",
+        ),
+        ("POST", &paged("unknown=1"), admin.clone(), &other),
+        ("PATCH", &item, revision("\"1\""), title),
+        ("DELETE", &item, revision("\"1\""), ""),
+    ] {
+        expect(
+            a,
+            (method, target, &headers, body),
+            "400",
+            "invalid_request",
+        )
+        .await;
+    }
+    expect(
+        a,
+        ("GET", "/api/v1/admin/datasets/api_other", &admin, ""),
+        "404",
+        "dataset_not_found",
+    )
+    .await;
     expect(a, ("PATCH", ITEM, &admin, title), "400", "invalid_request").await;
     expect(
         a,

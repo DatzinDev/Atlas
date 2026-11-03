@@ -1,4 +1,4 @@
-use super::{identifier, paging, respond};
+use super::{identifier, no_query, paging, respond};
 use crate::{
     auth::policy::admin,
     domain::{Error, Principal},
@@ -49,9 +49,11 @@ async fn list(
 async fn create(
     State(state): State<Admin>,
     Extension(principal): Extension<Principal>,
+    RawQuery(query): RawQuery,
     body: Bytes,
 ) -> Result<Response, Error> {
     admin(&principal)?;
+    no_query(query.as_deref())?;
     if body.len() > state.body_limit {
         return Err(Error::QueryTooLarge);
     }
@@ -67,8 +69,10 @@ async fn read(
     State(state): State<Admin>,
     Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
+    RawQuery(query): RawQuery,
 ) -> Result<Response, Error> {
     admin(&principal)?;
+    no_query(query.as_deref())?;
     let found = state.service.get(identifier(&id)?).await?;
     Ok(respond(
         StatusCode::OK,
@@ -81,10 +85,12 @@ async fn update(
     State(state): State<Admin>,
     Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
+    RawQuery(query): RawQuery,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Error> {
     admin(&principal)?;
+    no_query(query.as_deref())?;
     if body.len() > state.body_limit {
         return Err(Error::QueryTooLarge);
     }
@@ -104,9 +110,11 @@ async fn remove(
     State(state): State<Admin>,
     Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
+    RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, Error> {
     admin(&principal)?;
+    no_query(query.as_deref())?;
     let revision = if_match(&headers)?;
     state.service.delete(identifier(&id)?, revision).await?;
     Ok(respond(StatusCode::NO_CONTENT, None, None))
