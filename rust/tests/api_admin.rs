@@ -56,6 +56,23 @@ async fn expect(
     }
 }
 
+async fn declared(address: SocketAddr, method: &str, target: &str, headers: &str) -> String {
+    let raw = format!(
+        "{method} {target} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n{headers}\r\n",
+        3 << 20
+    );
+    tokio::task::spawn_blocking(move || {
+        let mut stream = TcpStream::connect(address).unwrap();
+        stream.write_all(raw.as_bytes()).unwrap();
+        stream.write_all(&[b' '; 4096]).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response.to_lowercase()
+    })
+    .await
+    .unwrap()
+}
+
 async fn server() -> (SocketAddr, Publications) {
     let mut config = Config::parse(
         "",
@@ -125,6 +142,34 @@ async fn admin_routes_over_real_http() {
     )
     .await;
     expect(a, ("POST", LIST, &admin, &large), "413", "query_too_large").await;
+    for (method, target, headers) in [
+        ("POST", LIST, admin.clone()),
+        ("PATCH", ITEM, revision("\"1\"")),
+    ] {
+        let response = declared(a, method, target, &headers).await;
+        assert!(response.starts_with("http/1.1 413"), "{response}");
+        for needle in [
+            "application/json",
+            "no-store",
+            "query_too_large",
+            "request_id",
+        ] {
+            assert!(response.contains(needle), "{needle}: {response}");
+        }
+    }
+    let response = declared(a, "POST", LIST, &viewer).await;
+    assert!(response.starts_with("http/1.1 403"), "{response}");
+    let exact = format!("{BODY}{}", " ".repeat(1024 - BODY.len()));
+    let exact = exact.replace("api_roads", "api_exact");
+    expect(a, ("POST", LIST, &admin, &exact), "201", "etag").await;
+    let doomed = ("DELETE", "/api/v1/admin/datasets/api_exact");
+    expect(
+        a,
+        (doomed.0, doomed.1, &revision("\"1\""), ""),
+        "204",
+        "no-store",
+    )
+    .await;
     let paged = |query: &str| format!("{LIST}?{query}");
     expect(a, ("GET", ITEM, "", ""), "403", "permission_denied").await;
     expect(a, ("GET", ITEM, &viewer, ""), "403", "permission_denied").await;
@@ -166,6 +211,35 @@ async fn admin_routes_over_real_http() {
         )
         .await;
     }
+    let item = format!("{ITEM}?unknown=1");
+    let other = BODY.replace("api_roads", "api_other");
+    for (method, target, headers, body) in [
+        ("GET", item.as_str(), admin.clone(), ""),
+        (
+            "GET",
+            "/api/v1/admin/datasets/api_no?unknown=1",
+            admin.clone(),
+            "",
+        ),
+        ("POST", &paged("unknown=1"), admin.clone(), &other),
+        ("PATCH", &item, revision("\"1\""), title),
+        ("DELETE", &item, revision("\"1\""), ""),
+    ] {
+        expect(
+            a,
+            (method, target, &headers, body),
+            "400",
+            "invalid_request",
+        )
+        .await;
+    }
+    expect(
+        a,
+        ("GET", "/api/v1/admin/datasets/api_other", &admin, ""),
+        "404",
+        "dataset_not_found",
+    )
+    .await;
     expect(a, ("PATCH", ITEM, &admin, title), "400", "invalid_request").await;
     expect(
         a,

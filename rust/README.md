@@ -219,3 +219,60 @@ Detalle con ETag; listado con `limit`/`offset` únicos; errores `{code,message,r
 POST, GET y PATCH devuelven el ETag; PATCH y DELETE exigen un único `If-Match` con la revisión
 entre comillas (ausente o malformado 400, distinta 412) y DELETE responde 204. Cuerpos mayores
 que `admin_body_bytes` son 413 `query_too_large`.
+
+## Descubrimiento (#219)
+
+`Publications::visible` resuelve el catálogo vigente en cada llamada, sin caché, y filtra por
+`view` antes de paginar por id (`catalog_default`/`catalog_max`), así que totales y `hasMore` no
+delatan datasets ocultos; las publicaciones que ya no validan se omiten (`Catalog::servable`).
+`servable` recorre el catálogo por lotes de 256 con clave (`id > $1`), aplica el filtro dentro del
+recorrido y para en cuanto tiene `offset + limit + 1` visibles: la memoria queda acotada, aunque un
+catálogo casi todo privado se recorre casi entero.
+`detail` exige `view` (si no, 404) y `query` (si no, 403); una publicación que no valida también es
+404. `summary` es la vista pública: sin fuente, filtro fijo, roles ni revisión.
+`GET /api/v1/datasets` y `/{id}` exponen `visible` y `detail` con `no-store`. Un cambio
+administrativo se ve en la siguiente petición; quitar un rol de la política corta el acceso ahí
+mismo aunque el token ya emitido siga trayéndolo.
+## MVT nativo (#225)
+
+`postgis::mvt::tile` codifica en PostGIS con `ST_AsMVTGeom`/`ST_AsMVT` sobre la `Selection`
+preparada; Rust no materializa geometrías. Toma `tile_candidates + 1` candidatos dentro del sobre
+de la tesela más el buffer (recortado a ±H en los bordes del mundo; en z=0 un SRID local no usa
+sobre), y mide `octet_length` dentro de la base: si hay más candidatos o bytes que el presupuesto,
+`query_too_large` sin transferir la tesela; nunca un LIMIT parcial silencioso. Una tesela sin
+entidades es un `Vec` vacío. Numeric y fechas viajan como texto; floats NaN/infinitos se omiten;
+el id de la entidad solo sale de ids enteros entre 0 y 2^53−1.
+`tests/postgis_mvt.rs` decodifica las teselas con un lector protobuf propio, independiente de
+PostGIS, para comprobar ids, atributos, filtros, bordes del mundo, SRID local y mosaicos.
+
+## Teselas (#226)
+
+`GET /api/v1/datasets/{id}/tiles/{z}/{x}/{y}.mvt` valida id, coordenadas, zoom (`tile_zoom`) y la
+query (`filter` como JSON codificado y `properties` separadas por comas, una vez cada uno) antes de
+consultar la base. Exige `view` y `query`, aplica el mismo predicado que GeoJSON (filtro fijo AND
+filtro del usuario) y responde `application/vnd.mapbox-vector-tile` con `no-store`; sin entidades,
+200 con cuerpo vacío.
+`GET /api/v1/datasets/{id}/tilejson.json` (TileJSON 3.0.0, mismas reglas de acceso) describe la
+capa con el id del dataset como `source-layer` y solo los campos publicados (`String`, `Number`,
+`Boolean`). La URL de teselas sale de `public_url` en TOML, que admite prefijo de despliegue
+(`https://host/prefijo`, sin barra final, query ni fragmento); sin ella es relativa. Las cabeceras
+`Forwarded`/`X-Forwarded-*` se ignoran.
+## Páginas de features (#223)
+
+`postgis::features::page` recibe la `Selection` preparada en la misma transacción de lectura y
+arma cada Feature en PostgreSQL con `json_build_object`: `id` siempre presente, geometría con
+`ST_AsGeoJSON` en EPSG:4326 y solo las propiedades publicadas pedidas (por defecto todas). Las
+filas llegan como texto JSON y se conservan como `RawValue`, así que bigint y numeric no pasan por
+f64. El orden pedido se valida contra atributos publicados (o el id) y el id desempata. Pide
+`limit + 1` para `more`, sin COUNT; offset no es un snapshot entre peticiones.
+
+## Consultas GeoJSON (#224)
+
+`GET /api/v1/datasets/{id}/items` arma un `Query` con `filter` (JSON codificado), `bbox` y
+`properties` por comas, `sort` (`campo:asc,otro:desc`), `limit` y `offset`. Exige `view` y `query`
+y obtiene la página completa antes de enviar cabeceras: un error nunca sale como 200. Responde
+`application/geo+json` con `no-store`, `numberReturned` y `hasMore`; el filtro fijo siempre se
+combina con el del usuario.
+`POST /api/v1/datasets/{id}/query` recibe el mismo `Query` como JSON cerrado y produce la misma
+selección: claves desconocidas o duplicadas 400, cuerpo mayor que `query_body_bytes` 413. En GET,
+parámetros desconocidos o repetidos son 400.

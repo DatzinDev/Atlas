@@ -1,9 +1,9 @@
 use atlas::{
     config::Config,
-    domain::Error,
+    domain::{Error, Principal},
     migrations::migrate,
     postgis::connection::Database,
-    services::publications::{Publications, document},
+    services::publications::{Publications, document, summary},
 };
 
 const ROADS: &str = r#"{"id":"svc_roads","title":"Roads","source":{"schema":"publication_test","table":"roads"},"properties":["name","lanes"],"filter":{"op":"gte","field":"lanes","value":2},"access":{"view_roles":["viewer"]}}"#;
@@ -184,6 +184,39 @@ async fn publications_validate_before_persisting_and_patch_with_revision() {
         );
     }
 
+    let anonymous = Principal::default();
+    let viewer = Principal {
+        sub: Some("ana".into()),
+        roles: vec!["viewer".into()],
+    };
+    let visible = |page: Vec<atlas::catalog::Publication>| -> Vec<String> {
+        page.into_iter()
+            .map(|p| p.config.id)
+            .filter(|id| id.starts_with("svc_"))
+            .collect()
+    };
+    let open = visible(service.visible(&anonymous, None, 0).await.unwrap().0);
+    assert_eq!(open, ["svc_roads"]);
+    let seen = visible(service.visible(&viewer, None, 0).await.unwrap().0);
+    assert_eq!(seen, ["svc_roads", "svc_second"]);
+    let not_found = Some(Error::DatasetNotFound);
+    assert_eq!(
+        service.detail("svc_second", &anonymous).await.err(),
+        not_found
+    );
+    let denied = Some(Error::PermissionDenied);
+    assert_eq!(service.detail("svc_second", &viewer).await.err(), denied);
+    let public = service.get("svc_roads").await.unwrap();
+    assert_eq!(
+        service
+            .detail("svc_roads", &anonymous)
+            .await
+            .unwrap()
+            .revision,
+        public.revision
+    );
+    let shown = summary(&public).to_string();
+    assert!(!shown.contains("source") && !shown.contains("roles") && !shown.contains("revision"));
     assert_eq!(
         service.delete("svc_roads", 3).await.err(),
         Some(Error::RevisionMismatch)
@@ -199,4 +232,50 @@ async fn publications_validate_before_persisting_and_patch_with_revision() {
         .await
         .unwrap();
     assert_eq!(rows, 1);
+    drop(tx);
+
+    let mut tx = db.begin_catalog().await.unwrap();
+    sqlx::query(
+        "INSERT INTO atlas_catalog.datasets(id,config,metadata) SELECT 'svc_b' || lpad(i::text,3,'0'), \
+         jsonb_set(jsonb_set(config,'{id}',to_jsonb('svc_b' || lpad(i::text,3,'0'))),'{access,public}',to_jsonb(i % 2 = 0)), \
+         CASE WHEN i = 300 THEN jsonb_set(metadata,'{srid}','0') ELSE metadata END \
+         FROM atlas_catalog.datasets, generate_series(1,600) i WHERE id='svc_second'",
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let walk = |principal: Principal, limit: u32| {
+        let service = &service;
+        async move {
+            let (mut ids, mut offset) = (Vec::new(), 0);
+            loop {
+                let (page, more) = service
+                    .visible(&principal, Some(limit), offset)
+                    .await
+                    .unwrap();
+                assert!(!more || page.len() == limit as usize);
+                offset += page.len() as u32;
+                ids.extend(visible(page));
+                if !more {
+                    return ids;
+                }
+            }
+        }
+    };
+    let even: Vec<_> = (1..=600)
+        .filter(|i| i % 2 == 0 && *i != 300)
+        .map(|i| format!("svc_b{i:03}"))
+        .collect();
+    assert_eq!(walk(anonymous.clone(), 7).await, even);
+    let mut all: Vec<_> = (1..=600)
+        .filter(|i| *i != 300)
+        .map(|i| format!("svc_b{i:03}"))
+        .collect();
+    all.push("svc_second".into());
+    assert_eq!(walk(viewer.clone(), 250).await, all);
+    let (last, more) = service.visible(&anonymous, Some(1), 298).await.unwrap();
+    assert_eq!((visible(last), more), (vec!["svc_b600".to_string()], false));
+    let (past, more) = service.visible(&anonymous, Some(5), 299).await.unwrap();
+    assert!(past.is_empty() && !more);
 }

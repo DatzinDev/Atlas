@@ -125,6 +125,11 @@ pub fn query_error(failure: sqlx::Error) -> Error {
         {
             Error::InvalidFilter
         }
+        sqlx::Error::Database(ref database)
+            if matches!(database.code().as_deref(), Some("42703" | "42P01")) =>
+        {
+            Error::SchemaChanged
+        }
         other => error(other),
     }
 }

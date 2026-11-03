@@ -127,7 +127,7 @@ impl Dataset {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Query {
     pub filter: Option<Box<RawValue>>,

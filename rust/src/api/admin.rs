@@ -1,4 +1,4 @@
-use super::respond;
+use super::{identifier, no_query, paging, respond};
 use crate::{
     auth::policy::admin,
     domain::{Error, Principal},
@@ -7,7 +7,7 @@ use crate::{
 use axum::{
     Extension, Router,
     body::Bytes,
-    extract::{Path, RawQuery, State},
+    extract::{DefaultBodyLimit, Path, RawQuery, State, rejection::BytesRejection},
     http::{HeaderMap, StatusCode, header},
     response::Response,
     routing::get,
@@ -17,7 +17,6 @@ use serde_json::json;
 #[derive(Clone)]
 struct Admin {
     service: Publications,
-    body_limit: usize,
 }
 
 pub fn router(service: Publications, body_limit: u32) -> Router {
@@ -27,10 +26,8 @@ pub fn router(service: Publications, body_limit: u32) -> Router {
             "/api/v1/admin/datasets/{id}",
             get(read).patch(update).delete(remove),
         )
-        .with_state(Admin {
-            service,
-            body_limit: body_limit as usize,
-        })
+        .layer(DefaultBodyLimit::max(body_limit as usize))
+        .with_state(Admin { service })
 }
 
 async fn list(
@@ -49,12 +46,12 @@ async fn list(
 async fn create(
     State(state): State<Admin>,
     Extension(principal): Extension<Principal>,
-    body: Bytes,
+    RawQuery(query): RawQuery,
+    body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, Error> {
     admin(&principal)?;
-    if body.len() > state.body_limit {
-        return Err(Error::QueryTooLarge);
-    }
+    no_query(query.as_deref())?;
+    let body = body.map_err(rejected)?;
     let created = state.service.create(&body).await?;
     Ok(respond(
         StatusCode::CREATED,
@@ -67,8 +64,10 @@ async fn read(
     State(state): State<Admin>,
     Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
+    RawQuery(query): RawQuery,
 ) -> Result<Response, Error> {
     admin(&principal)?;
+    no_query(query.as_deref())?;
     let found = state.service.get(identifier(&id)?).await?;
     Ok(respond(
         StatusCode::OK,
@@ -81,13 +80,13 @@ async fn update(
     State(state): State<Admin>,
     Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
+    RawQuery(query): RawQuery,
     headers: HeaderMap,
-    body: Bytes,
+    body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, Error> {
     admin(&principal)?;
-    if body.len() > state.body_limit {
-        return Err(Error::QueryTooLarge);
-    }
+    no_query(query.as_deref())?;
+    let body = body.map_err(rejected)?;
     let revision = if_match(&headers)?;
     let updated = state
         .service
@@ -104,21 +103,21 @@ async fn remove(
     State(state): State<Admin>,
     Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
+    RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, Error> {
     admin(&principal)?;
+    no_query(query.as_deref())?;
     let revision = if_match(&headers)?;
     state.service.delete(identifier(&id)?, revision).await?;
     Ok(respond(StatusCode::NO_CONTENT, None, None))
 }
 
-fn identifier(id: &str) -> Result<&str, Error> {
-    let valid = !id.is_empty()
-        && id.len() <= 128
-        && id
-            .bytes()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-');
-    valid.then_some(id).ok_or(Error::InvalidRequest)
+fn rejected(rejection: BytesRejection) -> Error {
+    match rejection.status() {
+        StatusCode::PAYLOAD_TOO_LARGE => Error::QueryTooLarge,
+        _ => Error::InvalidRequest,
+    }
 }
 
 fn if_match(headers: &HeaderMap) -> Result<i64, Error> {
@@ -134,25 +133,4 @@ fn if_match(headers: &HeaderMap) -> Result<i64, Error> {
         .and_then(|v| v.parse::<i64>().ok())
         .filter(|r| *r > 0)
         .ok_or(Error::InvalidRequest)
-}
-
-fn paging(query: Option<&str>) -> Result<(Option<u32>, u32), Error> {
-    let (mut limit, mut offset) = (None, None);
-    for pair in query
-        .unwrap_or_default()
-        .split('&')
-        .filter(|p| !p.is_empty())
-    {
-        let (key, value) = pair.split_once('=').ok_or(Error::InvalidRequest)?;
-        let slot = match key {
-            "limit" if limit.is_none() => &mut limit,
-            "offset" if offset.is_none() => &mut offset,
-            _ => return Err(Error::InvalidRequest),
-        };
-        if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
-            return Err(Error::InvalidRequest);
-        }
-        *slot = Some(value.parse::<u32>().map_err(|_| Error::InvalidRequest)?);
-    }
-    Ok((limit, offset.unwrap_or(0)))
 }

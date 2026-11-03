@@ -8,6 +8,8 @@ use crate::{
 };
 use sqlx::{Row, postgres::PgRow, types::Json};
 
+const SERVABLE_BATCH: i64 = 256;
+
 pub struct Publication {
     pub config: Dataset,
     pub metadata: Metadata,
@@ -110,6 +112,51 @@ impl Catalog {
     }
 
     pub async fn list(&self, limit: u32, offset: u32) -> Result<Vec<Publication>, Error> {
+        let rows = self.rows(limit, offset).await?;
+        rows.into_iter().map(|row| self.decode(row)).collect()
+    }
+
+    pub async fn servable(
+        &self,
+        keep: impl Fn(&Publication) -> bool,
+        skip: usize,
+        take: usize,
+    ) -> Result<Vec<Publication>, Error> {
+        let mut found = Vec::new();
+        let mut seen = 0;
+        let mut after = String::new();
+        loop {
+            let mut tx = self.database.begin_read().await?;
+            let rows = sqlx::query("SELECT id, config, metadata, revision FROM atlas_catalog.datasets WHERE id > $1 ORDER BY id LIMIT $2")
+                .bind(&after)
+                .bind(SERVABLE_BATCH)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(error)?;
+            tx.rollback().await.map_err(error)?;
+            let last = rows.len() < SERVABLE_BATCH as usize;
+            if let Some(row) = rows.last() {
+                after = row.try_get("id").map_err(error)?;
+            }
+            for publication in rows.into_iter().filter_map(|row| self.decode(row).ok()) {
+                if !keep(&publication) {
+                    continue;
+                }
+                seen += 1;
+                if seen > skip {
+                    found.push(publication);
+                    if found.len() == take {
+                        return Ok(found);
+                    }
+                }
+            }
+            if last {
+                return Ok(found);
+            }
+        }
+    }
+
+    async fn rows(&self, limit: u32, offset: u32) -> Result<Vec<PgRow>, Error> {
         let mut tx = self.database.begin_read().await?;
         let rows = sqlx::query("SELECT id, config, metadata, revision FROM atlas_catalog.datasets ORDER BY id LIMIT $1 OFFSET $2")
             .bind(i64::from(limit))
@@ -118,7 +165,7 @@ impl Catalog {
             .await
             .map_err(error)?;
         tx.rollback().await.map_err(error)?;
-        rows.into_iter().map(|row| self.decode(row)).collect()
+        Ok(rows)
     }
 
     pub async fn create(&self, dataset: &Dataset) -> Result<Publication, Error> {
