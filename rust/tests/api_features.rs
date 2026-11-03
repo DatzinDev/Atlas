@@ -59,7 +59,7 @@ fn ids(body: &Value) -> Vec<i64> {
         .collect()
 }
 
-async fn server() -> SocketAddr {
+async fn server() -> (SocketAddr, Database) {
     let mut config = Config::parse(
         "",
         Some(std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required")),
@@ -75,22 +75,26 @@ async fn server() -> SocketAddr {
         "CREATE SCHEMA items_test",
         "CREATE TABLE items_test.places(id integer PRIMARY KEY, name text, rank int4, secret text, geom geometry(Point,4326))",
         "INSERT INTO items_test.places SELECT n, 'p' || n, n % 3, 'x', ST_SetSRID(ST_Point(n, n), 4326) FROM generate_series(1, 9) AS n",
+        "CREATE TABLE items_test.doomed AS TABLE items_test.places",
+        "ALTER TABLE items_test.doomed ADD PRIMARY KEY (id)",
         "DELETE FROM atlas_catalog.datasets WHERE config->'source'->>'schema' <> 'items_test' OR id LIKE 'items\\_%'",
     ] {
         sqlx::query(statement).execute(&mut *tx).await.unwrap();
     }
     tx.commit().await.unwrap();
-    let service = Publications::new(db, config).unwrap();
-    for (id, access) in [
-        ("items_public", r#"{"public":true}"#),
-        ("items_view", r#"{"view_roles":["viewer"]}"#),
+    let service = Publications::new(db.clone(), config).unwrap();
+    for (id, table, access) in [
+        ("items_public", "places", r#"{"public":true}"#),
+        ("items_doomed", "doomed", r#"{"public":true}"#),
+        ("items_view", "places", r#"{"view_roles":["viewer"]}"#),
         (
             "items_query",
+            "places",
             r#"{"view_roles":["viewer"],"query_roles":["viewer"]}"#,
         ),
     ] {
         let body = format!(
-            r#"{{"id":"{id}","title":"T","source":{{"schema":"items_test","table":"places"}},"properties":["name","rank"],"filter":{{"op":"gte","field":"rank","value":1}},"access":{access}}}"#
+            r#"{{"id":"{id}","title":"T","source":{{"schema":"items_test","table":"{table}"}},"properties":["name","rank"],"filter":{{"op":"gte","field":"rank","value":1}},"access":{access}}}"#
         );
         service.create(body.as_bytes()).await.unwrap();
     }
@@ -107,12 +111,12 @@ async fn server() -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    address
+    (address, db)
 }
 
 #[tokio::test]
 async fn items_over_real_http() {
-    let a = server().await;
+    let (a, db) = server().await;
     let viewer = bearer(&["viewer"]);
     let items = "/api/v1/datasets/items_public/items";
 
@@ -151,12 +155,18 @@ async fn items_over_real_http() {
     );
 
     let view = "/api/v1/datasets/items_view/items";
+    let missing = "/api/v1/datasets/items_none/items";
+    let bogus = "%7B%22op%22%3A%22bogus%22%7D";
+    let unknown = "%7B%22op%22%3A%22is_null%22%2C%22field%22%3A%22secret%22%7D";
     let granted = "/api/v1/datasets/items_query/items";
     for (method, target, headers, body, expected) in [
         ("GET", view, "", "", "404"),
         ("GET", view, viewer.as_str(), "", "403"),
         ("GET", granted, viewer.as_str(), "", "200"),
         ("GET", "/api/v1/datasets/items_none/items", "", "", "404"),
+        ("GET", &format!("{missing}?filter=%7B"), "", "", "400"),
+        ("GET", &format!("{missing}?filter={bogus}"), "", "", "400"),
+        ("GET", &format!("{missing}?filter={unknown}"), "", "", "404"),
     ] {
         let (status, _, body) = call(a, method, target, headers, body).await;
         assert_eq!(status, expected, "{method} {target}: {body}");
@@ -166,5 +176,22 @@ async fn items_over_real_http() {
                 "{body}"
             );
         }
+        if expected == "400" {
+            assert_eq!(body["code"], "invalid_filter", "{target}");
+        }
+    }
+
+    let doomed = "/api/v1/datasets/items_doomed/items";
+    assert_eq!(call(a, "GET", doomed, "", "").await.0, "200");
+    for statement in [
+        "ALTER TABLE items_test.doomed DROP COLUMN name",
+        "DROP TABLE items_test.doomed",
+    ] {
+        let mut tx = db.begin_catalog().await.unwrap();
+        sqlx::query(statement).execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        let (status, _, body) = call(a, "GET", doomed, "", "").await;
+        assert_eq!(status, "409", "{statement}: {body}");
+        assert_eq!(body["code"], "schema_changed");
     }
 }

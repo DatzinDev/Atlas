@@ -38,6 +38,9 @@ async fn select(
 ) -> Result<Response, Error> {
     let limits = service.limits();
     selection.validate(limits.max_limit, limits.max_offset)?;
+    if let Some(filter) = &selection.filter {
+        crate::query::predicate::parse(filter.get(), limits)?;
+    }
     let publication = service.detail(id, principal).await?;
     let Page { features, more } = service.features(&publication, selection).await?;
     let list: Vec<&str> = features.iter().map(|f| f.get()).collect();
