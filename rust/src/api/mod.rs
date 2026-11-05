@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod datasets;
+pub mod export;
 pub mod features;
 pub mod tiles;
 

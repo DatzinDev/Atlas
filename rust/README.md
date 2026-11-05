@@ -285,3 +285,12 @@ GeoJSON, lee lotes de 128 y no aplica `default_limit`. Cada chunk consume el pre
 de bytes y el deadline total; un error tardío impide completar la colección. Finalizar o
 abandonar el cursor revierte la transacción antes de devolver su conexión al pool.
 La ruta y los permisos de descarga se incorporan en #303.
+
+## Descarga GeoJSON (#227)
+
+`GET /api/v1/datasets/{id}/export` exige view+download (no query), acepta únicamente
+`format=geojson`, `filter`, `bbox` y `properties`, únicos. Comparte el filtro fijo AND
+usuario AND bbox con items. Devuelve `application/geo+json`, `no-store` y attachment
+con nombre derivado del id validado. Conteo excedido: 413 antes de headers. Presupuestos
+tardíos: corta el cuerpo y registra `export_failed` con código fijo, sin datos del usuario.
+El cliente debe tratar cualquier colección incompleta como una descarga fallida.
