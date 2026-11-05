@@ -1,13 +1,14 @@
 # Atlas Rust — especificación y ejecución
 
-Estado: dirección aprobada; **motor Rust todavía no implementado**. Seguimiento: [#203](https://github.com/DatzinDev/Atlas/issues/203).
+Estado: **MVP vectorial Rust experimental implementado**, pendiente de revisión e integración de esta ronda. Seguimiento: [#203](https://github.com/DatzinDev/Atlas/issues/203).
 La versión Python conserva sus contratos y su publicación actuales durante la transición.
 
 | Documento | Autoridad |
 |---|---|
+| [Aceptación](acceptance.md) | Matriz R01–R17, pruebas y límites de la evidencia |
 | [Especificación](spec.md) | Requisitos y aceptación del MVP |
 | [Arquitectura](architecture.md) | Responsabilidades, reutilización y fronteras |
-| [Contrato REST](api.md) y [OpenAPI](openapi.yaml) | Interfaz HTTP futura; no anuncia disponibilidad |
+| [Contrato REST](api.md) y [OpenAPI](openapi.yaml) | Contrato HTTP del MVP experimental |
 | [Métricas Python](benchmarks.md) | Archivo consolidado del cierre Python y límites de comparación |
 | [Benchmark reutilizable](../../benchmarks/COMPARE.md) | Medir por HTTP al disponer del servidor Rust |
 | [Plan](plan.md) y [tareas](tasks.md) | Etapas, dependencias y enlaces a GitHub |

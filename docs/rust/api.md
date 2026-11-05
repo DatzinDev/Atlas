@@ -1,6 +1,6 @@
 # Contrato REST del MVP
 
-Especificación futura [OpenAPI 3.0.3](openapi.yaml); implementación pendiente. Requisitos [R01–R17](spec.md).
+Contrato del MVP experimental [OpenAPI 3.0.3](openapi.yaml); evidencia en [aceptación](acceptance.md). Requisitos [R01–R17](spec.md).
 Prefijo fijo de versión `/api/v1`; los clientes no usan rutas Python como aliases.
 
 ## Transporte y coherencia

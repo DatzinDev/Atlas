@@ -40,3 +40,13 @@ ATLAS_TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas_rust_test 
 La BD debe ser descartable: las pruebas crean/eliminan esquemas y publicaciones de prueba.
 La suite no utiliza datos de producción ni modifica fuentes Python. OIDC/JWKS, formatos
 adicionales, comparación de rendimiento y piloto de consumidor quedan en sus issues.
+
+## Evidencia de esta ronda
+
+- Toolchain 1.99.1: `fmt --check`, Clippy con warnings como errores y suite Rust completa
+  contra PostGIS 16/3.4 descartable; aceptación del binario y cancelación incluidas.
+- Python: Ruff, formato, mypy y 768 tests pasan en entorno aislado (Python 3.13).
+  El job de CI conserva su ejecución en Python 3.11.
+- Imagen construida desde cero con Cargo offline en el paso release; `migrate` exitoso,
+  health/readiness 200, uid 65532, sin Cargo/fuentes y SIGTERM con `shutdown_complete`.
+- Verificación local únicamente: sin despliegue, publicación de imagen ni piloto de consumidor.
