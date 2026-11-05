@@ -113,6 +113,27 @@ impl Publications {
         features::page(&mut tx, config, meta, &selection, query, limits).await
     }
 
+    pub async fn export(
+        &self,
+        id: &str,
+        principal: &Principal,
+        query: &Query,
+    ) -> Result<crate::exports::geojson::Export, Error> {
+        query.validate(self.config.limits.max_limit, self.config.limits.max_offset)?;
+        if let Some(filter) = &query.filter {
+            crate::query::predicate::parse(filter.get(), &self.config.limits)?;
+        }
+        let publication = self.catalog.get(id).await?;
+        policy::download(&publication.config, principal)?;
+        crate::exports::geojson::Export::open(
+            &self.database,
+            &publication,
+            query,
+            &self.config.limits,
+        )
+        .await
+    }
+
     pub fn tilejson(&self, publication: &Publication) -> Value {
         let (config, meta) = (&publication.config, &publication.metadata);
         let fields: Map<String, Value> = meta

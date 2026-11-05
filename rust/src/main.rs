@@ -93,6 +93,7 @@ async fn serve(config: Config) -> Result<(), &'static str> {
             .merge(atlas::api::datasets::router(service.clone()))
             .merge(atlas::api::tiles::router(service.clone()))
             .merge(atlas::api::features::router(service.clone()))
+            .merge(atlas::api::export::router(service.clone()))
             .merge(atlas::api::admin::router(
                 service,
                 config.limits.admin_body_bytes,

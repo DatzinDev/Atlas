@@ -77,7 +77,7 @@ async fn select(
     Ok((headers, body).into_response())
 }
 
-fn parse(raw: Option<&str>) -> Result<Query, Error> {
+pub(crate) fn parse(raw: Option<&str>) -> Result<Query, Error> {
     let mut selection = Query::default();
     let mut seen = Vec::new();
     for pair in raw.unwrap_or_default().split('&').filter(|p| !p.is_empty()) {
