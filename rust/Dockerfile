@@ -19,3 +19,20 @@ RUN rustup show active-toolchain \
     && chmod -R a+rwX "$CARGO_HOME/registry" "$CARGO_HOME/git"
 
 CMD ["cargo", "test", "--locked"]
+
+FROM dev AS build
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY src ./src
+COPY migrations ./migrations
+RUN cargo build --release --locked --offline
+
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS runtime
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /target/release/atlas /usr/local/bin/atlas
+USER 65532:65532
+ENV ATLAS_LISTEN=0.0.0.0:8080
+EXPOSE 8080
+ENTRYPOINT ["atlas"]
+CMD ["serve"]

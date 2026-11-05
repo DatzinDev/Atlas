@@ -303,3 +303,29 @@ El deadline de respuesta no cancela el worker SQL: conserva el cupo hasta rollba
 el timeout PostgreSQL acota el drenaje. Export transfiere el cupo al cursor y un productor
 con canal acotado aplica `stream_seconds` incluso si el cliente deja de leer. El pool se
 cierra después del drenaje del servidor; no se interpreta el rechazo como throughput.
+
+## Ejecutar el MVP experimental (#229)
+
+La imagen `runtime` contiene solo el binario release y bibliotecas de sistema, sin Cargo,
+fuentes ni claves. Corre como uid/gid 65532. El target `dev` y el perfil Compose `rust`
+siguen disponibles; no se publica una imagen ni se despliega automáticamente.
+
+```bash
+docker build --target runtime -t atlas-rust:experimental rust
+docker run --rm --network host --env-file /ruta/atlas-ddl.env \
+  -v /ruta/atlas.toml:/etc/atlas.toml:ro atlas-rust:experimental migrate --config /etc/atlas.toml
+docker run --rm --name atlas-rust --network host --env-file /ruta/atlas-service.env \
+  -v /ruta/atlas.toml:/etc/atlas.toml:ro \
+  -v /ruta/public.pem:/etc/atlas/public.pem:ro \
+  atlas-rust:experimental serve --config /etc/atlas.toml --listen 127.0.0.1:8081
+curl -fsS http://127.0.0.1:8081/api/v1/ready
+docker stop --timeout 360 atlas-rust
+```
+
+Los env-files contienen `ATLAS_DATABASE_URL`: rol DDL solo al migrar y rol de servicio
+limitado al servir (permisos descritos arriba). `atlas.toml` define `allowed_schemas` y
+`[auth]` con `public_key_file`, `issuer` y `audience`; la clave pública debe ser legible por
+65532. Nunca montar una clave privada. SIGTERM deja de aceptar y drena antes de cerrar
+el pool; el plazo del supervisor debe cubrir consultas y streams configurados.
+Ver [matriz de aceptación](../docs/rust/acceptance.md). El MVP no demuestra aptitud de
+producción ni reemplazo completo de GeoServer; no migra consumidores ni retira Python.
