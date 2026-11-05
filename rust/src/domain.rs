@@ -127,7 +127,7 @@ impl Dataset {
     }
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Query {
     pub filter: Option<Box<RawValue>>,
@@ -139,14 +139,14 @@ pub struct Query {
     pub offset: u32,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SortField {
     pub field: String,
     pub direction: Direction,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Direction {
     Asc,
