@@ -276,3 +276,12 @@ combina con el del usuario.
 `POST /api/v1/datasets/{id}/query` recibe el mismo `Query` como JSON cerrado y produce la misma
 selección: claves desconocidas o duplicadas 400, cuerpo mayor que `query_body_bytes` 413. En GET,
 parámetros desconocidos o repetidos son 400.
+
+## Cursor de exportación (#302)
+
+`exports::geojson::Export` cuenta hasta `export_features + 1` y declara un cursor en
+la misma transacción READ ONLY REPEATABLE READ. Reutiliza selección y codificación
+GeoJSON, lee lotes de 128 y no aplica `default_limit`. Cada chunk consume el presupuesto
+de bytes y el deadline total; un error tardío impide completar la colección. Finalizar o
+abandonar el cursor revierte la transacción antes de devolver su conexión al pool.
+La ruta y los permisos de descarga se incorporan en #303.
