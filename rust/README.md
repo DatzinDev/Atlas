@@ -294,3 +294,12 @@ usuario AND bbox con items. Devuelve `application/geo+json`, `no-store` y attach
 con nombre derivado del id validado. Conteo excedido: 413 antes de headers. Presupuestos
 tardíos: corta el cuerpo y registra `export_failed` con código fijo, sin datos del usuario.
 El cliente debe tratar cualquier colección incompleta como una descarga fallida.
+
+## Admisión y cancelación (#228)
+
+Un semáforo compartido limita `data_operations` (8 por defecto) para features, MVT y
+exportaciones; adquisición inmediata o 503. Catálogo, administración y health no usan cupos.
+El deadline de respuesta no cancela el worker SQL: conserva el cupo hasta rollback real;
+el timeout PostgreSQL acota el drenaje. Export transfiere el cupo al cursor y un productor
+con canal acotado aplica `stream_seconds` incluso si el cliente deja de leer. El pool se
+cierra después del drenaje del servidor; no se interpreta el rechazo como throughput.

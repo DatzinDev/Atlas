@@ -41,18 +41,36 @@ async fn export(
         }
     }
     let query = parse(Some(&selection.join("&")))?;
-    let export = service.export(id, &principal, &query).await?;
-    let stream = futures_util::stream::try_unfold(export, |mut export| async move {
-        match export.next().await {
-            Ok(Some(chunk)) => Ok(Some((chunk, export))),
-            Ok(None) => Ok(None),
-            Err(error) => {
+    let mut export = service.export(id, &principal, &query).await?;
+    let deadline = export.deadline();
+    let (sender, receiver) = tokio::sync::mpsc::channel(1);
+    tokio::spawn(async move {
+        loop {
+            let chunk = export.next().await;
+            let finished = !matches!(chunk, Ok(Some(_)));
+            if let Err(error) = &chunk {
                 eprintln!(
                     "{}",
                     serde_json::json!({"event":"export_failed", "code":error})
                 );
-                Err(std::io::Error::other("export interrupted"))
             }
+            match tokio::time::timeout_at(deadline, sender.send(chunk)).await {
+                Ok(Ok(())) if !finished => {}
+                Err(_) => {
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({"event":"export_failed", "code":"query_timeout"})
+                    );
+                    break;
+                }
+                _ => break,
+            }
+        }
+    });
+    let stream = futures_util::stream::try_unfold(receiver, |mut receiver| async move {
+        match receiver.recv().await.unwrap_or(Err(Error::QueryTimeout))? {
+            Some(chunk) => Ok::<_, Error>(Some((chunk, receiver))),
+            None => Ok(None),
         }
     });
     Ok((
