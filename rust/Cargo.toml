@@ -6,6 +6,7 @@ publish = false
 license = "MIT"
 
 [dependencies]
+futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 jsonwebtoken = { version = "11.1", default-features = false, features = ["use_pem", "aws_lc_rs"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring", "json"] }
 serde = { version = "1", features = ["derive"] }

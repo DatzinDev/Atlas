@@ -19,6 +19,35 @@ pub async fn page(
     query: &Query,
     limits: &Limits,
 ) -> Result<Page, Error> {
+    let mut builder = select(dataset, meta, selection, query, limits)?;
+    let limit = query.limit.unwrap_or(limits.default_limit);
+    builder
+        .push(" LIMIT ")
+        .push_bind(i64::from(limit) + 1)
+        .push(" OFFSET ")
+        .push_bind(i64::from(query.offset));
+    let rows: Vec<String> = builder
+        .build_query_scalar()
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(query_error)?;
+    let more = rows.len() > limit as usize;
+    let features = rows
+        .into_iter()
+        .take(limit as usize)
+        .map(|row| RawValue::from_string(row).map_err(|_| Error::InternalError))
+        .collect::<Result<_, _>>()?;
+    Ok(Page { features, more })
+}
+
+// Keep feature encoding, field validation and ordering identical for pages and cursors.
+pub(crate) fn select(
+    dataset: &Dataset,
+    meta: &Metadata,
+    selection: &Selection,
+    query: &Query,
+    limits: &Limits,
+) -> Result<QueryBuilder<Postgres>, Error> {
     query.validate(limits.max_limit, limits.max_offset)?;
     let published: Vec<&str> = meta.attributes.iter().map(|a| a.name.as_str()).collect();
     let properties = match &query.properties {
@@ -28,7 +57,6 @@ pub async fn page(
     if properties.iter().any(|name| !published.contains(name)) {
         return Err(Error::InvalidRequest);
     }
-    let limit = query.limit.unwrap_or(limits.default_limit);
     let geometry = quote_identifier(&meta.geometry_column);
     let mut builder =
         QueryBuilder::<Postgres>::new("SELECT json_build_object('type', 'Feature', 'id', ");
@@ -75,21 +103,5 @@ pub async fn page(
         .map(|(name, direction)| format!("{} {direction}", quote_identifier(name)))
         .collect();
     builder.push(" ORDER BY ").push(order.join(", "));
-    builder
-        .push(" LIMIT ")
-        .push_bind(i64::from(limit) + 1)
-        .push(" OFFSET ")
-        .push_bind(i64::from(query.offset));
-    let rows: Vec<String> = builder
-        .build_query_scalar()
-        .fetch_all(&mut **tx)
-        .await
-        .map_err(query_error)?;
-    let more = rows.len() > limit as usize;
-    let features = rows
-        .into_iter()
-        .take(limit as usize)
-        .map(|row| RawValue::from_string(row).map_err(|_| Error::InternalError))
-        .collect::<Result<_, _>>()?;
-    Ok(Page { features, more })
+    Ok(builder)
 }
