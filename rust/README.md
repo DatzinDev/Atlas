@@ -123,11 +123,33 @@ se citan como identificadores al consultar la relación. Pruebas contra PostGIS 
 
 `atlas migrate --config ddl.toml` crea `atlas_catalog.datasets` en una transacción
 con bloqueo de migración. Repetirla es seguro; `serve` nunca ejecuta DDL.
-Usar un rol DDL separado: propietario del esquema/tabla. La cuenta de servicio
-recibe únicamente USAGE en atlas_catalog y SELECT/INSERT/UPDATE/DELETE en datasets,
-además de USAGE/SELECT en los esquemas/relaciones fuente permitidos. Nunca concederle
-CREATE ni propiedad de esos objetos. Las pruebas demuestran el rechazo de DDL con
-un rol limitado; no modifican roles ni fuentes de ningún despliegue existente.
+Usar un rol DDL separado: propietario del esquema/tabla, con CREATE sobre la base.
+`CREATE SCHEMA IF NOT EXISTS` exige ese permiso incluso si `atlas_catalog` ya existe.
+La cuenta de servicio recibe únicamente USAGE en atlas_catalog y
+SELECT/INSERT/UPDATE/DELETE en datasets, además de USAGE/SELECT en los
+esquemas/relaciones fuente permitidos. Nunca concederle CREATE ni propiedad de
+catálogo, base o fuentes.
+
+Ambos roles necesitan USAGE sobre el esquema donde está instalada la extensión
+PostGIS, también cuando `public` fue revocado a PUBLIC. Antes de migrar o servir,
+el propietario de la base configura los permisos; nombres de ejemplo:
+
+```sql
+GRANT CREATE ON DATABASE atlas TO atlas_ddl;
+-- Si PostGIS está instalado en public:
+GRANT USAGE ON SCHEMA public TO atlas_ddl, atlas_service;
+-- Confirmar la ubicación real de la extensión:
+SELECT extnamespace::regnamespace FROM pg_extension WHERE extname = 'postgis';
+```
+
+Si PostGIS está en otro esquema, sustituir `public` en el GRANT e incluir ese esquema
+en el `search_path` de ambos roles: Atlas llama funciones como `postgis_version()` y
+`ST_Transform` sin prefijo de esquema. USAGE permite resolver la extensión, no concede
+SELECT sobre fuentes ni modifica `allowed_schemas`. PostGIS debe estar instalado de
+antemano por el administrador. Sin estos permisos, `migrate` puede fallar con
+`migration failed` y `serve` con `database_unavailable`; los errores públicos omiten
+los detalles internos deliberadamente. Las pruebas de permisos usan PostGIS descartable;
+no modifican roles ni fuentes de ningún despliegue existente.
 
 `Catalog` valida configuración y metadatos al leer, vuelve a inspeccionar al crear
 o reemplazar y no usa caché. Update/delete comparan revisión en el mismo statement;
