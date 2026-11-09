@@ -183,17 +183,12 @@ impl Publications {
         if let Some(filter) = &query.filter {
             crate::query::predicate::parse(filter.get(), &self.config.limits)?;
         }
+        let publication = self.catalog.get(id).await?;
+        policy::download(&publication.config, principal)?;
         let permit = self.admission.acquire()?;
-        let (service, id, principal, query) = (
-            self.clone(),
-            id.to_owned(),
-            principal.clone(),
-            query.clone(),
-        );
+        let (service, query) = (self.clone(), query.clone());
         self.admission
             .wait(async move {
-                let publication = service.catalog.get(&id).await?;
-                policy::download(&publication.config, &principal)?;
                 crate::exports::geojson::Export::admitted(
                     &service.database,
                     &publication,

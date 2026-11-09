@@ -60,6 +60,7 @@ async fn downloads_over_http() {
     .unwrap();
     c.allowed_schemas = vec!["http_export".into()];
     c.limits.default_limit = 1;
+    c.limits.data_operations = 1;
     c.limits.pool_max = 2;
     c.limits.export_features = 10;
     migrate(&c).await.unwrap();
@@ -95,7 +96,7 @@ async fn downloads_over_http() {
         "test",
     )
     .unwrap();
-    let app = router(service).layer(axum::middleware::from_fn_with_state(
+    let app = router(service.clone()).layer(axum::middleware::from_fn_with_state(
         Arc::new(Some(verifier)),
         authenticate,
     ));
@@ -113,6 +114,40 @@ async fn downloads_over_http() {
     )
     .unwrap();
     let auth = format!("Authorization: Bearer {token}\r\n");
+    let mut held = service
+        .export(
+            "export_public",
+            &atlas::domain::Principal::default(),
+            &atlas::domain::Query::default(),
+        )
+        .await
+        .unwrap();
+    for (path, status) in [
+        ("export_public/export", "503"),
+        ("export_missing/export", "404"),
+        ("export_private/export", "404"),
+        ("export_denied/export", "403"),
+        (
+            "export_missing/export?filter=%7B%22op%22%3A%22bogus%22%7D",
+            "400",
+        ),
+        (
+            "export_private/export?filter=%7B%22op%22%3A%22bogus%22%7D",
+            "400",
+        ),
+    ] {
+        let (head, body) = request(a, path, "", false).await;
+        assert!(
+            head.starts_with(&format!("http/1.1 {status}")),
+            "{path}: {head} {body}"
+        );
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(json["request_id"].is_string());
+        if status == "400" {
+            assert_eq!(json["code"], "invalid_filter");
+        }
+    }
+    while held.next().await.unwrap().is_some() {}
     for (path, headers, status) in [
         ("export_public/export", "", "200"),
         ("export_private/export", "", "404"),

@@ -334,3 +334,8 @@ El presupuesto `export_bytes` incluye toda la colección GeoJSON, también los d
 finales `]}`. El cursor los reserva antes de emitir: un presupuesto igual al tamaño total
 permite completar la descarga; si falta un byte, falla antes de emitir el último chunk
 que ya no deja espacio para el cierre, sin superar el límite ni simular éxito parcial.
+
+La forma y los presupuestos del filtro se validan antes de resolver el dataset, como
+en items/query: un filtro malformado devuelve 400 incluso si el id no existe. Para
+consultas válidas, export resuelve y autoriza view+download antes de adquirir un cupo;
+una denegación conserva su 403/404 aunque todos los cupos estén ocupados.
