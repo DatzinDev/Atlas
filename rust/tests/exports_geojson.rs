@@ -53,6 +53,43 @@ async fn cursor_budgets_snapshot_and_cleanup() {
     assert_eq!(json["features"].as_array().unwrap().len(), 300);
     assert_eq!(json["features"][0]["id"], 1);
     assert_eq!(json["features"][0]["geometry"]["coordinates"][0], -103);
+    for query in [
+        Query::default(),
+        serde_json::from_str(r#"{"filter":{"op":"eq","field":"amount","value":0}}"#).unwrap(),
+    ] {
+        let mut baseline = Export::open(&db, &publication, &query, &config.limits)
+            .await
+            .unwrap();
+        let mut expected = String::new();
+        while let Some(chunk) = baseline.next().await.unwrap() {
+            expected.push_str(&chunk);
+        }
+        for budget in [expected.len(), expected.len() - 1] {
+            let mut limits = config.limits.clone();
+            limits.export_bytes = budget as u32;
+            let mut export = Export::open(&db, &publication, &query, &limits)
+                .await
+                .unwrap();
+            let mut emitted = String::new();
+            loop {
+                match export.next().await {
+                    Ok(Some(chunk)) => emitted.push_str(&chunk),
+                    Ok(None) => {
+                        assert_eq!(emitted, expected);
+                        break;
+                    }
+                    Err(error) => {
+                        assert_eq!(error, Error::QueryTooLarge);
+                        assert_eq!(budget + 1, expected.len());
+                        assert!(!emitted.ends_with("]}"));
+                        assert!(emitted.len() + 2 <= budget);
+                        break;
+                    }
+                }
+            }
+            assert!(emitted.len() <= budget);
+        }
+    }
     config.limits.export_features = 10;
     assert_eq!(
         Export::open(&db, &publication, &Query::default(), &config.limits)

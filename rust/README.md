@@ -329,3 +329,8 @@ limitado al servir (permisos descritos arriba). `atlas.toml` define `allowed_sch
 el pool; el plazo del supervisor debe cubrir consultas y streams configurados.
 Ver [matriz de aceptación](../docs/rust/acceptance.md). El MVP no demuestra aptitud de
 producción ni reemplazo completo de GeoServer; no migra consumidores ni retira Python.
+
+El presupuesto `export_bytes` incluye toda la colección GeoJSON, también los dos bytes
+finales `]}`. El cursor los reserva antes de emitir: un presupuesto igual al tamaño total
+permite completar la descarga; si falta un byte, falla antes de emitir el último chunk
+que ya no deja espacio para el cierre, sin superar el límite ni simular éxito parcial.

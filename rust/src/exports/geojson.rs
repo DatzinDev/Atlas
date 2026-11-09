@@ -14,6 +14,8 @@ use tokio::{
     time::{Instant, timeout_at},
 };
 
+const END: &str = "]}";
+
 pub struct Export {
     tx: Option<Transaction<'static, Postgres>>,
     permit: Option<OwnedSemaphorePermit>,
@@ -45,12 +47,15 @@ impl Export {
         if query.limit.is_some() || query.offset != 0 || query.sort.is_some() {
             return Err(Error::InvalidRequest);
         }
+        let remaining = (limits.export_bytes as usize)
+            .checked_sub(END.len())
+            .ok_or(Error::QueryTooLarge)?;
         let mut export = Self {
             tx: Some(db.begin_read().await?),
             permit,
             pending: VecDeque::new(),
             deadline: Instant::now() + Duration::from_secs(limits.stream_seconds.into()),
-            remaining: limits.export_bytes as usize,
+            remaining,
             first: true,
             started: false,
             done: false,
@@ -156,7 +161,7 @@ impl Export {
                 })
                 .await
                 .map_err(|_| Error::InternalError)??;
-                "]}".to_owned()
+                return Ok(Some(END.to_owned()));
             } else {
                 return Ok(None);
             }
