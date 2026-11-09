@@ -25,6 +25,9 @@ de vista única/no nula verificada. Source solo referencia la BD configurada.
 ETag es la revision entre comillas en detalle administrativo/POST/PATCH. If-Match es obligatorio
 para PATCH/DELETE; ausente o malformado es 400, revisión distinta 412. DELETE devuelve 204.
 No usar ETag de datos: la revisión del catálogo no identifica cambios externos en PostGIS.
+POST con un id existente es siempre 409 publication_conflict, aunque la configuración sea
+idéntica; un reintento hace GET y compara. DELETE y luego POST con el mismo id crea una
+publicación nueva con revision 1: un ETag anterior no la identifica.
 
 ## Autorización y errores
 
@@ -32,6 +35,12 @@ Bearer JWT RS256 emitido externamente, sub/iss/aud/exp obligatorios y roles arra
 Sin token: Principal anónimo. Si hay token, siempre verificarlo antes de aplicar acceso público.
 Solo atlas-admin usa /admin; no equivale a autorización de query/download.
 Catálogo filtra por view; detalle/items/tiles exigen view+query; export view+download.
+view_roles, query_roles y download_roles admiten hasta 1.000 roles cada una; cada rol tiene
+de 1 a 128 caracteres sin espacios ni caracteres de control. Fuera de eso es 400 al publicar y,
+para una publicación ya guardada, schema_changed al leerla. Quitar un rol con PATCH corta el
+acceso desde la siguiente petición, porque no hay caché de catálogo; un stream ya autorizado
+sigue hasta terminar. Un token que aún traiga el rol no recupera el acceso: la ventana de
+exposición tras una revocación la fija la vigencia del token, que decide el emisor.
 Los ejemplos no incluyen tokens reales. Usar cabecera Authorization, nunca query string.
 
 Error uniforme `{code,message,request_id}`; sin SQL, valores filtrados, paths ni credenciales.
