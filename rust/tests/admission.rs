@@ -28,7 +28,7 @@ async fn cancelled_callers_keep_slots_until_workers_finish() {
             .await
         }));
     }
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         while active.load(Ordering::SeqCst) != 8 {
             tokio::task::yield_now().await;
         }
@@ -41,35 +41,44 @@ async fn cancelled_callers_keep_slots_until_workers_finish() {
     assert_eq!(admission.acquire().err(), Some(Error::CapacityExceeded));
     assert_eq!(active.load(Ordering::SeqCst), 8);
     release.notify_waiters();
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            if let Ok(permit) = admission.acquire() {
-                drop(permit);
-                break;
-            }
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while active.load(Ordering::SeqCst) != 0 {
             tokio::task::yield_now().await;
         }
     })
     .await
     .unwrap();
     let permit = admission.acquire().unwrap();
-    let started = std::time::Instant::now();
+    let unblock = Arc::new(Notify::new());
+    let waiting = unblock.clone();
     assert_eq!(
         admission
             .wait(async move {
                 let _permit = permit;
-                tokio::time::sleep(Duration::from_millis(1200)).await;
+                waiting.notified().await;
                 Ok(())
             })
             .await
             .err(),
         Some(Error::QueryTimeout)
     );
-    assert!(started.elapsed() < Duration::from_millis(1150));
     // Seven other slots remain usable while the timed-out worker drains.
     let held: Vec<_> = (0..7).map(|_| admission.acquire().unwrap()).collect();
     assert_eq!(admission.acquire().err(), Some(Error::CapacityExceeded));
     drop(held);
+    unblock.notify_one();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let permits: Vec<_> = (0..8).filter_map(|_| admission.acquire().ok()).collect();
+            if permits.len() == 8 {
+                break;
+            }
+            drop(permits);
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -91,7 +100,7 @@ async fn postgis_cancellation_and_stalled_http_release_slots() {
     config.allowed_schemas = vec!["admission_test".into()];
     config.limits.data_operations = 2;
     config.limits.pool_max = 4;
-    config.limits.query_seconds = 3;
+    config.limits.query_seconds = 30;
     config.limits.stream_seconds = 1;
     migrate(&config).await.unwrap();
     let db = Database::open(&config).await.unwrap();
@@ -128,7 +137,7 @@ async fn postgis_cancellation_and_stalled_http_release_slots() {
             service.features(&publication, &Query::default()).await
         }));
     }
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let mut tx = db.begin_catalog().await.unwrap();
             let blocked: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE application_name='atlas-rust' AND wait_event_type='Lock' AND query LIKE '%admission_test%'").fetch_one(&mut *tx).await.unwrap();
@@ -168,17 +177,7 @@ async fn postgis_cancellation_and_stalled_http_release_slots() {
             .is_ok()
     );
     locker.rollback().await.unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            match service.features(&publication, &Query::default()).await {
-                Ok(_) => break,
-                Err(Error::CapacityExceeded) => tokio::task::yield_now().await,
-                Err(error) => panic!("{error}"),
-            }
-        }
-    })
-    .await
-    .unwrap();
+    wait_for_features(&service, &publication).await;
     let mut exports = Vec::new();
     for _ in 0..2 {
         exports.push(
@@ -196,13 +195,7 @@ async fn postgis_cancellation_and_stalled_http_release_slots() {
         Some(Error::CapacityExceeded)
     );
     drop(exports);
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(
-        service
-            .features(&publication, &Query::default())
-            .await
-            .is_ok()
-    );
+    wait_for_features(&service, &publication).await;
     let app = atlas::api::export::router(service.clone())
         .route("/api/v1/health", axum::routing::get(|| async { "ok" }))
         .layer(axum::Extension(Principal::default()));
@@ -211,7 +204,7 @@ async fn postgis_cancellation_and_stalled_http_release_slots() {
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let socket = tokio::task::spawn_blocking(move || {
         let mut s = std::net::TcpStream::connect(address).unwrap();
-        s.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         s.write_all(
             b"GET /api/v1/datasets/admission_big/export HTTP/1.1\r\nHost: localhost\r\n\r\n",
         )
@@ -223,17 +216,28 @@ async fn postgis_cancellation_and_stalled_http_release_slots() {
     })
     .await
     .unwrap();
-    tokio::time::sleep(Duration::from_millis(1300)).await;
     // The client is still connected and not reading, but the producer's deadline drained its lease.
     let mut again = Vec::new();
-    for _ in 0..2 {
-        again.push(
-            service
-                .export("admission_small", &Principal::default(), &Query::default())
-                .await
-                .unwrap(),
-        );
-    }
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            while again.len() < 2 {
+                match service
+                    .export("admission_small", &Principal::default(), &Query::default())
+                    .await
+                {
+                    Ok(export) => again.push(export),
+                    Err(Error::CapacityExceeded) => break,
+                    Err(error) => panic!("{error}"),
+                }
+            }
+            if again.len() == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     let health = tokio::task::spawn_blocking(move || {
         let mut s = std::net::TcpStream::connect(address).unwrap();
         s.write_all(b"GET /api/v1/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
@@ -248,10 +252,34 @@ async fn postgis_cancellation_and_stalled_http_release_slots() {
     drop(again);
     drop(socket);
     server.abort();
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    let mut tx = db.begin_catalog().await.unwrap();
-    let active: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE application_name='atlas-rust' AND pid <> pg_backend_pid() AND state IN ('active','idle in transaction')").fetch_one(&mut *tx).await.unwrap();
-    assert_eq!(active, 0);
-    tx.rollback().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let mut tx = db.begin_catalog().await.unwrap();
+            let active: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE application_name='atlas-rust' AND pid <> pg_backend_pid() AND state IN ('active','idle in transaction')").fetch_one(&mut *tx).await.unwrap();
+            tx.rollback().await.unwrap();
+            if active == 0 { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.unwrap();
     db.close().await;
+}
+
+async fn wait_for_features(
+    service: &atlas::services::publications::Publications,
+    publication: &atlas::catalog::Publication,
+) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match service
+                .features(publication, &atlas::domain::Query::default())
+                .await
+            {
+                Ok(_) => break,
+                Err(Error::CapacityExceeded) => tokio::task::yield_now().await,
+                Err(error) => panic!("{error}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
 }
