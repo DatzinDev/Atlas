@@ -93,6 +93,28 @@ async fn persistent_publications_compare_and_swap_and_source_survives() {
     let mut tx = db.begin_catalog().await.unwrap();
     sqlx::query("UPDATE atlas_catalog.datasets SET metadata=jsonb_set(metadata,'{srid}','4326') WHERE id='persist_test'").execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
+    let mut tx = db.begin_catalog().await.unwrap();
+    sqlx::query("UPDATE atlas_catalog.datasets SET config=jsonb_set(config,'{access,view_roles}','[\" viewer\"]') WHERE id='persist_test'").execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert!(matches!(
+        catalog.get(&dataset.id).await,
+        Err(Error::SchemaChanged)
+    ));
+    assert!(matches!(
+        catalog.list(100, 0).await,
+        Err(Error::SchemaChanged)
+    ));
+    assert!(
+        catalog
+            .servable(|_| true, 0, 100)
+            .await
+            .unwrap()
+            .iter()
+            .all(|p| p.config.id != dataset.id)
+    );
+    let mut tx = db.begin_catalog().await.unwrap();
+    sqlx::query("UPDATE atlas_catalog.datasets SET config=jsonb_set(config,'{access,view_roles}','[]') WHERE id='persist_test'").execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
     catalog.delete(&dataset.id, 2).await.unwrap();
     assert!(matches!(
         catalog.get(&dataset.id).await,

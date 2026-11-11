@@ -36,11 +36,33 @@ Sin token: Principal anónimo. Si hay token, siempre verificarlo antes de aplica
 Solo atlas-admin usa /admin; no equivale a autorización de query/download.
 Catálogo filtra por view; detalle/items/tiles exigen view+query; export view+download.
 view_roles, query_roles y download_roles admiten hasta 1.000 roles cada una; cada rol tiene
-de 1 a 128 caracteres sin espacios ni caracteres de control. Fuera de eso es 400 al publicar y,
-para una publicación ya guardada, schema_changed al leerla. Quitar un rol con PATCH corta el
-acceso desde la siguiente petición, porque no hay caché de catálogo; un stream ya autorizado
-sigue hasta terminar. Un token que aún traiga el rol no recupera el acceso: la ventana de
-exposición tras una revocación la fija la vigencia del token, que decide el emisor.
+de 1 a 128 caracteres sin espacios (incluido U+FEFF) ni caracteres de control. Fuera de eso
+es 400 invalid_request al publicar o con PATCH. Si se quita el rol de la publicación, el token
+que aún lo traiga ya no autoriza desde la siguiente petición, porque no hay caché de catálogo;
+un stream ya autorizado sigue hasta terminar. Si el emisor deja de otorgar el rol, el token
+emitido lo conserva hasta exp; esa ventana la fija el emisor.
+
+Una publicación guardada con roles fuera de esa regla deja de leerse: el detalle y el listado
+administrativo completo responden 409 schema_changed, PATCH también (lee antes de escribir) y
+DELETE se queda sin ETag. En las rutas públicas no hay 409: la publicación desaparece del
+catálogo y su detalle es 404. Antes de desplegar, detectarlas con el rol DDL:
+
+```sql
+SELECT id, revision FROM atlas_catalog.datasets
+WHERE EXISTS (
+  SELECT FROM unnest(ARRAY['view_roles','query_roles','download_roles']) AS k
+  WHERE jsonb_array_length(coalesce(config->'access'->k, '[]')) > 1000
+     OR EXISTS (
+       SELECT FROM jsonb_array_elements_text(coalesce(config->'access'->k, '[]')) AS r
+       WHERE char_length(r) NOT BETWEEN 1 AND 128
+          OR r ~ '[\u0001-\u0020\u007f-\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]'));
+```
+
+y repararlas con SQL, corrigiendo la lista y subiendo la revisión
+(`UPDATE ... SET config = jsonb_set(config, '{access,view_roles}', '[...]'), revision = revision + 1,
+updated_at = now() WHERE id = ... AND revision = ...`), o recrearlas: DELETE con la revision leída
+de la tabla en If-Match y después POST.
+
 Los ejemplos no incluyen tokens reales. Usar cabecera Authorization, nunca query string.
 
 Error uniforme `{code,message,request_id}`; sin SQL, valores filtrados, paths ni credenciales.

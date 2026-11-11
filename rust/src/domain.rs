@@ -64,7 +64,9 @@ pub fn roles(values: &[String]) -> bool {
     values.len() <= MAX_ROLES
         && values.iter().all(|r| {
             (1..=MAX_ROLE_LENGTH).contains(&r.chars().count())
-                && !r.chars().any(|c| c.is_whitespace() || c.is_control())
+                && !r
+                    .chars()
+                    .any(|c| c.is_whitespace() || c.is_control() || c == '\u{FEFF}')
         })
 }
 
