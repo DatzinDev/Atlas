@@ -8,6 +8,8 @@ use std::{
 };
 use tokio::sync::Notify;
 
+const ACTIVE_SESSIONS: &str = "SELECT count(*) FROM pg_stat_activity WHERE application_name='atlas-rust' AND pid <> pg_backend_pid() AND state IN ('active','idle in transaction')";
+
 #[tokio::test]
 async fn cancelled_callers_keep_slots_until_workers_finish() {
     let admission = Admission::new(8, 1);
@@ -52,14 +54,17 @@ async fn cancelled_callers_keep_slots_until_workers_finish() {
     let unblock = Arc::new(Notify::new());
     let waiting = unblock.clone();
     assert_eq!(
-        admission
-            .wait(async move {
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            admission.wait(async move {
                 let _permit = permit;
                 waiting.notified().await;
                 Ok(())
-            })
-            .await
-            .err(),
+            }),
+        )
+        .await
+        .unwrap()
+        .err(),
         Some(Error::QueryTimeout)
     );
     // Seven other slots remain usable while the timed-out worker drains.
@@ -255,12 +260,19 @@ async fn postgis_cancellation_and_stalled_http_release_slots() {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let mut tx = db.begin_catalog().await.unwrap();
-            let active: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE application_name='atlas-rust' AND pid <> pg_backend_pid() AND state IN ('active','idle in transaction')").fetch_one(&mut *tx).await.unwrap();
+            let active: i64 = sqlx::query_scalar(ACTIVE_SESSIONS)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
             tx.rollback().await.unwrap();
-            if active == 0 { break; }
+            if active == 0 {
+                break;
+            }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
     db.close().await;
 }
 
