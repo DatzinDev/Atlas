@@ -144,9 +144,9 @@ class ProbeTests(unittest.TestCase):
         geojson = normalize(b'{"features": [{"id": 1}, {"id": 2}]}', "json")
         other = normalize(b'{"features": [{"id": 1}, {"id": 3}]}', "json")
         self.assertEqual(mismatch(geojson, other, "json"), "ids")
-        for broken in (tile(POINTS)[:-1], tile([(1, packed(9, 2, 4), (0,))])):
-            with self.assertRaises(ValueError):
-                normalize(broken, "mvt")
+        odd, utf8 = tile([(1, packed(9, 2, 4), (0,))]), field(3, field(1, b"\xff"))
+        for broken in (tile(POINTS)[:-1], odd, utf8, b"\x1a\x02\x08\x05"):  # varint name
+            self.assertRaises(ValueError, normalize, broken, "mvt")
 
     def test_rust_case_mapping(self):
         def problem(case, path, kind="json", body=None, engine="rust"):
@@ -201,14 +201,15 @@ class ProbeTests(unittest.TestCase):
                 self.assertEqual(rows[0]["resources_before"], {"server": usage, "db": usage})
                 self.assertEqual(rows[-1]["resources"]["db"], usage)
                 (root / "run").unlink()
-                with (
+                with (  # interrupted, and a cgroup vanishes before the final snapshot
+                    patch("benchmarks.compare.cgroup", side_effect=[usage, usage, OSError]),
                     patch("benchmarks.compare.request_sample", side_effect=KeyboardInterrupt),
                     self.assertRaises(KeyboardInterrupt),
                 ):
                     main(args)
                 last = json.loads((root / "run").read_text().splitlines()[-1])
                 self.assertFalse(last["finished"])
-                self.assertEqual(last["resources"]["server"], usage)
+                self.assertIsNone(last["resources"])
         finally:
             server.shutdown()
             thread.join()

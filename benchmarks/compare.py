@@ -102,7 +102,7 @@ def mvt(payload):
                 features.append((feature.get(1), feature.get(3, 0), geometry, tuple(props)))
             name, extent = parts[1][0].decode(), parts.get(5, [4096])[0]
             layers.append((name, extent, sorted(features, key=repr)))
-    except (IndexError, KeyError, TypeError, struct.error) as error:
+    except (AttributeError, IndexError, KeyError, TypeError, struct.error) as error:
         raise ValueError("malformed MVT") from error
     return sorted(layers, key=repr)
 
@@ -288,7 +288,10 @@ def main(argv=None):
             finished = True
         finally:
             summary = summarize(samples, perf_counter() - start if start is not None else 0)
-            summary["resources"] = {name: cgroup(path) for name, path in groups.items()}
+            try:
+                summary["resources"] = {name: cgroup(path) for name, path in groups.items()}
+            except OSError:  # a cgroup vanished (e.g. container stopped): still write the summary
+                summary["resources"] = None
             record(dict(type="summary", finished=finished, samples=len(samples), **summary))
     return 0 if finished and summary["counts"]["valid"] == args.samples else 1
 
