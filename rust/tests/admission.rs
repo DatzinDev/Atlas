@@ -182,16 +182,28 @@ async fn postgis_cancellation_and_stalled_http_release_slots() {
             .is_ok()
     );
     locker.rollback().await.unwrap();
-    wait_for_features(&service, &publication).await;
+    // Both aborted workers must drain before the two slots are free again.
     let mut exports = Vec::new();
-    for _ in 0..2 {
-        exports.push(
-            service
-                .export("admission_small", &Principal::default(), &Query::default())
-                .await
-                .unwrap(),
-        );
-    }
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            while exports.len() < 2 {
+                match service
+                    .export("admission_small", &Principal::default(), &Query::default())
+                    .await
+                {
+                    Ok(export) => exports.push(export),
+                    Err(Error::CapacityExceeded) => break,
+                    Err(error) => panic!("{error}"),
+                }
+            }
+            if exports.len() == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     assert_eq!(
         service
             .features(&publication, &Query::default())
