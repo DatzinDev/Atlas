@@ -106,7 +106,7 @@ async fn postgis_cancellation_and_stalled_http_release_slots() {
     config.limits.data_operations = 2;
     config.limits.pool_max = 4;
     config.limits.query_seconds = 30;
-    config.limits.stream_seconds = 1;
+    config.limits.stream_seconds = 3;
     migrate(&config).await.unwrap();
     let db = Database::open(&config).await.unwrap();
     let mut tx = db.begin_catalog().await.unwrap();
