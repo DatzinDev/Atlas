@@ -29,6 +29,25 @@ incluye validación/escritura del cliente; conexiones nuevas por petición, carg
 samples, timeout de socket por operación, sin reintentos/redirecciones ni p99. No mide CPU/RSS
 del servidor ni certifica saturación/ausencia de fugas; ampliar solo cuando la comparación lo exija.
 
+## Motor Rust (#230)
+
+Con `--engine rust`, `--case` debe ser un caso canónico de `RUST_CASES` (`catalog`,
+`geojson-page`, `geojson-query` con `--body`, `mvt-tile` con `--kind mvt`, `tilejson`, `export`)
+y la ruta de `--url` debe coincidir con la API REST de [api.md](../docs/rust/api.md) (se admite el
+prefijo de `public_url`); un caso mal configurado falla antes de medir. `--kind mvt` decodifica
+con protobuf propio de biblioteca estándar: ignora el orden de features, claves y valores del
+encoder, pero conserva capas, extent, ids, tipos, propiedades y coordenadas cuantizadas exactas.
+Un sample inválido registra `mismatch`: `count`, `ids`, `geometry_or_properties` o `content`; los
+errores registran además el `code` del cuerpo `{code,message,request_id}`. Preparar la
+expectativa desde PostGIS (`json_build_object`/`ST_AsMVT` con `ST_TileEnvelope`, extent 4096,
+buffer 64), nunca desde Rust. Compilar con `cargo build --release --locked` y pasar `--pin` con
+el binario, `atlas.toml` y el script del oráculo: se guardan sus SHA-256 en los metadatos.
+`--server-cgroup` y `--db-cgroup` (cgroup v2, p. ej. `systemd-run --user --scope` para el binario
+y `/sys/fs/cgroup/system.slice/docker-<id>.scope` para PostGIS) guardan CPU acumulada y memoria
+actual/pico al inicio (`resources_before`) y en el resumen (`resources`), también si se
+interrumpe; restar ambos es responsabilidad del informe. El cgroup del servidor no debe compartirse
+con el cliente. La memoria cgroup de PostgreSQL incluye caché y memoria compartida.
+
 Repetir tres veces a c1/c4 con mismos datos/índices, propiedades, filtros, orden, página, caché,
 hardware y límites. Guardar junto al JSONL las expectativas, seed/hash de datos, configuración,
 versiones y comandos. Usar fixture pública sin tokens/secretos en URL/body. Python HTTP nuevo
