@@ -145,9 +145,17 @@ SELECT extnamespace::regnamespace FROM pg_extension WHERE extname = 'postgis';
 Si PostGIS está en otro esquema, sustituir `public` en el GRANT e incluir ese esquema
 en el `search_path` de ambos roles: Atlas llama funciones como `postgis_version()` y
 `ST_Transform` sin prefijo de esquema. USAGE permite resolver la extensión, no concede
-SELECT sobre fuentes ni modifica `allowed_schemas`. PostGIS debe estar instalado de
-antemano por el administrador. Sin estos permisos, `migrate` puede fallar con
-`migration failed` y `serve` con `database_unavailable`; los errores públicos omiten
+SELECT sobre fuentes ni modifica `allowed_schemas`. Por ejemplo, con PostGIS en `postgis`
+(el catálogo y las fuentes se califican con esquema y no dependen del `search_path`):
+
+```sql
+GRANT USAGE ON SCHEMA postgis TO atlas_ddl, atlas_service;
+ALTER ROLE atlas_ddl SET search_path = postgis;
+ALTER ROLE atlas_service SET search_path = postgis;
+```
+
+PostGIS debe estar instalado de antemano por el administrador. Sin estos permisos,
+`migrate` puede fallar con `migration failed` y `serve` con `database_unavailable`; los errores públicos omiten
 los detalles internos deliberadamente. Las pruebas de permisos usan PostGIS descartable;
 no modifican roles ni fuentes de ningún despliegue existente.
 
