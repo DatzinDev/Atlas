@@ -22,6 +22,7 @@ pub struct Publications {
     catalog: Catalog,
     database: Database,
     config: Config,
+    admission: super::admission::Admission,
 }
 
 impl Publications {
@@ -29,6 +30,10 @@ impl Publications {
         Ok(Self {
             catalog: Catalog::new(database.clone(), config.clone())?,
             database,
+            admission: super::admission::Admission::new(
+                config.limits.data_operations,
+                config.limits.query_seconds,
+            ),
             config,
         })
     }
@@ -89,28 +94,111 @@ impl Publications {
         filter: Option<&str>,
         properties: Option<&[String]>,
     ) -> Result<Vec<u8>, Error> {
-        let (config, meta, limits) = (
-            &publication.config,
-            &publication.metadata,
-            &self.config.limits,
+        let permit = self.admission.acquire()?;
+        let (service, publication, filter, properties) = (
+            self.clone(),
+            publication.clone(),
+            filter.map(str::to_owned),
+            properties.map(<[String]>::to_vec),
         );
-        let mut tx = self.database.begin_read().await?;
-        let fixed = config.filter.as_ref().map(|f| f.get());
-        let selection = prepare(&mut tx, fixed, filter, None, meta, limits).await?;
-        mvt::tile(&mut tx, config, meta, &selection, xyz, properties, limits).await
+        self.admission
+            .wait(async move {
+                let _permit = permit;
+                let mut tx = service.database.begin_read().await?;
+                let result = async {
+                    let selection = prepare(
+                        &mut tx,
+                        publication.config.filter.as_ref().map(|f| f.get()),
+                        filter.as_deref(),
+                        None,
+                        &publication.metadata,
+                        &service.config.limits,
+                    )
+                    .await?;
+                    mvt::tile(
+                        &mut tx,
+                        &publication.config,
+                        &publication.metadata,
+                        &selection,
+                        xyz,
+                        properties.as_deref(),
+                        &service.config.limits,
+                    )
+                    .await
+                }
+                .await;
+                let cleanup = tx
+                    .rollback()
+                    .await
+                    .map_err(crate::postgis::connection::error);
+                cleanup.and(result)
+            })
+            .await
     }
 
     pub async fn features(&self, publication: &Publication, query: &Query) -> Result<Page, Error> {
-        let (config, meta, limits) = (
-            &publication.config,
-            &publication.metadata,
-            &self.config.limits,
-        );
-        let mut tx = self.database.begin_read().await?;
-        let fixed = config.filter.as_ref().map(|f| f.get());
-        let user = query.filter.as_ref().map(|f| f.get());
-        let selection = prepare(&mut tx, fixed, user, query.bbox, meta, limits).await?;
-        features::page(&mut tx, config, meta, &selection, query, limits).await
+        let permit = self.admission.acquire()?;
+        let (service, publication, query) = (self.clone(), publication.clone(), query.clone());
+        self.admission
+            .wait(async move {
+                let _permit = permit;
+                let mut tx = service.database.begin_read().await?;
+                let result = async {
+                    let selection = prepare(
+                        &mut tx,
+                        publication.config.filter.as_ref().map(|f| f.get()),
+                        query.filter.as_ref().map(|f| f.get()),
+                        query.bbox,
+                        &publication.metadata,
+                        &service.config.limits,
+                    )
+                    .await?;
+                    features::page(
+                        &mut tx,
+                        &publication.config,
+                        &publication.metadata,
+                        &selection,
+                        &query,
+                        &service.config.limits,
+                    )
+                    .await
+                }
+                .await;
+                let cleanup = tx
+                    .rollback()
+                    .await
+                    .map_err(crate::postgis::connection::error);
+                cleanup.and(result)
+            })
+            .await
+    }
+
+    pub async fn export(
+        &self,
+        id: &str,
+        principal: &Principal,
+        query: &Query,
+    ) -> Result<crate::exports::geojson::Export, Error> {
+        query.validate(self.config.limits.max_limit, self.config.limits.max_offset)?;
+        if let Some(filter) = &query.filter {
+            crate::query::predicate::parse(filter.get(), &self.config.limits)?;
+        }
+        let publication = self.catalog.get(id).await?;
+        policy::download(&publication.config, principal)?;
+        let permit = self.admission.acquire()?;
+        let (service, query) = (self.clone(), query.clone());
+        self.admission
+            .wait(async move {
+                crate::exports::geojson::Export::admitted(
+                    &service.database,
+                    &publication,
+                    &query,
+                    &service.config.limits,
+                    Some(permit),
+                )
+                .await
+            })
+            .await
     }
 
     pub fn tilejson(&self, publication: &Publication) -> Value {

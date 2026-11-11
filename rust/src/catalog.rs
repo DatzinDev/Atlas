@@ -10,6 +10,7 @@ use sqlx::{Row, postgres::PgRow, types::Json};
 
 const SERVABLE_BATCH: i64 = 256;
 
+#[derive(Clone)]
 pub struct Publication {
     pub config: Dataset,
     pub metadata: Metadata,

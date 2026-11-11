@@ -123,11 +123,41 @@ se citan como identificadores al consultar la relación. Pruebas contra PostGIS 
 
 `atlas migrate --config ddl.toml` crea `atlas_catalog.datasets` en una transacción
 con bloqueo de migración. Repetirla es seguro; `serve` nunca ejecuta DDL.
-Usar un rol DDL separado: propietario del esquema/tabla. La cuenta de servicio
-recibe únicamente USAGE en atlas_catalog y SELECT/INSERT/UPDATE/DELETE en datasets,
-además de USAGE/SELECT en los esquemas/relaciones fuente permitidos. Nunca concederle
-CREATE ni propiedad de esos objetos. Las pruebas demuestran el rechazo de DDL con
-un rol limitado; no modifican roles ni fuentes de ningún despliegue existente.
+Usar un rol DDL separado: propietario del esquema/tabla, con CREATE sobre la base.
+`CREATE SCHEMA IF NOT EXISTS` exige ese permiso incluso si `atlas_catalog` ya existe.
+La cuenta de servicio recibe únicamente USAGE en atlas_catalog y
+SELECT/INSERT/UPDATE/DELETE en datasets, además de USAGE/SELECT en los
+esquemas/relaciones fuente permitidos. Nunca concederle CREATE ni propiedad de
+catálogo, base o fuentes.
+
+Ambos roles necesitan USAGE sobre el esquema donde está instalada la extensión
+PostGIS, también cuando `public` fue revocado a PUBLIC. Antes de migrar o servir,
+el propietario de la base configura los permisos; nombres de ejemplo:
+
+```sql
+GRANT CREATE ON DATABASE atlas TO atlas_ddl;
+-- Si PostGIS está instalado en public:
+GRANT USAGE ON SCHEMA public TO atlas_ddl, atlas_service;
+-- Confirmar la ubicación real de la extensión:
+SELECT extnamespace::regnamespace FROM pg_extension WHERE extname = 'postgis';
+```
+
+Si PostGIS está en otro esquema, sustituir `public` en el GRANT e incluir ese esquema
+en el `search_path` de ambos roles: Atlas llama funciones como `postgis_version()` y
+`ST_Transform` sin prefijo de esquema. USAGE permite resolver la extensión, no concede
+SELECT sobre fuentes ni modifica `allowed_schemas`. Por ejemplo, con PostGIS en `postgis`
+(el catálogo y las fuentes se califican con esquema y no dependen del `search_path`):
+
+```sql
+GRANT USAGE ON SCHEMA postgis TO atlas_ddl, atlas_service;
+ALTER ROLE atlas_ddl SET search_path = postgis;
+ALTER ROLE atlas_service SET search_path = postgis;
+```
+
+PostGIS debe estar instalado de antemano por el administrador. Sin estos permisos,
+`migrate` puede fallar con `migration failed` y `serve` con `database_unavailable`; los errores públicos omiten
+los detalles internos deliberadamente. Las pruebas de permisos usan PostGIS descartable;
+no modifican roles ni fuentes de ningún despliegue existente.
 
 `Catalog` valida configuración y metadatos al leer, vuelve a inspeccionar al crear
 o reemplazar y no usa caché. Update/delete comparan revisión en el mismo statement;
@@ -276,3 +306,66 @@ combina con el del usuario.
 `POST /api/v1/datasets/{id}/query` recibe el mismo `Query` como JSON cerrado y produce la misma
 selección: claves desconocidas o duplicadas 400, cuerpo mayor que `query_body_bytes` 413. En GET,
 parámetros desconocidos o repetidos son 400.
+
+## Cursor de exportación (#302)
+
+`exports::geojson::Export` cuenta hasta `export_features + 1` y declara un cursor en
+la misma transacción READ ONLY REPEATABLE READ. Reutiliza selección y codificación
+GeoJSON, lee lotes de 128 y no aplica `default_limit`. Cada chunk consume el presupuesto
+de bytes y el deadline total; un error tardío impide completar la colección. Finalizar o
+abandonar el cursor revierte la transacción antes de devolver su conexión al pool.
+La ruta y los permisos de descarga se incorporan en #303.
+
+## Descarga GeoJSON (#227)
+
+`GET /api/v1/datasets/{id}/export` exige view+download (no query), acepta únicamente
+`format=geojson`, `filter`, `bbox` y `properties`, únicos. Comparte el filtro fijo AND
+usuario AND bbox con items. Devuelve `application/geo+json`, `no-store` y attachment
+con nombre derivado del id validado. Conteo excedido: 413 antes de headers. Presupuestos
+tardíos: corta el cuerpo y registra `export_failed` con código fijo, sin datos del usuario.
+El cliente debe tratar cualquier colección incompleta como una descarga fallida.
+
+## Admisión y cancelación (#228)
+
+Un semáforo compartido limita `data_operations` (8 por defecto) para features, MVT y
+exportaciones; adquisición inmediata o 503. Catálogo, administración y health no usan cupos.
+El deadline de respuesta no cancela el worker SQL: conserva el cupo hasta rollback real;
+el timeout PostgreSQL acota el drenaje. Export transfiere el cupo al cursor y un productor
+con canal acotado aplica `stream_seconds` incluso si el cliente deja de leer. El pool se
+cierra después del drenaje del servidor; no se interpreta el rechazo como throughput.
+
+## Ejecutar el MVP experimental (#229)
+
+La imagen `runtime` contiene solo el binario release y bibliotecas de sistema, sin Cargo,
+fuentes ni claves. Corre como uid/gid 65532. El target `dev` y el perfil Compose `rust`
+siguen disponibles; no se publica una imagen ni se despliega automáticamente.
+
+```bash
+docker build --target runtime -t atlas-rust:experimental rust
+docker run --rm --network host --env-file /ruta/atlas-ddl.env \
+  -v /ruta/atlas.toml:/etc/atlas.toml:ro atlas-rust:experimental migrate --config /etc/atlas.toml
+docker run --rm --name atlas-rust --network host --env-file /ruta/atlas-service.env \
+  -v /ruta/atlas.toml:/etc/atlas.toml:ro \
+  -v /ruta/public.pem:/etc/atlas/public.pem:ro \
+  atlas-rust:experimental serve --config /etc/atlas.toml --listen 127.0.0.1:8081
+curl -fsS http://127.0.0.1:8081/api/v1/ready
+docker stop --timeout 360 atlas-rust
+```
+
+Los env-files contienen `ATLAS_DATABASE_URL`: rol DDL solo al migrar y rol de servicio
+limitado al servir (permisos descritos arriba). `atlas.toml` define `allowed_schemas` y
+`[auth]` con `public_key_file`, `issuer` y `audience`; la clave pública debe ser legible por
+65532. Nunca montar una clave privada. SIGTERM deja de aceptar y drena antes de cerrar
+el pool; el plazo del supervisor debe cubrir consultas y streams configurados.
+Ver [matriz de aceptación](../docs/rust/acceptance.md). El MVP no demuestra aptitud de
+producción ni reemplazo completo de GeoServer; no migra consumidores ni retira Python.
+
+El presupuesto `export_bytes` incluye toda la colección GeoJSON, también los dos bytes
+finales `]}`. El cursor los reserva antes de emitir: un presupuesto igual al tamaño total
+permite completar la descarga; si falta un byte, falla antes de emitir el último chunk
+que ya no deja espacio para el cierre, sin superar el límite ni simular éxito parcial.
+
+La forma y los presupuestos del filtro se validan antes de resolver el dataset, como
+en items/query: un filtro malformado devuelve 400 incluso si el id no existe. Para
+consultas válidas, export resuelve y autoriza view+download antes de adquirir un cupo;
+una denegación conserva su 403/404 aunque todos los cupos estén ocupados.
