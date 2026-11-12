@@ -16,7 +16,8 @@ ring y webpki-roots, pero falta el conector TLS para el cliente.
 
 Agregar `hyper-rustls` 0.27 sin features por defecto, con `http1`, `tls12`, `ring` y
 `webpki-tokio`, y activar en `hyper-util` las features `client-legacy`, `http1` y `tokio`.
-Solo entran `hyper-rustls` y `tokio-rustls`; ring y las raíces webpki ya están en el árbol.
+Entran `hyper-rustls`, `tokio-rustls` y, por el cliente de hyper, `want` y `try-lock`; ring y
+las raíces webpki ya están en el árbol.
 `jsonwebtoken` ya interpreta JWK y JWKS, así que no se agrega parser propio.
 
 Contrato del verificador, en `rust/src/auth/oidc.rs`:
@@ -26,16 +27,17 @@ Contrato del verificador, en `rust/src/auth/oidc.rs`:
 - `jwks_url` es HTTPS; HTTP solo se acepta hacia loopback para pruebas. Sin discovery
   (`.well-known/openid-configuration`): el operador da la URL. Nada del token (`iss`, `jku`,
   `x5u`, `kid`) elige URL ni clave de confianza; `kid` solo busca dentro del JWKS ya cargado.
+  Un token sin `kid` es 401 y una JWK sin `kid` se ignora.
 - Algoritmo permitido: RS256. Se ignoran las JWK que no sean RSA de firma (`use` `sig` o
   ausente, `alg` RS256 o ausente). Validación temporal igual que el modo PEM.
 - `roles_claim` es una ruta con puntos (`roles`, `realm_access.roles`); el valor debe ser un
   arreglo de strings. Ausente equivale a lista vacía; otro tipo es 401.
 - Caché en memoria por proceso, solo de claves públicas: carga al arrancar, renovación al
-  ver un `kid` desconocido con una sola descarga en curso y como máximo una cada
-  `jwks_min_refresh` (60 s), y renovación por antigüedad tras `jwks_max_age` (1 h).
+  ver un `kid` desconocido con una sola descarga en curso y como máximo una por minuto, y
+  renovación por antigüedad tras 1 h. Estos plazos son fijos, no configurables.
   Límites: 64 KiB por respuesta, 32 claves, 5 s por descarga, sin redirecciones.
 - Fallo cerrado: si la descarga falla, se conservan las claves vigentes hasta
-  `jwks_max_stale` (24 h); después, todo token es 401. Un `kid` desconocido sin renovación
+  24 h; después, todo token es 401. Un `kid` desconocido sin renovación
   posible es 401. El arranque falla si la primera carga no da al menos una clave válida.
 - La caché no guarda tokens, claims ni respuestas; los datos privados siguen con
   `Cache-Control: no-store`. Logs sin tokens ni cuerpos del JWKS.
