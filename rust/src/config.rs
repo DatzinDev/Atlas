@@ -182,7 +182,10 @@ impl Config {
             auth.validate()?;
         }
         if !names(&self.allowed_schemas)
-            || self.allowed_schemas.iter().any(|s| s == "atlas_catalog")
+            || self.allowed_schemas.iter().any(|s| {
+                ["atlas_catalog", "information_schema"].contains(&s.as_str())
+                    || s.starts_with("pg_")
+            })
             || self.database_url.as_ref().is_some_and(|s| {
                 !(s.starts_with("postgres://") || s.starts_with("postgresql://"))
                     || s.chars().any(char::is_control)

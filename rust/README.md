@@ -77,6 +77,8 @@ descartable y no se respalda.
 
 `serve --config archivo.toml` admite `listen`, `database_url`, `allowed_schemas`
 y tabla `[limits]` con los defaults de spec.md. No acepta claves desconocidas.
+`allowed_schemas` rechaza `atlas_catalog`, `information_schema` y todo prefijo `pg_`
+(`pg_catalog`, `pg_toast`, `pg_temp_N`); `serve` termina con `startup_failed`.
 `ATLAS_DATABASE_URL` y `ATLAS_LISTEN` prevalecen sobre TOML; `--listen` prevalece
 sobre el entorno. DSN nunca pertenece a un Dataset ni se imprime al fallar.
 La configuración se valida antes del bind/pool. No derive Debug/Serialize en Config.
@@ -118,12 +120,12 @@ Una geometría se infiere solo si es única; varias requieren columna explícita
 Geometría genérica vacía se rechaza; tipada vacía conserva CRS/tipo. Toda geometría
 se excluye de atributos. Los nombres se resuelven por parámetros en pg_catalog y
 se citan como identificadores al consultar la relación. Pruebas contra PostGIS real.
-
-## Migración explícita (#215)
 Los tipos se comparan por OID con los tipos base de pg_catalog (int2…timestamptz): dominios,
 enums y homónimos de otros esquemas son 400; la geometría debe ser `geometry` del esquema de la
 extensión PostGIS. POST/PATCH exigen SELECT del rol actual (`has_column_privilege`) sobre
 geometría, id y cada propiedad publicada; si falta, 400 sin indicar la columna.
+
+## Migración explícita (#215)
 
 `atlas migrate --config ddl.toml` crea `atlas_catalog.datasets` en una transacción
 con bloqueo de migración. Repetirla es seguro; `serve` nunca ejecuta DDL.
