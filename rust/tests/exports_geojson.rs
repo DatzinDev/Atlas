@@ -37,7 +37,7 @@ async fn cursor_budgets_snapshot_and_cleanup() {
         metadata,
         revision: 1,
     };
-    let mut export = Export::open(&db, &publication, &Query::default(), &config.limits)
+    let mut export = Export::open(&db, &publication, &Query::default(), None, &config.limits)
         .await
         .unwrap();
     let mut tx = db.begin_catalog().await.unwrap();
@@ -59,7 +59,11 @@ async fn cursor_budgets_snapshot_and_cleanup() {
         Query::default(),
         serde_json::from_str(r#"{"filter":{"op":"eq","field":"amount","value":0}}"#).unwrap(),
     ] {
-        let mut baseline = Export::open(&db, &publication, &query, &config.limits)
+        let user = query
+            .filter
+            .as_ref()
+            .map(|f| atlas::query::predicate::parse(f.get(), &config.limits).unwrap());
+        let mut baseline = Export::open(&db, &publication, &query, user.clone(), &config.limits)
             .await
             .unwrap();
         let mut expected = String::new();
@@ -69,7 +73,7 @@ async fn cursor_budgets_snapshot_and_cleanup() {
         for budget in [expected.len(), expected.len() - 1] {
             let mut limits = config.limits.clone();
             limits.export_bytes = budget as u32;
-            let mut export = Export::open(&db, &publication, &query, &limits)
+            let mut export = Export::open(&db, &publication, &query, user.clone(), &limits)
                 .await
                 .unwrap();
             let mut emitted = String::new();
@@ -94,28 +98,28 @@ async fn cursor_budgets_snapshot_and_cleanup() {
     }
     config.limits.export_features = 10;
     assert_eq!(
-        Export::open(&db, &publication, &Query::default(), &config.limits)
+        Export::open(&db, &publication, &Query::default(), None, &config.limits)
             .await
             .err(),
         Some(Error::QueryTooLarge)
     );
     config.limits.export_features = 1000;
     config.limits.export_bytes = 50;
-    let mut export = Export::open(&db, &publication, &Query::default(), &config.limits)
+    let mut export = Export::open(&db, &publication, &Query::default(), None, &config.limits)
         .await
         .unwrap();
     export.next().await.unwrap();
     assert_eq!(export.next().await.err(), Some(Error::QueryTooLarge));
     drop(export);
     for _ in 0..8 {
-        let export = Export::open(&db, &publication, &Query::default(), &config.limits)
+        let export = Export::open(&db, &publication, &Query::default(), None, &config.limits)
             .await
             .unwrap();
         drop(export);
     }
     let mut limits = config.limits.clone();
     limits.stream_seconds = 1;
-    let mut export = Export::open(&db, &publication, &Query::default(), &limits)
+    let mut export = Export::open(&db, &publication, &Query::default(), None, &limits)
         .await
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
@@ -123,7 +127,9 @@ async fn cursor_budgets_snapshot_and_cleanup() {
     drop(export);
     let query: Query = serde_json::from_str(r#"{"limit":1}"#).unwrap();
     assert_eq!(
-        Export::open(&db, &publication, &query, &limits).await.err(),
+        Export::open(&db, &publication, &query, None, &limits)
+            .await
+            .err(),
         Some(Error::InvalidRequest)
     );
     db.close().await;
@@ -200,7 +206,7 @@ async fn cursor_cuts_rows_one_by_one_within_budget() {
     )
     .await;
     let (baseline, error) = drain(
-        &mut Export::open(&db, &small, &all, &config.limits)
+        &mut Export::open(&db, &small, &all, None, &config.limits)
             .await
             .unwrap(),
     )
@@ -211,7 +217,12 @@ async fn cursor_cuts_rows_one_by_one_within_budget() {
     let two = HEAD.len() + 2 * size + 1;
     let mut limits = config.limits.clone();
     limits.export_bytes = (two + 2) as u32;
-    let (text, error) = drain(&mut Export::open(&db, &small, &all, &limits).await.unwrap()).await;
+    let (text, error) = drain(
+        &mut Export::open(&db, &small, &all, None, &limits)
+            .await
+            .unwrap(),
+    )
+    .await;
     assert_eq!(error, Some(Error::QueryTooLarge));
     assert_eq!(text, &baseline[..two]);
     assert!(!text.ends_with("]}"));
@@ -224,11 +235,17 @@ async fn cursor_cuts_rows_one_by_one_within_budget() {
     )
     .await;
     limits.export_bytes = 65536;
-    let (text, error) = drain(&mut Export::open(&db, &big, &all, &limits).await.unwrap()).await;
+    let (text, error) =
+        drain(&mut Export::open(&db, &big, &all, None, &limits).await.unwrap()).await;
     assert_eq!(error, Some(Error::QueryTooLarge));
     assert_eq!(text, HEAD);
     // Within-budget exports after both cuts are unchanged.
-    let (text, error) = drain(&mut Export::open(&db, &small, &all, &limits).await.unwrap()).await;
+    let (text, error) = drain(
+        &mut Export::open(&db, &small, &all, None, &limits)
+            .await
+            .unwrap(),
+    )
+    .await;
     assert_eq!((text, error), (baseline, None));
     db.close().await;
 }

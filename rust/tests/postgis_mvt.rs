@@ -150,8 +150,11 @@ async fn fetch(
     properties: Option<&[String]>,
     limits: &Limits,
 ) -> Result<Vec<u8>, Error> {
+    let filter = filter
+        .map(|t| atlas::query::predicate::parse(t, limits))
+        .transpose()?;
     let mut tx = db.begin_read().await?;
-    let selection = prepare(&mut tx, None, filter, None, meta, limits).await?;
+    let selection = prepare(&mut tx, None, filter, None, meta).await?;
     tile(&mut tx, dataset, meta, &selection, xyz, properties, limits).await
 }
 
@@ -358,9 +361,7 @@ async fn native_mvt_against_real_postgis() {
         .await
         .unwrap();
     let (dataset, meta) = &points;
-    let selection = prepare(&mut tx, None, None, None, meta, &limits)
-        .await
-        .unwrap();
+    let selection = prepare(&mut tx, None, None, None, meta).await.unwrap();
     let encoded = tile(&mut tx, dataset, meta, &selection, here, None, &limits)
         .await
         .unwrap();

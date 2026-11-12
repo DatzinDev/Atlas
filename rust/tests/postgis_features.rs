@@ -22,10 +22,15 @@ async fn run_with(
 ) -> Result<Page, Error> {
     let (dataset, meta) = source;
     let query: Query = serde_json::from_str(query).unwrap();
+    query.validate(limits.max_limit, limits.max_offset)?;
+    let fixed = atlas::postgis::selection::fixed(dataset, limits)?;
+    let user = query
+        .filter
+        .as_ref()
+        .map(|f| atlas::query::predicate::parse(f.get(), limits))
+        .transpose()?;
     let mut tx = db.begin_read().await?;
-    let fixed = dataset.filter.as_ref().map(|f| f.get());
-    let user = query.filter.as_ref().map(|f| f.get());
-    let selection = prepare(&mut tx, fixed, user, query.bbox, meta, limits).await?;
+    let selection = prepare(&mut tx, fixed, user, query.bbox, meta).await?;
     page(&mut tx, dataset, meta, &selection, &query, limits).await
 }
 
@@ -152,9 +157,6 @@ async fn feature_pages_against_real_postgis() {
     );
 
     for query in [
-        r#"{"limit":10001}"#,
-        r#"{"limit":0}"#,
-        r#"{"offset":100001}"#,
         r#"{"properties":["secret"]}"#,
         r#"{"properties":["geom"]}"#,
         r#"{"properties":["rank","rank"]}"#,

@@ -1,6 +1,6 @@
 use atlas::{
     config::Config,
-    domain::{Error, Principal},
+    domain::{Error, Principal, Query},
     migrations::migrate,
     postgis::connection::Database,
     services::publications::{Publications, document, summary},
@@ -221,6 +221,18 @@ async fn publications_validate_before_persisting_and_patch_with_revision() {
             .revision,
         public.revision
     );
+    for query in [
+        r#"{"limit":10001}"#,
+        r#"{"limit":0}"#,
+        r#"{"offset":100001}"#,
+    ] {
+        let parsed: Query = serde_json::from_str(query).unwrap();
+        assert_eq!(
+            service.features(&public, &parsed).await.err(),
+            Some(Error::InvalidRequest),
+            "{query}"
+        );
+    }
     let shown = summary(&public).to_string();
     assert!(!shown.contains("source") && !shown.contains("roles") && !shown.contains("revision"));
     assert_eq!(

@@ -2,11 +2,14 @@ use atlas::{
     config::{Config, Limits},
     domain::{Dataset, Error, Metadata},
     postgis::{connection::Database, introspection::inspect, selection::prepare},
+    query::predicate::{Predicate, parse},
 };
 use sqlx::QueryBuilder;
 
 #[tokio::test]
 async fn fixed_user_and_bbox_cannot_widen_each_other() {
+    // The API parses each filter once; selection only receives the parsed predicates.
+    let p = |text: &str| -> Predicate { parse(text, &Limits::default()).unwrap() };
     let mut config = Config::parse(
         "",
         Some(std::env::var("ATLAS_TEST_DATABASE_URL").expect("disposable PostGIS required")),
@@ -27,7 +30,7 @@ async fn fixed_user_and_bbox_cannot_widen_each_other() {
     tx.commit().await.unwrap();
     let dataset: Dataset = serde_json::from_str(r#"{"id":"places","title":"Places","source":{"schema":"selection_test","table":"places"},"properties":["category"]}"#).unwrap();
     let meta = inspect(&db, &config, &dataset).await.unwrap();
-    let fixed = r#"{"op":"eq","field":"category","value":"a"}"#;
+    let fixed = p(r#"{"op":"eq","field":"category","value":"a"}"#);
     let spatial = r#"{"op":"within","geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}}"#;
     let mixed =
         format!(r#"{{"op":"or","args":[{{"op":"eq","field":"category","value":"b"}},{spatial}]}}"#);
@@ -38,13 +41,13 @@ async fn fixed_user_and_bbox_cannot_widen_each_other() {
         (not.as_str(), vec![4]),
     ] {
         let mut tx = db.begin_read().await.unwrap();
+        let user = p(user);
         let selection = prepare(
             &mut tx,
-            Some(fixed),
+            Some(fixed.clone()),
             Some(user),
             Some([0., 0., 2., 2.]),
             &meta,
-            &Limits::default(),
         )
         .await
         .unwrap();
@@ -66,25 +69,31 @@ async fn fixed_user_and_bbox_cannot_widen_each_other() {
         r#"{"op":"is_null","field":"not_published"}"#,
         r#"{"op":"intersects","geometry":{"type":"Polygon","coordinates":[[[0,0],[2,2],[0,2],[2,0],[0,0]]]}}"#,
     ] {
-        assert!(
-            prepare(
-                &mut tx,
-                Some(fixed),
-                Some(bad),
-                None,
-                &meta,
-                &Limits::default()
-            )
-            .await
-            .is_err()
+        let bad = p(bad);
+        assert_eq!(
+            prepare(&mut tx, Some(fixed.clone()), Some(bad), None, &meta)
+                .await
+                .err(),
+            Some(Error::InvalidFilter)
         );
     }
     // A geometry rejected by PostGIS aborts the transaction; check the clean case in a new one.
     tx.rollback().await.unwrap();
     let mut tx = db.begin_read().await.unwrap();
-    let selection = prepare(&mut tx, None, None, None, &meta, &Limits::default())
+    // An invalid bbox stays a request error and is rejected before touching PostGIS.
+    assert_eq!(
+        prepare(
+            &mut tx,
+            Some(fixed.clone()),
+            None,
+            Some([2., 0., 1., 1.]),
+            &meta
+        )
         .await
-        .unwrap();
+        .err(),
+        Some(Error::InvalidRequest)
+    );
+    let selection = prepare(&mut tx, None, None, None, &meta).await.unwrap();
     let mut builder = QueryBuilder::new("SELECT count(*) FROM selection_test.places WHERE ");
     selection.append(&mut builder).unwrap();
     assert_eq!(
@@ -98,13 +107,19 @@ async fn fixed_user_and_bbox_cannot_widen_each_other() {
     tx.rollback().await.unwrap();
 
     // The fixed filter may use the unpublished tenant_id; user filters may not.
-    let tenant = r#"{"op":"eq","field":"tenant_id","value":1}"#;
-    let dataset: Dataset = serde_json::from_str(&format!(r#"{{"id":"places","title":"Places","source":{{"schema":"selection_test","table":"places"}},"properties":["category"],"filter":{tenant}}}"#)).unwrap();
+    let tenant_text = r#"{"op":"eq","field":"tenant_id","value":1}"#;
+    let tenant = p(tenant_text);
+    let dataset: Dataset = serde_json::from_str(&format!(r#"{{"id":"places","title":"Places","source":{{"schema":"selection_test","table":"places"}},"properties":["category"],"filter":{tenant_text}}}"#)).unwrap();
     let meta = inspect(&db, &config, &dataset).await.unwrap();
-    let a = r#"{"op":"eq","field":"category","value":"a"}"#;
-    for (user, expected) in [(None, vec![1, 3]), (Some(a), vec![1])] {
+    let a = p(r#"{"op":"eq","field":"category","value":"a"}"#);
+    // One parsed predicate is reused across several selections and is never re-parsed from text.
+    for (user, expected) in [
+        (None, vec![1, 3]),
+        (Some(a.clone()), vec![1]),
+        (Some(a.clone()), vec![1]),
+    ] {
         let mut tx = db.begin_read().await.unwrap();
-        let selection = prepare(&mut tx, Some(tenant), user, None, &meta, &Limits::default())
+        let selection = prepare(&mut tx, Some(tenant.clone()), user.clone(), None, &meta)
             .await
             .unwrap();
         let mut builder = QueryBuilder::new("SELECT id FROM selection_test.places WHERE ");
@@ -123,8 +138,11 @@ async fn fixed_user_and_bbox_cannot_widen_each_other() {
         ..meta.clone()
     };
     let mut tx = db.begin_read().await.unwrap();
-    for (fixed, user, meta) in [(None, Some(tenant), &meta), (Some(tenant), None, &legacy)] {
-        let result = prepare(&mut tx, fixed, user, None, meta, &Limits::default()).await;
+    for (fixed, user, meta) in [
+        (None, Some(tenant.clone()), &meta),
+        (Some(tenant.clone()), None, &legacy),
+    ] {
+        let result = prepare(&mut tx, fixed, user.clone(), None, meta).await;
         assert_eq!(result.err(), Some(Error::InvalidFilter), "{user:?}");
     }
     tx.rollback().await.unwrap();
