@@ -128,3 +128,107 @@ async fn cursor_budgets_snapshot_and_cleanup() {
     );
     db.close().await;
 }
+
+const HEAD: &str = r#"{"type":"FeatureCollection","features":["#;
+
+async fn drain(export: &mut Export) -> (String, Option<Error>) {
+    let mut text = String::new();
+    loop {
+        match export.next().await {
+            Ok(Some(chunk)) => text.push_str(&chunk),
+            Ok(None) => return (text, None),
+            Err(error) => return (text, Some(error)),
+        }
+    }
+}
+
+async fn publication(db: &Database, config: &Config, table: &str, rows: &str) -> Publication {
+    let mut tx = db.begin_catalog().await.unwrap();
+    for sql in [
+        format!("DROP TABLE IF EXISTS export_batch.{table}"),
+        format!(
+            "CREATE TABLE export_batch.{table}(id bigint PRIMARY KEY, label text, geom geometry(Point,4326))"
+        ),
+        format!("INSERT INTO export_batch.{table} {rows}"),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    tx.commit().await.unwrap();
+    let dataset: Dataset = serde_json::from_str(&format!(
+        r#"{{"id":"batch_{table}","title":"Batch","source":{{"schema":"export_batch","table":"{table}"}},"properties":["label"]}}"#
+    ))
+    .unwrap();
+    let metadata = inspect(db, config, &dataset).await.unwrap();
+    Publication {
+        config: dataset,
+        metadata,
+        revision: 1,
+    }
+}
+
+#[tokio::test]
+async fn cursor_cuts_rows_one_by_one_within_budget() {
+    let mut config = Config::parse(
+        "",
+        Some(std::env::var("ATLAS_TEST_DATABASE_URL").unwrap()),
+        None,
+    )
+    .unwrap();
+    config.allowed_schemas = vec!["export_batch".into()];
+    config.limits.pool_max = 2;
+    config.limits.data_operations = 1;
+    config.limits.export_operations = 1;
+    let db = Database::open(&config).await.unwrap();
+    let mut tx = db.begin_catalog().await.unwrap();
+    for sql in [
+        "DROP SCHEMA IF EXISTS export_batch CASCADE",
+        "CREATE SCHEMA export_batch",
+    ] {
+        sqlx::query(sql).execute(&mut *tx).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+    let all = Query::default();
+    // Five equally sized ~200 B features: one-digit ids, same label and point.
+    let small = publication(
+        &db,
+        &config,
+        "small",
+        "SELECT n, repeat('s', 150), ST_SetSRID(ST_Point(1,1),4326) FROM generate_series(1,5) n",
+    )
+    .await;
+    let (baseline, error) = drain(
+        &mut Export::open(&db, &small, &all, &config.limits)
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(error, None);
+    let size = (baseline.len() - HEAD.len() - 2 - 4) / 5;
+    assert_eq!(HEAD.len() + 5 * size + 4 + 2, baseline.len());
+    let two = HEAD.len() + 2 * size + 1;
+    let mut limits = config.limits.clone();
+    limits.export_bytes = (two + 2) as u32;
+    let (text, error) = drain(&mut Export::open(&db, &small, &all, &limits).await.unwrap()).await;
+    assert_eq!(error, Some(Error::QueryTooLarge));
+    assert_eq!(text, &baseline[..two]);
+    assert!(!text.ends_with("]}"));
+    // About 1 MB in one feature against a 64 KiB budget: nothing of it is emitted.
+    let big = publication(
+        &db,
+        &config,
+        "big",
+        "SELECT 1, repeat('b', 1000000), ST_SetSRID(ST_Point(1,1),4326)",
+    )
+    .await;
+    limits.export_bytes = 65536;
+    let (text, error) = drain(&mut Export::open(&db, &big, &all, &limits).await.unwrap()).await;
+    assert_eq!(error, Some(Error::QueryTooLarge));
+    assert_eq!(text, HEAD);
+    // Within-budget exports after both cuts are unchanged.
+    let (text, error) = drain(&mut Export::open(&db, &small, &all, &limits).await.unwrap()).await;
+    assert_eq!((text, error), (baseline, None));
+    db.close().await;
+}
