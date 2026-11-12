@@ -22,6 +22,7 @@ use std::{
     time::Duration,
 };
 
+// R12, R14
 #[test]
 fn real_http_authenticates_before_handlers() {
     let mut ids = std::collections::HashSet::new();

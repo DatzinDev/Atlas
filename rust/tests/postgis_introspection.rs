@@ -4,6 +4,7 @@ use atlas::{
     postgis::{connection::Database, introspection::inspect},
 };
 
+// R02
 #[tokio::test]
 async fn real_relations_geometry_identifiers_and_properties() {
     let config = Config::parse(
@@ -116,6 +117,7 @@ async fn inspect_relation(db: &Database, config: &Config, table: &str) -> Result
     inspect(db, config, &dataset).await
 }
 
+// R02
 #[tokio::test]
 async fn geometry_without_typmod_requires_single_type_and_srid() {
     let mut config = Config::parse(

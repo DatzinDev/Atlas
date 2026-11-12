@@ -180,6 +180,7 @@ async fn server() -> (SocketAddr, Database, Config) {
     (serve(service).await, db, config)
 }
 
+// R08, R09
 #[tokio::test]
 async fn items_and_query_over_real_http() {
     let (a, db, config) = server().await;

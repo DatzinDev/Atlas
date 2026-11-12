@@ -93,6 +93,7 @@ async fn setup() -> (Database, Source, Source, Source) {
     (db, sources.pop().unwrap(), view, wide)
 }
 
+// R04, R08, R09
 #[tokio::test]
 async fn feature_pages_against_real_postgis() {
     let (db, places, view, wide) = setup().await;

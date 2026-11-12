@@ -116,6 +116,7 @@ async fn server() -> (SocketAddr, Publications) {
     (address, service)
 }
 
+// R03
 #[tokio::test]
 async fn discovery_lists_only_authorized_datasets_over_real_http() {
     let (a, service) = server().await;

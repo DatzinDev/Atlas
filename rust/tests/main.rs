@@ -34,6 +34,7 @@ fn exit_within(server: &mut Server, limit: Duration) -> Duration {
     }
 }
 
+// R16
 #[test]
 fn configuration_errors_do_not_echo_input() {
     for args in [
@@ -98,6 +99,7 @@ fn weak_public_key_fails_before_listening() {
     assert!(TcpStream::connect(&address).is_err());
 }
 
+// R16
 #[test]
 fn http_startup_and_shutdown() {
     let dsn = std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required");
@@ -826,6 +828,7 @@ fn assert_forced(lines: &[String]) {
     assert!(position("shutdown_forced") < position("shutdown_complete"));
 }
 
+// R16
 #[tokio::test]
 async fn shutdown_deadline_aborts_stalled_work() {
     use atlas::{

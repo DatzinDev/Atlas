@@ -97,6 +97,7 @@ async fn server() -> (SocketAddr, Database) {
     (address, db)
 }
 
+// R04, R10
 #[tokio::test]
 async fn vector_tiles_over_real_http() {
     let (a, db) = server().await;

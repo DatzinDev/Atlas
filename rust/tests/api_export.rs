@@ -50,6 +50,7 @@ async fn request(a: SocketAddr, path: &str, headers: &str, abandon: bool) -> (St
     .unwrap()
 }
 
+// R04, R11
 #[tokio::test]
 async fn downloads_over_http() {
     let mut c = Config::parse(
@@ -358,6 +359,7 @@ async fn serve(service: Publications) -> (SocketAddr, tokio::task::JoinHandle<()
     )
 }
 
+// R11
 #[tokio::test]
 async fn cuts_oversized_downloads_mid_stream() {
     let mut c = Config::parse(

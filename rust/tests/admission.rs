@@ -13,6 +13,7 @@ static POSTGIS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 const ACTIVE_SESSIONS: &str = "SELECT count(*) FROM pg_stat_activity WHERE application_name='atlas-rust' AND pid <> pg_backend_pid() AND state IN ('active','idle in transaction')";
 
+// R15
 #[tokio::test]
 async fn cancelled_callers_keep_slots_until_workers_finish() {
     let admission = Admission::new(8, 1);
@@ -364,6 +365,7 @@ async fn get_admitted(address: std::net::SocketAddr, target: &'static str) -> St
     .unwrap()
 }
 
+// R15
 #[tokio::test]
 async fn stalled_exports_cannot_starve_items_and_tiles() {
     use atlas::{

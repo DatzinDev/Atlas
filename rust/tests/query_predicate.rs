@@ -28,6 +28,7 @@ fn group(args: usize) -> String {
     format!(r#"{{"op":"or","args":[{}]}}"#, vec![leaf; args].join(","))
 }
 
+// R05
 #[test]
 fn parses_attribute_predicates_and_preserves_numbers() {
     for op in ["eq", "ne", "gt", "gte", "lt", "lte", "like", "ilike"] {
@@ -100,6 +101,7 @@ fn string_length_is_bounded_only_by_filter_bytes() {
     assert!(rejected(&over, &limits));
 }
 
+// R05
 #[test]
 fn parses_logical_groups() {
     let Predicate::And(args) = ok(
@@ -158,6 +160,7 @@ fn rejects_malformed_keys_types_and_operators() {
     }
 }
 
+// R06
 #[test]
 fn validates_selection_geometry_structure() {
     let limits = Limits::default();

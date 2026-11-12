@@ -102,6 +102,7 @@ fn token(roles: &[&str]) -> String {
     format!("Authorization: Bearer {token}\r\n")
 }
 
+// R01
 #[tokio::test]
 async fn experimental_mvp_survives_restart() {
     let dsn = std::env::var("ATLAS_TEST_DATABASE_URL").unwrap();

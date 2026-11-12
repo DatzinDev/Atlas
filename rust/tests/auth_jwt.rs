@@ -103,6 +103,7 @@ fn reason(verifier: &Verifier, token: &str) -> &'static str {
         .unwrap_or_else(|| panic!("accepted {token}"))
 }
 
+// R12
 #[test]
 fn valid_identity_and_local_trust_only() {
     let verifier = Verifier::new(PUBLIC, "atlas-test", "atlas").unwrap();
@@ -135,6 +136,7 @@ fn valid_identity_and_local_trust_only() {
     }
 }
 
+// R12
 #[test]
 fn invalid_claims_fail_closed() {
     let verifier = configured(Some(0));

@@ -1,5 +1,6 @@
 use atlas::domain::{Dataset, Error, Query};
 
+// R14
 #[test]
 fn closed_models_and_private_defaults() {
     let json = r#"{"id":"roads","title":"Roads","source":{"schema":"public","table":"roads"},"properties":["id"]}"#;
@@ -171,6 +172,7 @@ fn routing_errors_serialize_as_snake_case_codes() {
     assert_eq!(Error::MethodNotAllowed.to_string(), "MethodNotAllowed");
 }
 
+// R04
 #[test]
 fn supported_types_have_one_source_of_truth() {
     use atlas::domain::{

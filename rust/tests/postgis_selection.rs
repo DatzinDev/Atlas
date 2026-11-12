@@ -6,6 +6,7 @@ use atlas::{
 };
 use sqlx::QueryBuilder;
 
+// R07
 #[tokio::test]
 async fn fixed_user_and_bbox_cannot_widen_each_other() {
     // The API parses each filter once; selection only receives the parsed predicates.
@@ -149,6 +150,7 @@ async fn fixed_user_and_bbox_cannot_widen_each_other() {
     db.close().await;
 }
 
+// R06
 #[tokio::test]
 async fn each_geometry_stays_bound_to_its_own_node() {
     let p = |text: &str| -> Predicate { parse(text, &Limits::default()).unwrap() };
