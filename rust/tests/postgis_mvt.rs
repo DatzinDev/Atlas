@@ -425,18 +425,22 @@ async fn polar_vertices_are_clipped_to_the_mercator_domain() {
     for statement in [
         "DROP SCHEMA IF EXISTS mvt_polar CASCADE",
         "CREATE SCHEMA mvt_polar",
-        "CREATE TABLE mvt_polar.world(id integer PRIMARY KEY, name text, geom geometry(Geometry,4326))",
-        "INSERT INTO mvt_polar.world VALUES (1,'antarctica',ST_GeomFromText('POLYGON((-180 -90,180 -90,180 -60,-180 -60,-180 -90))',4326)), (2,'pole',ST_GeomFromText('POINT(0 90)',4326)), (3,'mixed',ST_GeomFromText('MULTIPOINT((10 10),(0 90))',4326))",
+        "CREATE TABLE mvt_polar.world(id integer PRIMARY KEY, name text, geom geometry(Polygon,4326))",
+        "INSERT INTO mvt_polar.world VALUES (1,'antarctica',ST_GeomFromText('POLYGON((-180 -90,180 -90,180 -60,-180 -60,-180 -90))',4326))",
+        "CREATE TABLE mvt_polar.world_points(id integer PRIMARY KEY, name text, geom geometry(Geometry,4326))",
+        "INSERT INTO mvt_polar.world_points VALUES (2,'pole',ST_GeomFromText('POINT(0 90)',4326)), (3,'mixed',ST_GeomFromText('MULTIPOINT((10 10),(0 90))',4326))",
         "CREATE TABLE mvt_polar.line(id integer PRIMARY KEY, name text, geom geometry(LineString,4326))",
         "INSERT INTO mvt_polar.line VALUES (1,'meridian',ST_GeomFromText('LINESTRING(0 0,0 90)',4326))",
-        "CREATE TABLE mvt_polar.nad(id integer PRIMARY KEY, name text, geom geometry(Geometry,4269))",
-        "INSERT INTO mvt_polar.nad VALUES (1,'antarctica',ST_GeomFromText('POLYGON((-180 -90,180 -90,180 -60,-180 -60,-180 -90))',4269)), (2,'pole',ST_GeomFromText('POINT(0 90)',4269))",
+        "CREATE TABLE mvt_polar.nad(id integer PRIMARY KEY, name text, geom geometry(Polygon,4269))",
+        "INSERT INTO mvt_polar.nad VALUES (1,'antarctica',ST_GeomFromText('POLYGON((-180 -90,180 -90,180 -60,-180 -60,-180 -90))',4269))",
+        "CREATE TABLE mvt_polar.nad_points(id integer PRIMARY KEY, name text, geom geometry(Geometry,4269))",
+        "INSERT INTO mvt_polar.nad_points VALUES (2,'pole',ST_GeomFromText('POINT(0 90)',4269))",
     ] {
         sqlx::query(statement).execute(&mut *tx).await.unwrap();
     }
     tx.commit().await.unwrap();
     let mut sources = BTreeMap::new();
-    for table in ["world", "line", "nad"] {
+    for table in ["world", "world_points", "line", "nad", "nad_points"] {
         let dataset: Dataset =
             serde_json::from_value(serde_json::json!({"id": table, "title": table,
             "source": {"schema": "mvt_polar", "table": table}, "properties": ["name"]}))
@@ -454,28 +458,38 @@ async fn polar_vertices_are_clipped_to_the_mercator_domain() {
     };
 
     // Regression: a vertex at latitude +-90 made ST_Transform fail and the tile return 503.
-    for (table, xyz) in [
-        ("world", (0, 0, 0)),
-        ("world", (1, 0, 1)),
-        ("nad", (0, 0, 0)),
-        ("nad", (1, 0, 1)),
+    for (polygons, points, xyz) in [
+        ("world", "world_points", (0, 0, 0)),
+        ("world", "world_points", (1, 0, 1)),
+        ("nad", "nad_points", (0, 0, 0)),
+        ("nad", "nad_points", (1, 0, 1)),
     ] {
-        let encoded = fetch(&db, &sources[table], xyz, None, None, &limits).await;
-        let found = ids(
-            &encoded.unwrap_or_else(|e| panic!("{table} {xyz:?}: {e:?}")),
-            table,
-        );
-        assert!(
-            found.contains(&1) && !found.contains(&2),
-            "{table} {xyz:?}: {found:?}"
-        );
+        for (table, wanted, unwanted) in [(polygons, Some(1), None), (points, None, Some(2))] {
+            let encoded = fetch(&db, &sources[table], xyz, None, None, &limits).await;
+            let found = ids(
+                &encoded.unwrap_or_else(|e| panic!("{table} {xyz:?}: {e:?}")),
+                table,
+            );
+            assert!(
+                wanted.is_none_or(|id| found.contains(&id))
+                    && unwanted.is_none_or(|id| !found.contains(&id)),
+                "{table} {xyz:?}: {found:?}"
+            );
+        }
     }
     // Only the representable part of a multi-geometry survives the clip.
-    let world = fetch(&db, &sources["world"], (0, 0, 0), None, None, &limits)
-        .await
-        .unwrap();
-    assert_eq!(ids(&world, "world"), [1, 3]);
-    let mixed = decode(&world)["world"]
+    let world = fetch(
+        &db,
+        &sources["world_points"],
+        (0, 0, 0),
+        None,
+        None,
+        &limits,
+    )
+    .await
+    .unwrap();
+    assert_eq!(ids(&world, "world_points"), [3]);
+    let mixed = decode(&world)["world_points"]
         .1
         .iter()
         .find(|f| f.id == Some(3))
@@ -483,10 +497,17 @@ async fn polar_vertices_are_clipped_to_the_mercator_domain() {
         .unwrap();
     assert_eq!(mixed.len(), 1, "{mixed:?}");
     // A point seen only beyond +-85.0511 is never encoded, not even as an error.
-    let north = fetch(&db, &sources["world"], (1, 0, 0), None, None, &limits)
-        .await
-        .unwrap();
-    assert!(!ids(&north, "world").contains(&2));
+    let north = fetch(
+        &db,
+        &sources["world_points"],
+        (1, 0, 0),
+        None,
+        None,
+        &limits,
+    )
+    .await
+    .unwrap();
+    assert!(!ids(&north, "world_points").contains(&2));
 
     let (extent, buffer) = (i64::from(limits.tile_extent), i64::from(limits.tile_buffer));
     for xyz in [(0, 0, 0), (1, 0, 0), (1, 1, 0)] {

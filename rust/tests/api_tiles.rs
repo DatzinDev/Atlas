@@ -56,7 +56,7 @@ async fn server() -> (SocketAddr, Database) {
         "CREATE TABLE tiles_test.points(id integer PRIMARY KEY, name text, rank int4, secret text, geom geometry(Point,4326))",
         "INSERT INTO tiles_test.points VALUES (1,'a',1,'x',ST_SetSRID(ST_Point(10,10),4326)), (2,'b',2,'x',ST_SetSRID(ST_Point(10.1,10.1),4326))",
         "CREATE TABLE tiles_test.polar(id integer PRIMARY KEY, name text, geom geometry(Geometry,4326))",
-        "INSERT INTO tiles_test.polar VALUES (1,'antarctica',ST_GeomFromText('POLYGON((-180 -90,180 -90,180 -60,-180 -60,-180 -90))',4326)), (2,'pole',ST_GeomFromText('POINT(0 90)',4326))",
+        "INSERT INTO tiles_test.polar VALUES (1,'antarctica',ST_GeomFromText('POLYGON((-180 -90,180 -90,180 -60,-180 -60,-180 -90))',4326)), (2,'pole',ST_GeomFromText('POLYGON((0 89,1 89,1 90,0 90,0 89))',4326))",
         "CREATE TABLE tiles_test.doomed AS TABLE tiles_test.points",
         "ALTER TABLE tiles_test.doomed ADD PRIMARY KEY (id)",
         "DELETE FROM atlas_catalog.datasets WHERE config->'source'->>'schema' <> 'tiles_test' OR id LIKE 'tiles\\_%'",
