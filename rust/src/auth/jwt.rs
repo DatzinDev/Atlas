@@ -1,6 +1,7 @@
+use super::jwks::Jwks;
 use crate::domain::{Error, Principal};
 use jsonwebtoken::{
-    Algorithm, DecodingKey, DecodingKeyKind, Validation, decode, errors::ErrorKind,
+    Algorithm, DecodingKey, DecodingKeyKind, Validation, decode, decode_header, errors::ErrorKind,
 };
 use serde::Deserialize;
 use serde_json::value::RawValue;
@@ -146,24 +147,22 @@ fn roles(claims: &RawValue, path: &[String]) -> Result<Vec<String>, &'static str
     serde_json::from_str(current.get()).map_err(|_| "invalid_claims")
 }
 
+enum Keys {
+    Local(DecodingKey),
+    Jwks(Box<Jwks>),
+}
+
 pub struct Verifier {
-    key: DecodingKey,
+    keys: Keys,
     validation: Validation,
     roles_claim: Vec<String>,
 }
 
 impl Verifier {
-    pub fn new(pem: &[u8], issuer: &str, audience: &str) -> Result<Self, Error> {
-        let pem = pem.trim_ascii();
-        if issuer.trim().is_empty()
-            || audience.trim().is_empty()
-            || !(pem.starts_with(b"-----BEGIN PUBLIC KEY-----")
-                || pem.starts_with(b"-----BEGIN RSA PUBLIC KEY-----"))
-        {
+    fn with_keys(keys: Keys, issuer: &str, audience: &str) -> Result<Self, Error> {
+        if issuer.trim().is_empty() || audience.trim().is_empty() {
             return Err(Error::InvalidRequest);
         }
-        let key = DecodingKey::from_rsa_pem(pem).map_err(|_| Error::InvalidRequest)?;
-        usable(&key).ok_or(Error::InvalidRequest)?;
         let mut validation = Validation::new(Algorithm::RS256);
         validation.set_required_spec_claims(&["sub", "iss", "aud", "exp"]);
         validation.set_issuer(&[issuer]);
@@ -172,10 +171,27 @@ impl Verifier {
         validation.leeway = DEFAULT_LEEWAY_SECONDS;
         validation.reject_tokens_expiring_in_less_than = 1;
         Ok(Self {
-            key,
+            keys,
             validation,
             roles_claim: vec!["roles".into()],
         })
+    }
+
+    pub fn new(pem: &[u8], issuer: &str, audience: &str) -> Result<Self, Error> {
+        let pem = pem.trim_ascii();
+        if !(pem.starts_with(b"-----BEGIN PUBLIC KEY-----")
+            || pem.starts_with(b"-----BEGIN RSA PUBLIC KEY-----"))
+        {
+            return Err(Error::InvalidRequest);
+        }
+        let key = DecodingKey::from_rsa_pem(pem).map_err(|_| Error::InvalidRequest)?;
+        usable(&key).ok_or(Error::InvalidRequest)?;
+        Self::with_keys(Keys::Local(key), issuer, audience)
+    }
+
+    /// Trusts only the keys of the operator JWKS; `kid` selects within it.
+    pub fn from_jwks(jwks: Jwks, issuer: &str, audience: &str) -> Result<Self, Error> {
+        Self::with_keys(Keys::Jwks(Box::new(jwks)), issuer, audience)
     }
 
     /// Dotted path to the roles array, `roles` by default.
@@ -199,7 +215,16 @@ impl Verifier {
         if token.len() > 16384 {
             return Err("token_too_large");
         }
-        let raw = decode::<Box<RawValue>>(token, &self.key, &self.validation)
+        let fetched;
+        let key = match &self.keys {
+            Keys::Local(key) => key,
+            Keys::Jwks(jwks) => {
+                let header = decode_header(token).map_err(|e| reason(e.kind()))?;
+                fetched = jwks.key(&header.kid.ok_or("missing_kid")?).await?;
+                &fetched
+            }
+        };
+        let raw = decode::<Box<RawValue>>(token, key, &self.validation)
             .map_err(|e| reason(e.kind()))?
             .claims;
         let claims: Claims = serde_json::from_str(raw.get()).map_err(|_| "invalid_claims")?;
