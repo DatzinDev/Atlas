@@ -114,10 +114,12 @@ async fn serve(config: Config) -> Result<(), &'static str> {
                 let catalog = catalog.clone();
                 async move {
                     match catalog {
-                        Some(catalog) if catalog.ready().await.is_ok() => {
-                            StatusCode::OK.into_response()
-                        }
-                        _ => failure(Error::DatabaseUnavailable),
+                        Some(catalog) => match catalog.ready().await {
+                            Ok(()) => StatusCode::OK.into_response(),
+                            Err(e @ Error::CapacityExceeded) => failure(e),
+                            Err(_) => failure(Error::DatabaseUnavailable),
+                        },
+                        None => failure(Error::DatabaseUnavailable),
                     }
                 }
             }),
