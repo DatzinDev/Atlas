@@ -124,7 +124,7 @@ async fn persistent_publications_compare_and_swap_and_source_survives() {
     );
     assert!(
         catalog
-            .servable(|_| true, 0, 100)
+            .servable(&[], |_| true, 0, 100)
             .await
             .unwrap()
             .iter()

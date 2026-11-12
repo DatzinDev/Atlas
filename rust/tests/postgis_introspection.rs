@@ -607,3 +607,142 @@ async fn extent_is_a_clamped_epsg4326_snapshot_of_the_published_geometry() {
     execute_all(&db, &["DROP SCHEMA introspection_extent CASCADE"]).await;
     db.close().await;
 }
+
+/// Full sequential scans and tuples read (heap and index) of one relation, flushed first.
+async fn reads(db: &Database, schema: &str, relation: &str) -> (i64, i64) {
+    // The pool holds one connection, so the flush covers every earlier statement.
+    let mut tx = db.begin_read().await.unwrap();
+    sqlx::query("SELECT pg_stat_force_next_flush()")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let mut tx = db.begin_read().await.unwrap();
+    let row: (i64, i64) = sqlx::query_as("SELECT t.seq_scan, t.seq_tup_read + coalesce((SELECT sum(i.idx_tup_read) FROM pg_stat_user_indexes i WHERE i.relid = t.relid), 0)::int8 FROM pg_stat_user_tables t WHERE t.schemaname = $1 AND t.relname = $2")
+        .bind(schema)
+        .bind(relation)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    row
+}
+
+#[tokio::test]
+async fn unique_index_on_materialized_view_avoids_the_full_uniqueness_scan() {
+    let mut config = Config::parse(
+        // One reserved connection: pool_max - data_operations = 1.
+        "[limits]\npool_min=1\npool_max=2\ndata_operations=1\nexport_operations=1",
+        Some(std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required")),
+        None,
+    )
+    .unwrap();
+    let schema = "introspection_unique";
+    config.allowed_schemas = vec![schema.into()];
+    let db = Database::open(&config).await.unwrap();
+    let point = "ST_SetSRID(ST_Point(0,0),4326)::geometry(Point,4326) AS geom";
+    let big = "SELECT g AS id, g % 2 AS k, ST_SetSRID(ST_Point(g % 360 - 180, g % 180 - 90),4326)::geometry(Point,4326) AS geom FROM generate_series(1,20000) g";
+    let pairs = |values: &str| format!("SELECT v.id, v.k, {point} FROM (VALUES {values}) v(id, k)");
+    let mut statements = vec![
+        "DROP SCHEMA IF EXISTS introspection_unique CASCADE".to_string(),
+        "CREATE SCHEMA introspection_unique".into(),
+        format!("CREATE MATERIALIZED VIEW introspection_unique.indexed AS {big}"),
+        "CREATE UNIQUE INDEX ON introspection_unique.indexed(id)".into(),
+        format!("CREATE MATERIALIZED VIEW introspection_unique.unindexed AS {big}"),
+        format!(
+            "CREATE MATERIALIZED VIEW introspection_unique.null_indexed AS {big} UNION ALL SELECT NULL, 0, {point}"
+        ),
+        "CREATE UNIQUE INDEX ON introspection_unique.null_indexed(id)".into(),
+        // Statistics make the extent an estimate, so only the uniqueness check can read rows.
+        "ANALYZE introspection_unique.indexed".into(),
+        "ANALYZE introspection_unique.unindexed".into(),
+    ];
+    // Each fixture holds a duplicate `id`; the index, if any, never proves `id` unique.
+    for (name, values, index) in [
+        ("duplicate", "(1,0),(1,1)", ""),
+        ("duplicate_plain_index", "(1,0),(1,1)", "INDEX ON {} (id)"),
+        (
+            "duplicate_partial",
+            "(1,0),(1,1),(2,0)",
+            "UNIQUE INDEX ON {} (id) WHERE id > 1",
+        ),
+        (
+            "duplicate_composite",
+            "(1,0),(1,1)",
+            "UNIQUE INDEX ON {} (id, k)",
+        ),
+        (
+            "duplicate_expression",
+            "(1,0),(1,1)",
+            "UNIQUE INDEX ON {} ((id + k))",
+        ),
+        ("unique_other", "(1,0),(1,1)", "UNIQUE INDEX ON {} (k)"),
+        ("plain_view", "(1,0),(1,1)", ""),
+    ] {
+        let table = format!("introspection_unique.{name}");
+        let kind = if name == "plain_view" {
+            "VIEW"
+        } else {
+            "MATERIALIZED VIEW"
+        };
+        statements.push(format!("CREATE {kind} {table} AS {}", pairs(values)));
+        if !index.is_empty() {
+            statements.push(format!("CREATE {}", index.replace("{}", &table)));
+        }
+    }
+    execute_all(
+        &db,
+        &statements.iter().map(String::as_str).collect::<Vec<_>>(),
+    )
+    .await;
+    let (shared_db, shared_config) = (&db, &config);
+    let publish = move |table: &'static str| async move {
+        inspect(
+            shared_db,
+            shared_config,
+            &dataset_for(schema, table, Some("id"), &["k"]),
+        )
+        .await
+    };
+
+    // A unique, valid, total index on `id`: only the NULL probe runs, no full walk.
+    let before = reads(&db, schema, "indexed").await;
+    assert_eq!(publish("indexed").await.unwrap().id_column, "id");
+    let after = reads(&db, schema, "indexed").await;
+    assert_eq!(after.0, before.0, "sequential scans on an indexed view");
+    assert!(
+        after.1 - before.1 < 2000,
+        "tuples read: {before:?} -> {after:?}"
+    );
+
+    // Control: without the index the full scan still runs, so the counters do move.
+    let before = reads(&db, schema, "unindexed").await;
+    assert_eq!(publish("unindexed").await.unwrap().id_column, "id");
+    let after = reads(&db, schema, "unindexed").await;
+    assert!(after.0 > before.0, "{before:?} -> {after:?}");
+
+    // A unique index allows several NULLs: the NULL id is still rejected.
+    assert_eq!(
+        publish("null_indexed").await.unwrap_err(),
+        Error::InvalidRequest
+    );
+    // Duplicates are caught by the full scan whenever the index does not prove uniqueness of `id`.
+    for table in [
+        "duplicate",
+        "duplicate_plain_index",
+        "duplicate_partial",
+        "duplicate_composite",
+        "duplicate_expression",
+        "unique_other",
+        "plain_view",
+    ] {
+        assert_eq!(
+            publish(table).await.unwrap_err(),
+            Error::InvalidRequest,
+            "{table}"
+        );
+    }
+
+    execute_all(&db, &["DROP SCHEMA introspection_unique CASCADE"]).await;
+    db.close().await;
+}
