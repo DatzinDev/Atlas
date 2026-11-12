@@ -21,6 +21,7 @@ async fn real_relations_geometry_identifiers_and_properties() {
         "CREATE TABLE introspection_test.ambiguous(id integer PRIMARY KEY, geom geometry(Point,4326), other geometry(Point,3857))",
         "CREATE TABLE introspection_test.generic(id integer PRIMARY KEY, geom geometry)",
         "CREATE TABLE introspection_test.composite(id integer, second integer, geom geometry(Point,4326), PRIMARY KEY(id,second))",
+        "CREATE TABLE introspection_test.text_id(code text PRIMARY KEY, geom geometry(Point,4326))",
         "CREATE TABLE introspection_test.unknown_crs(id integer PRIMARY KEY, geom geometry(Point,910000))",
         "CREATE VIEW introspection_test.good AS SELECT \"weird\"\"id\" AS id, geom FROM introspection_test.\"quoted\"\"table\"",
         "CREATE VIEW introspection_test.duplicate AS SELECT 1 AS id, ST_SetSRID(ST_Point(0,0),4326)::geometry(Point,4326) AS geom FROM generate_series(1,2)",
@@ -37,6 +38,7 @@ async fn real_relations_geometry_identifiers_and_properties() {
     assert_eq!(meta.srid, 4326);
     assert_eq!(meta.id_column, "weird\"id");
     assert_eq!(meta.attributes.len(), 2);
+    assert_eq!(meta.id_type, "int8");
     dataset.properties = vec!["payload".into()];
     assert!(inspect(&db, &config, &dataset).await.is_err());
     dataset.properties = vec!["geom".into()];
@@ -45,8 +47,16 @@ async fn real_relations_geometry_identifiers_and_properties() {
     dataset.properties = vec!["id".into()];
     assert!(inspect(&db, &config, &dataset).await.is_err());
     dataset.source.geometry_column = Some("other".into());
-    assert_eq!(inspect(&db, &config, &dataset).await.unwrap().srid, 3857);
+    let meta = inspect(&db, &config, &dataset).await.unwrap();
+    assert_eq!((meta.srid, meta.id_type.as_str()), (3857, "int4"));
     dataset.source.geometry_column = None;
+    dataset.source.table = "text_id".into();
+    dataset.properties = vec!["code".into()];
+    assert_eq!(
+        inspect(&db, &config, &dataset).await.unwrap().id_type,
+        "text"
+    );
+    dataset.properties = vec!["id".into()];
     for table in [
         "generic",
         "composite",

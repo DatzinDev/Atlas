@@ -93,6 +93,22 @@ async fn persistent_publications_compare_and_swap_and_source_survives() {
     let mut tx = db.begin_catalog().await.unwrap();
     sqlx::query("UPDATE atlas_catalog.datasets SET metadata=jsonb_set(metadata,'{srid}','4326') WHERE id='persist_test'").execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
+    assert_eq!(
+        catalog.get(&dataset.id).await.unwrap().metadata.id_type,
+        "int8"
+    );
+    for stored in ["\"uuid\"", "\"\"", "null"] {
+        let mut tx = db.begin_catalog().await.unwrap();
+        sqlx::query("UPDATE atlas_catalog.datasets SET metadata=jsonb_set(metadata,'{id_type}',$1::jsonb) WHERE id='persist_test'").bind(stored).execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        assert!(
+            matches!(catalog.get(&dataset.id).await, Err(Error::SchemaChanged)),
+            "{stored}"
+        );
+    }
+    let mut tx = db.begin_catalog().await.unwrap();
+    sqlx::query("UPDATE atlas_catalog.datasets SET metadata=jsonb_set(metadata,'{id_type}','\"int8\"') WHERE id='persist_test'").execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
     let mut tx = db.begin_catalog().await.unwrap();
     sqlx::query("UPDATE atlas_catalog.datasets SET config=jsonb_set(config,'{access,view_roles}','[\" viewer\"]') WHERE id='persist_test'").execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
