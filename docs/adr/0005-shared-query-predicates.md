@@ -81,3 +81,9 @@ No se incorpora un parser CQL/SLD/GML ni un árbol SQL aportado por el cliente.
 Adaptadores GeoServer, grupos, calendarios, geometrías IIEG/INEGI y autenticación quedan
 fuera de Atlas. La implementación probará rechazos, NULL/NOT, inyección, límites y paridad
 entre conteo/página/descarga/GetMap/GetFeatureInfo sobre fixtures, sin afirmar que ya existe.
+
+## Implementación Rust (2026-11-12)
+
+Nota posterior; la decisión anterior se conserva como registro histórico. En la API Rust la
+geometría de `within`/`intersects` es siempre EPSG:4326 y la petición no lleva `srid`: una
+clave `srid` es desconocida y se rechaza (400 invalid_filter). Ver `docs/rust/api.md`.

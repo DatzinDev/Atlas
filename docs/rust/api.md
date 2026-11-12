@@ -38,6 +38,8 @@ POST query no crea recursos ni persiste consultas. GET/POST producen la misma se
 Una página items/query cuyo cuerpo superaría `limits.page_bytes` es 413 query_too_large,
 sin truncar ni cambiar numberReturned/hasMore.
 Todas las respuestas de datos dinámicas tienen Cache-Control: no-store; no hay caché MVT inicial.
+Los tiles de datasets públicos también van con no-store y sin compresión: es intencional en el MVP.
+Si se quiere gzip o caché, se configuran en el proxy y solo para datasets públicos.
 GeoJSON EPSG:4326; tiles XYZ/MVT EPSG:3857. TileJSON 3.0 incluye URL, source-layer,
 minzoom/maxzoom, bounds y attribution disponibles. Las URLs respetan el prefijo del despliegue
 configurado; no se confía en cabeceras forwarded arbitrarias. La plantilla de TileJSON repite
@@ -104,6 +106,11 @@ publicación nueva con revision 1: un ETag anterior no la identifica.
 Bearer JWT RS256 emitido externamente, sub/iss/aud/exp obligatorios y roles array de strings.
 Sin token: Principal anónimo. Si hay token, siempre verificarlo antes de aplicar acceso público.
 Solo atlas-admin usa /admin; no equivale a autorización de query/download.
+Un anónimo en /admin, o en una descarga de un dataset público sin public_download, recibe 403
+permission_denied sin `WWW-Authenticate`: es intencional, porque el acceso no depende solo de
+autenticarse (también hace falta el rol).
+Los roles se comparan de forma exacta y distinguiendo mayúsculas (`Admin` ≠ `admin`). Se leen
+del claim `roles` en la raíz del token; el mapeo configurable del claim se trata en #232.
 Catálogo filtra por view; detalle/items/tiles exigen view+query; export view+download.
 view_roles, query_roles y download_roles admiten hasta 1.000 roles cada una; cada rol tiene
 de 1 a 128 caracteres sin espacios (incluido U+FEFF) ni caracteres de control. Fuera de eso
@@ -210,8 +217,11 @@ if-match`; expuestas `etag, content-disposition, x-request-id`; `max-age` 600; `
 ## Ejemplo de selección
 
 ```json
-{"filter":{"op":"and","args":[{"op":"gte","field":"poblacion","value":100000},{"op":"is_not_null","field":"nombre"}]},"bbox":[-104,20,-102,22],"properties":["id","nombre"],"limit":100,"offset":0}
+{"filter":{"op":"and","args":[{"op":"gte","field":"poblacion","value":100000},{"op":"is_not_null","field":"nombre"}]},"bbox":[-104,20,-102,22],"properties":["nombre"],"limit":100,"offset":0}
 ```
+
+properties solo admite nombres publicados. El id va siempre en `Feature.id` y no necesita
+estar publicado ni pedirse en properties.
 
 La misma semántica se prueba en items/query/export/MVT con los límites propios de cada salida.
 La validación de un tile compara entidades codificables tras clipping/cuantización; un tile

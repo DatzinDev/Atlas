@@ -22,7 +22,8 @@ API Axum ── identidad JWT ── servicios de publicación/consulta/tiles/ex
 - api/auth: validación de transporte, JWT→Principal y errores; no construyen SQL.
   La API ejecuta `Query::validate` y parsea el filtro de usuario una sola vez por petición,
   antes de cualquier I/O, y entrega el `Predicate` a servicios y selección.
-- main/config: configuración, migraciones explícitas, wiring y shutdown. TLS/rate limiting en proxy.
+- main/config: configuración, migraciones explícitas, wiring y shutdown. El proxy es obligatorio para TLS, rate limiting,
+  timeouts de cabeceras y cuerpo (slowloris) y límite de conexiones; Atlas no los implementa.
 
 Stack elegido: Rust estable fijado al crear Cargo, Tokio, Axum, SQLx Postgres, Serde/serde_json,
 tracing, jsonwebtoken, TOML y Tower HTTP. Solo features necesarias; Cargo.lock versionado.
