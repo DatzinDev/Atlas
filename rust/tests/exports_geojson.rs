@@ -1,10 +1,43 @@
 use atlas::{
-    catalog::Publication,
-    config::Config,
-    domain::{Dataset, Error, Query},
+    catalog::{Catalog, Publication},
+    config::{Config, Limits},
+    domain::{Dataset, Error, Principal, Query},
     exports::geojson::Export,
+    migrations::migrate,
     postgis::{connection::Database, introspection::inspect},
+    query::predicate::Predicate,
+    services::publications::Publications,
 };
+
+/// Stores `publication` on first use, then opens it through `Publications::export`.
+async fn open(
+    db: &Database,
+    publication: &Publication,
+    query: &Query,
+    user: Option<Predicate>,
+    limits: &Limits,
+) -> Result<Export, Error> {
+    let mut config = Config::parse(
+        "",
+        Some(std::env::var("ATLAS_TEST_DATABASE_URL").unwrap()),
+        None,
+    )
+    .unwrap();
+    config.allowed_schemas = vec![publication.config.source.schema.clone()];
+    config.limits = limits.clone();
+    let id = &publication.config.id;
+    let catalog = Catalog::new(db.clone(), config.clone()).unwrap();
+    if catalog.get(id).await.is_err() {
+        catalog
+            .create(&publication.config, publication.metadata.clone())
+            .await
+            .unwrap();
+    }
+    Publications::new(db.clone(), config)
+        .unwrap()
+        .export(id, &Principal::default(), query, user.as_ref())
+        .await
+}
 
 #[tokio::test]
 async fn cursor_budgets_snapshot_and_cleanup() {
@@ -19,6 +52,7 @@ async fn cursor_budgets_snapshot_and_cleanup() {
     config.limits.data_operations = 1;
     config.limits.export_operations = 1;
     config.limits.default_limit = 1;
+    migrate(&config).await.unwrap();
     let db = Database::open(&config).await.unwrap();
     let mut tx = db.begin_catalog().await.unwrap();
     for sql in [
@@ -30,14 +64,14 @@ async fn cursor_budgets_snapshot_and_cleanup() {
         sqlx::query(sql).execute(&mut *tx).await.unwrap();
     }
     tx.commit().await.unwrap();
-    let dataset: Dataset = serde_json::from_str(r#"{"id":"export","title":"Export","source":{"schema":"export_test","table":"data"},"properties":["amount"]}"#).unwrap();
+    let dataset: Dataset = serde_json::from_str(r#"{"id":"geojson_export","title":"Export","source":{"schema":"export_test","table":"data"},"properties":["amount"],"access":{"public":true,"public_download":true}}"#).unwrap();
     let metadata = inspect(&db, &config, &dataset).await.unwrap();
     let publication = Publication {
         config: dataset,
         metadata,
         revision: 1,
     };
-    let mut export = Export::open(&db, &publication, &Query::default(), None, &config.limits)
+    let mut export = open(&db, &publication, &Query::default(), None, &config.limits)
         .await
         .unwrap();
     let mut tx = db.begin_catalog().await.unwrap();
@@ -63,7 +97,7 @@ async fn cursor_budgets_snapshot_and_cleanup() {
             .filter
             .as_ref()
             .map(|f| atlas::query::predicate::parse(f.get(), &config.limits).unwrap());
-        let mut baseline = Export::open(&db, &publication, &query, user.clone(), &config.limits)
+        let mut baseline = open(&db, &publication, &query, user.clone(), &config.limits)
             .await
             .unwrap();
         let mut expected = String::new();
@@ -73,7 +107,7 @@ async fn cursor_budgets_snapshot_and_cleanup() {
         for budget in [expected.len(), expected.len() - 1] {
             let mut limits = config.limits.clone();
             limits.export_bytes = budget as u32;
-            let mut export = Export::open(&db, &publication, &query, user.clone(), &limits)
+            let mut export = open(&db, &publication, &query, user.clone(), &limits)
                 .await
                 .unwrap();
             let mut emitted = String::new();
@@ -98,36 +132,29 @@ async fn cursor_budgets_snapshot_and_cleanup() {
     }
     config.limits.export_features = 10;
     assert_eq!(
-        Export::open(&db, &publication, &Query::default(), None, &config.limits)
+        open(&db, &publication, &Query::default(), None, &config.limits)
             .await
             .err(),
         Some(Error::QueryTooLarge)
     );
     config.limits.export_features = 1000;
     config.limits.export_bytes = 50;
-    let mut export = Export::open(&db, &publication, &Query::default(), None, &config.limits)
+    let mut export = open(&db, &publication, &Query::default(), None, &config.limits)
         .await
         .unwrap();
     export.next().await.unwrap();
     assert_eq!(export.next().await.err(), Some(Error::QueryTooLarge));
     drop(export);
     for _ in 0..8 {
-        let export = Export::open(&db, &publication, &Query::default(), None, &config.limits)
+        let export = open(&db, &publication, &Query::default(), None, &config.limits)
             .await
             .unwrap();
         drop(export);
     }
-    let mut limits = config.limits.clone();
-    limits.stream_seconds = 1;
-    let mut export = Export::open(&db, &publication, &Query::default(), None, &limits)
-        .await
-        .unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-    assert_eq!(export.next().await.err(), Some(Error::QueryTimeout));
-    drop(export);
+    // `stream_seconds` is applied by the HTTP stream: see api_export.rs.
     let query: Query = serde_json::from_str(r#"{"limit":1}"#).unwrap();
     assert_eq!(
-        Export::open(&db, &publication, &query, None, &limits)
+        open(&db, &publication, &query, None, &config.limits)
             .await
             .err(),
         Some(Error::InvalidRequest)
@@ -164,7 +191,7 @@ async fn publication(db: &Database, config: &Config, table: &str, rows: &str) ->
     }
     tx.commit().await.unwrap();
     let dataset: Dataset = serde_json::from_str(&format!(
-        r#"{{"id":"batch_{table}","title":"Batch","source":{{"schema":"export_batch","table":"{table}"}},"properties":["label"]}}"#
+        r#"{{"id":"geojson_{table}","title":"Batch","source":{{"schema":"export_batch","table":"{table}"}},"properties":["label"],"access":{{"public":true,"public_download":true}}}}"#
     ))
     .unwrap();
     let metadata = inspect(db, config, &dataset).await.unwrap();
@@ -187,6 +214,7 @@ async fn cursor_cuts_rows_one_by_one_within_budget() {
     config.limits.pool_max = 2;
     config.limits.data_operations = 1;
     config.limits.export_operations = 1;
+    migrate(&config).await.unwrap();
     let db = Database::open(&config).await.unwrap();
     let mut tx = db.begin_catalog().await.unwrap();
     for sql in [
@@ -205,24 +233,15 @@ async fn cursor_cuts_rows_one_by_one_within_budget() {
         "SELECT n, repeat('s', 150), ST_SetSRID(ST_Point(1,1),4326) FROM generate_series(1,5) n",
     )
     .await;
-    let (baseline, error) = drain(
-        &mut Export::open(&db, &small, &all, None, &config.limits)
-            .await
-            .unwrap(),
-    )
-    .await;
+    let (baseline, error) =
+        drain(&mut open(&db, &small, &all, None, &config.limits).await.unwrap()).await;
     assert_eq!(error, None);
     let size = (baseline.len() - HEAD.len() - 2 - 4) / 5;
     assert_eq!(HEAD.len() + 5 * size + 4 + 2, baseline.len());
     let two = HEAD.len() + 2 * size + 1;
     let mut limits = config.limits.clone();
     limits.export_bytes = (two + 2) as u32;
-    let (text, error) = drain(
-        &mut Export::open(&db, &small, &all, None, &limits)
-            .await
-            .unwrap(),
-    )
-    .await;
+    let (text, error) = drain(&mut open(&db, &small, &all, None, &limits).await.unwrap()).await;
     assert_eq!(error, Some(Error::QueryTooLarge));
     assert_eq!(text, &baseline[..two]);
     assert!(!text.ends_with("]}"));
@@ -235,17 +254,11 @@ async fn cursor_cuts_rows_one_by_one_within_budget() {
     )
     .await;
     limits.export_bytes = 65536;
-    let (text, error) =
-        drain(&mut Export::open(&db, &big, &all, None, &limits).await.unwrap()).await;
+    let (text, error) = drain(&mut open(&db, &big, &all, None, &limits).await.unwrap()).await;
     assert_eq!(error, Some(Error::QueryTooLarge));
     assert_eq!(text, HEAD);
     // Within-budget exports after both cuts are unchanged.
-    let (text, error) = drain(
-        &mut Export::open(&db, &small, &all, None, &limits)
-            .await
-            .unwrap(),
-    )
-    .await;
+    let (text, error) = drain(&mut open(&db, &small, &all, None, &limits).await.unwrap()).await;
     assert_eq!((text, error), (baseline, None));
     db.close().await;
 }
