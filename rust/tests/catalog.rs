@@ -163,3 +163,23 @@ async fn persistent_publications_compare_and_swap_and_source_survives() {
     db.close().await;
     assert_eq!(catalog.ready().await, Err(Error::DatabaseUnavailable));
 }
+
+#[tokio::test]
+async fn catalog_transactions_queue_for_reserved_connections() {
+    let dsn = std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required");
+    // pool_max - data_operations = 1: exactly one catalog transaction at a time.
+    let config = Config::parse(
+        "[limits]\npool_max=3\ndata_operations=2\nexport_operations=1\nacquire_seconds=1",
+        Some(dsn),
+        None,
+    )
+    .unwrap();
+    migrate(&config).await.unwrap();
+    let db = Database::open(&config).await.unwrap();
+    let catalog = Catalog::new(db.clone(), config).unwrap();
+    // Concurrent catalog reads wait for the single connection instead of failing.
+    let (first, second) = tokio::join!(catalog.get("slots_missing"), catalog.get("slots_missing"));
+    assert_eq!(first.err(), Some(Error::DatasetNotFound));
+    assert_eq!(second.err(), Some(Error::DatasetNotFound));
+    db.close().await;
+}

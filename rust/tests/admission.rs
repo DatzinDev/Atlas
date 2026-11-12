@@ -515,3 +515,103 @@ async fn stalled_exports_cannot_starve_items_and_tiles() {
     server.abort();
     db.close().await;
 }
+
+#[tokio::test]
+async fn catalog_traffic_cannot_take_connections_from_admitted_work() {
+    use atlas::{
+        catalog::Catalog, config::Config, domain::Principal, migrations::migrate,
+        postgis::connection::Database, services::publications::Publications,
+    };
+    use sqlx::Connection;
+    let _serial = POSTGIS.lock().await;
+    let dsn = std::env::var("ATLAS_TEST_DATABASE_URL").unwrap();
+    // One connection is left for catalog work: pool_max - data_operations = 1.
+    let mut config = Config::parse(
+        "[limits]\npool_max=3\ndata_operations=2\nexport_operations=1\nacquire_seconds=1",
+        Some(dsn.clone()),
+        None,
+    )
+    .unwrap();
+    config.allowed_schemas = vec!["admission_reserve".into()];
+    migrate(&config).await.unwrap();
+    let db = Database::open(&config).await.unwrap();
+    let mut tx = db.begin_catalog().await.unwrap();
+    for sql in [
+        "DROP SCHEMA IF EXISTS admission_reserve CASCADE",
+        "CREATE SCHEMA admission_reserve",
+        "DELETE FROM atlas_catalog.datasets WHERE id LIKE 'reservation_%'",
+        "CREATE TABLE admission_reserve.data(id integer PRIMARY KEY, value text, geom geometry(Point,4326))",
+        "INSERT INTO admission_reserve.data VALUES (1,'small',ST_SetSRID(ST_Point(0,0),4326))",
+        "CREATE VIEW admission_reserve.slow AS SELECT d.* FROM admission_reserve.data d CROSS JOIN pg_sleep(3)",
+    ] {
+        sqlx::query(sql).execute(&mut *tx).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+    let service = Publications::new(db.clone(), config.clone()).unwrap();
+    service
+        .create(br#"{"id":"reservation_slow","title":"X","source":{"schema":"admission_reserve","table":"slow","id_column":"id"},"properties":["value"],"access":{"public":true}}"#)
+        .await
+        .unwrap();
+    // `/ready` uses its own Catalog over the same Database, as the binary wires it.
+    let ready = Catalog::new(db.clone(), config.clone()).unwrap();
+    let app = atlas::api::datasets::router(service.clone())
+        .merge(atlas::api::features::router(service.clone()))
+        .route(
+            "/api/v1/ready",
+            axum::routing::get(move || {
+                let ready = ready.clone();
+                async move {
+                    let ready = ready.ready().await;
+                    ready.map_or(axum::http::StatusCode::SERVICE_UNAVAILABLE, |()| {
+                        axum::http::StatusCode::OK
+                    })
+                }
+            }),
+        )
+        .layer(axum::Extension(Principal::default()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    // Observe through a connection outside Atlas' pool.
+    let mut observer = sqlx::PgConnection::connect(&dsn).await.unwrap();
+
+    // Two slow items hold both data slots while a burst of catalog requests arrives.
+    let items: Vec<_> = (0..2)
+        .map(|_| tokio::spawn(get(address, "/api/v1/datasets/reservation_slow/items")))
+        .collect();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let sleeping: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE application_name='atlas-rust' AND wait_event='PgSleep'")
+                .fetch_one(&mut observer)
+                .await
+                .unwrap();
+            if sleeping == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let burst: Vec<_> = (0..10)
+        .map(|n| tokio::spawn(get(address, ["/api/v1/datasets", "/api/v1/ready"][n % 2])))
+        .collect();
+    for response in burst {
+        let response = response.await.unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    }
+    for item in items {
+        let response = item.await.unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    }
+    server.abort();
+    let mut tx = db.begin_catalog().await.unwrap();
+    for sql in [
+        "DELETE FROM atlas_catalog.datasets WHERE id LIKE 'reservation_%'",
+        "DROP SCHEMA admission_reserve CASCADE",
+    ] {
+        sqlx::query(sql).execute(&mut *tx).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+    db.close().await;
+}

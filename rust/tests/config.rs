@@ -22,7 +22,8 @@ fn defaults_and_overrides_are_validated() {
         "allowed_schemas=[]",
         "allowed_schemas=['atlas_catalog']",
         "database_url='sqlite:///bad'",
-        "[limits]\npool_max=11",
+        // The pool must keep at least one connection beyond the admitted data operations.
+        "[limits]\npool_max=10\ndata_operations=10",
         "[limits]\nmax_limit=1",
         "[limits]\nquery_seconds=0",
         "[limits]\ntile_buffer=99999",
@@ -84,6 +85,20 @@ fn allowed_schemas_reject_system_schemas() {
     let mut config = Config::parse("", None, None).unwrap();
     config.allowed_schemas = vec!["public".into(), "pg_catalog".into()];
     assert!(config.validate().is_err());
+}
+
+#[test]
+fn pool_size_reserves_connections_beyond_data_operations() {
+    // No fixed pool_max ceiling anymore; only data_operations < pool_max is required.
+    for (text, pool) in [
+        ("[limits]\npool_max=11", 11),
+        ("[limits]\npool_max=20\ndata_operations=8", 20),
+    ] {
+        assert_eq!(
+            Config::parse(text, None, None).unwrap().limits.pool_max,
+            pool
+        );
+    }
 }
 
 #[test]

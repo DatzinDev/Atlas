@@ -742,3 +742,79 @@ fn cors_is_configurable_outermost_and_disabled_by_default() {
     );
     drop(server);
 }
+
+#[tokio::test]
+async fn ready_reports_capacity_exceeded_when_reserved_connections_are_busy() {
+    use sqlx::Connection;
+    let dsn = std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required");
+    let migrate = Command::new(env!("CARGO_BIN_EXE_atlas"))
+        .arg("migrate")
+        .env("ATLAS_DATABASE_URL", &dsn)
+        .output()
+        .unwrap();
+    assert!(migrate.status.success());
+    // pool_max - data_operations = 1 connection for readiness and catalog work.
+    let mut server = Server(
+        Command::new(env!("CARGO_BIN_EXE_atlas"))
+            .args(["serve", "--config", "tests/fixtures/ready-capacity.toml"])
+            .args(["--listen", "127.0.0.1:0"])
+            .env("ATLAS_DATABASE_URL", &dsn)
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut lines = BufReader::new(server.0.stderr.take().unwrap()).lines();
+    let listening = lines.next().unwrap().unwrap();
+    // Keep draining stderr: a closed pipe makes the server's request log panic mid-response.
+    thread::spawn(move || lines.for_each(drop));
+    let address = listening
+        .strip_prefix("{\"event\":\"listening\",\"address\":\"")
+        .and_then(|rest| rest.strip_suffix("\"}"))
+        .unwrap()
+        .to_owned();
+    let ready = || {
+        let address = address.clone();
+        thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).unwrap();
+            write!(
+                stream,
+                "GET /api/v1/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).unwrap();
+            response
+        })
+    };
+    let mut locker = sqlx::PgConnection::connect(&dsn).await.unwrap();
+    let mut lock = locker.begin().await.unwrap();
+    sqlx::query("LOCK atlas_catalog.datasets IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *lock)
+        .await
+        .unwrap();
+    // The first check blocks on the lock while holding the only reserved connection.
+    let held = ready();
+    let mut observer = sqlx::PgConnection::connect(&dsn).await.unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while sqlx::query_scalar::<_, i64>("SELECT count(*) FROM pg_stat_activity WHERE application_name='atlas-rust' AND wait_event_type='Lock'")
+        .fetch_one(&mut observer)
+        .await
+        .unwrap()
+        == 0
+    {
+        assert!(Instant::now() < deadline, "readiness never blocked");
+        thread::sleep(Duration::from_millis(10));
+    }
+    // The next check waits acquire_seconds for that connection, then reports capacity.
+    let started = Instant::now();
+    let refused = ready().join().unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(500));
+    assert!(refused.starts_with("HTTP/1.1 503"), "{refused}");
+    assert!(
+        refused.contains(r#""code":"capacity_exceeded""#),
+        "{refused}"
+    );
+    lock.rollback().await.unwrap();
+    let held = held.join().unwrap();
+    assert!(held.starts_with("HTTP/1.1 200"), "{held}");
+}

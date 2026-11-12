@@ -16,6 +16,8 @@ async fn cursor_budgets_snapshot_and_cleanup() {
     .unwrap();
     config.allowed_schemas = vec!["export_test".into()];
     config.limits.pool_max = 2;
+    config.limits.data_operations = 1;
+    config.limits.export_operations = 1;
     config.limits.default_limit = 1;
     let db = Database::open(&config).await.unwrap();
     let mut tx = db.begin_catalog().await.unwrap();

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 async fn timeout_saturation_rollback_cancel_and_close() {
     let dsn = std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required");
     let config = Config::parse(
-        "[limits]\npool_max=1\nacquire_seconds=1\nquery_seconds=1",
+        "[limits]\npool_max=2\ndata_operations=1\nexport_operations=1\nacquire_seconds=1\nquery_seconds=1",
         Some(dsn),
         None,
     )
