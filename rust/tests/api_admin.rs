@@ -25,12 +25,43 @@ fn bearer(roles: &[&str]) -> String {
     format!("Authorization: Bearer {token}\r\n")
 }
 
+/// Adds the default JSON media type for POST/PATCH unless the caller sets a Content-Type.
+fn typed(method: &str, headers: &str) -> String {
+    let media = match method {
+        "POST" => "application/json",
+        "PATCH" => "application/merge-patch+json",
+        _ => return headers.to_owned(),
+    };
+    if headers.to_lowercase().contains("content-type:") {
+        headers.to_owned()
+    } else {
+        format!("{headers}Content-Type: {media}\r\n")
+    }
+}
+
+/// Body of a raw HTTP response as JSON.
+fn json(response: &str) -> serde_json::Value {
+    serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap()
+}
+
 async fn expect(
     address: SocketAddr,
     request: (&str, &str, &str, &str),
     status: &str,
     needle: &str,
-) {
+) -> String {
+    let (method, target, headers, body) = request;
+    let headers = typed(method, headers);
+    expect_raw(address, (method, target, &headers, body), status, needle).await
+}
+
+/// Like `expect`, but sends exactly the given headers.
+async fn expect_raw(
+    address: SocketAddr,
+    request: (&str, &str, &str, &str),
+    status: &str,
+    needle: &str,
+) -> String {
     let (method, target, headers, body) = request;
     let raw = format!(
         "{method} {target} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n{headers}\r\n{body}",
@@ -54,9 +85,11 @@ async fn expect(
     if status.starts_with('4') {
         assert!(response.contains("request_id") && !response.contains("SELECT"));
     }
+    response
 }
 
 async fn declared(address: SocketAddr, method: &str, target: &str, headers: &str) -> String {
+    let headers = typed(method, headers);
     let raw = format!(
         "{method} {target} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n{headers}\r\n",
         3 << 20
@@ -170,6 +203,49 @@ async fn admin_routes_over_real_http() {
         "no-store",
     )
     .await;
+    let ct = BODY.replace("api_roads", "api_ct");
+    let ct_item = "/api/v1/admin/datasets/api_ct";
+    let text = "Content-Type: text/plain\r\n";
+    let headers = format!("{viewer}{text}");
+    expect_raw(a, ("POST", LIST, &headers, &ct), "403", "permission_denied").await;
+    for media in [
+        "",
+        "Content-Type: text/plain\r\n",
+        "Content-Type: application/jsonx\r\n",
+        "Content-Type: application/json; charset=latin1\r\n",
+        "Content-Type: application/json\r\nContent-Type: application/json\r\n",
+    ] {
+        let headers = format!("{admin}{media}");
+        expect_raw(a, ("POST", LIST, &headers, &ct), "400", "invalid_request").await;
+    }
+    for media in [
+        "Content-Type: Application/JSON\r\n",
+        "Content-Type: application/json; charset=utf-8\r\n",
+    ] {
+        let headers = format!("{admin}{media}");
+        expect_raw(a, ("POST", LIST, &headers, &ct), "201", "etag: \"1\"").await;
+        expect(
+            a,
+            ("DELETE", ct_item, &revision("\"1\""), ""),
+            "204",
+            "no-store",
+        )
+        .await;
+    }
+    let mut nulls = Vec::new();
+    for field in ["description", "filter", "access"] {
+        let mut doc: serde_json::Value = serde_json::from_str(&ct).unwrap();
+        doc[field] = serde_json::Value::Null;
+        nulls.push(doc);
+    }
+    let mut doc: serde_json::Value = serde_json::from_str(&ct).unwrap();
+    doc["source"]["geometry_column"] = serde_json::Value::Null;
+    nulls.push(doc);
+    for doc in nulls {
+        let doc = doc.to_string();
+        expect(a, ("POST", LIST, &admin, &doc), "400", "invalid_request").await;
+    }
+    expect(a, ("GET", ct_item, &admin, ""), "404", "dataset_not_found").await;
     let paged = |query: &str| format!("{LIST}?{query}");
     expect(a, ("GET", ITEM, "", ""), "403", "permission_denied").await;
     expect(a, ("GET", ITEM, &viewer, ""), "403", "permission_denied").await;
@@ -255,6 +331,27 @@ async fn admin_routes_over_real_http() {
         "revision_mismatch",
     )
     .await;
+    let headers = format!("{viewer}If-Match: \"1\"\r\n{text}");
+    expect_raw(
+        a,
+        ("PATCH", ITEM, &headers, title),
+        "403",
+        "permission_denied",
+    )
+    .await;
+    for media in [
+        "Content-Type: text/plain\r\n",
+        "Content-Type: application/merge-patch+json\r\nContent-Type: application/json\r\n",
+    ] {
+        let headers = format!("{}{media}", revision("\"1\""));
+        expect_raw(
+            a,
+            ("PATCH", ITEM, &headers, title),
+            "400",
+            "invalid_request",
+        )
+        .await;
+    }
     expect(
         a,
         ("PATCH", ITEM, &revision("\"1\""), title),
@@ -270,9 +367,13 @@ async fn admin_routes_over_real_http() {
     )
     .await;
     let spatial_patch = serde_json::json!({"filter":polygon}).to_string();
+    let as_json = format!(
+        "{}Content-Type: Application/JSON; charset=utf-8\r\n",
+        revision("\"2\"")
+    );
     expect(
         a,
-        ("PATCH", ITEM, &revision("\"2\""), &spatial_patch),
+        ("PATCH", ITEM, &as_json, &spatial_patch),
         "200",
         "etag: \"3\"",
     )
@@ -293,10 +394,30 @@ async fn admin_routes_over_real_http() {
         "invalid_filter",
     )
     .await;
-    expect(a, ("GET", ITEM, &admin, ""), "200", "etag: \"3\"").await;
+    let described = r#"{"description":"D"}"#;
     expect(
         a,
-        ("DELETE", ITEM, &revision("\"3\""), ""),
+        ("PATCH", ITEM, &revision("\"3\""), described),
+        "200",
+        "\"description\":\"d\"",
+    )
+    .await;
+    // In Merge Patch, null keeps its meaning: it removes the optional field.
+    let cleared = r#"{"description":null}"#;
+    let response = expect(
+        a,
+        ("PATCH", ITEM, &revision("\"4\""), cleared),
+        "200",
+        "etag: \"5\"",
+    )
+    .await;
+    assert!(
+        json(&response)["config"]["description"].is_null(),
+        "{response}"
+    );
+    expect(
+        a,
+        ("DELETE", ITEM, &revision("\"5\""), ""),
         "204",
         "cache-control: no-store",
     )

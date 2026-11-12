@@ -85,6 +85,21 @@ fn access_roles_are_bounded() {
 }
 
 #[test]
+fn closed_query_rejects_null_fields() {
+    let rejected = |json: &str| {
+        serde_json::from_str::<Query>(json)
+            .ok()
+            .is_none_or(|q| q.validate(10000, 100000).is_err())
+    };
+    for field in ["filter", "bbox", "properties", "sort", "limit", "offset"] {
+        assert!(rejected(&format!(r#"{{"{field}":null}}"#)), "{field}");
+    }
+    for valid in ["{}", r#"{"limit":1,"offset":0,"properties":["id"]}"#] {
+        assert!(!rejected(valid), "{valid}");
+    }
+}
+
+#[test]
 fn query_validation_preserves_numeric_filter() {
     for json in [
         r#"{"limit":0}"#,

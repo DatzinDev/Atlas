@@ -22,6 +22,7 @@ fn bearer(roles: &[&str]) -> String {
     format!("Authorization: Bearer {token}\r\n")
 }
 
+/// Sends the request with `Content-Type: application/json` on POST unless the caller sets one.
 async fn call(
     a: SocketAddr,
     method: &str,
@@ -29,7 +30,37 @@ async fn call(
     headers: &str,
     body: &str,
 ) -> (String, String, Value) {
-    let (status, head, body) = call_raw(a, method, target, headers, body).await;
+    parse(call_raw(a, method, target, headers, body).await)
+}
+
+/// Like `call`, but returns the raw response body.
+async fn call_raw(
+    a: SocketAddr,
+    method: &str,
+    target: &str,
+    headers: &str,
+    body: &str,
+) -> (String, String, String) {
+    let headers = if method == "POST" && !headers.to_lowercase().contains("content-type:") {
+        format!("{headers}Content-Type: application/json\r\n")
+    } else {
+        headers.to_owned()
+    };
+    send_raw(a, method, target, &headers, body).await
+}
+
+/// Sends exactly the given headers, without adding a default `Content-Type`.
+async fn send(
+    a: SocketAddr,
+    method: &str,
+    target: &str,
+    headers: &str,
+    body: &str,
+) -> (String, String, Value) {
+    parse(send_raw(a, method, target, headers, body).await)
+}
+
+fn parse((status, head, body): (String, String, String)) -> (String, String, Value) {
     (
         status,
         head,
@@ -37,7 +68,7 @@ async fn call(
     )
 }
 
-async fn call_raw(
+async fn send_raw(
     a: SocketAddr,
     method: &str,
     target: &str,
@@ -243,7 +274,7 @@ async fn items_and_query_over_real_http() {
     assert!(body["request_id"].is_string());
 
     let huge = format!(
-        "POST {query} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+        "POST {query} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n",
         3 << 20
     );
     let response = tokio::task::spawn_blocking(move || {
@@ -264,6 +295,41 @@ async fn items_and_query_over_real_http() {
     assert!(body["code"] == "query_too_large" && body["request_id"].is_string());
     let exact = format!("{{}}{}", " ".repeat(510));
     assert_eq!(call(a, "POST", query, "", &exact).await.0, "200");
+
+    // Content-Type is checked before the body is read and before the catalog is consulted.
+    for headers in [
+        "Content-Type: application/json\r\n",
+        "Content-Type: Application/JSON\r\n",
+        "Content-Type: application/json; charset=utf-8\r\n",
+    ] {
+        assert_eq!(
+            send(a, "POST", query, headers, "{}").await.0,
+            "200",
+            "{headers}"
+        );
+    }
+    let private = "/api/v1/datasets/items_view/query";
+    for headers in [
+        "",
+        "Content-Type: text/plain\r\n",
+        "Content-Type: application/jsonx\r\n",
+        "Content-Type: application/json; charset=latin1\r\n",
+        "Content-Type: application/json\r\nContent-Type: application/json\r\n",
+    ] {
+        for target in [query, private] {
+            let (status, _, response) = send(a, "POST", target, headers, "{}").await;
+            assert_eq!(status, "400", "{headers:?} {target}: {response}");
+            assert_eq!(response["code"], "invalid_request", "{headers:?} {target}");
+        }
+    }
+
+    // Closed Query: null is not an absent field.
+    for field in ["filter", "bbox", "properties", "sort", "limit", "offset"] {
+        let body = format!(r#"{{"{field}":null}}"#);
+        let (status, _, response) = call(a, "POST", query, "", &body).await;
+        assert_eq!(status, "400", "{body}: {response}");
+        assert_eq!(response["code"], "invalid_request", "{body}");
+    }
 
     bbox_domain(a, &db).await;
 

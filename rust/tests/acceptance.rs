@@ -119,6 +119,7 @@ async fn experimental_mvp_survives_restart() {
         .unwrap();
     assert!(output.status.success());
     let admin = token(&["atlas-admin"]);
+    let admin_json = format!("{admin}Content-Type: application/json\r\n");
     let reader = token(&["reader"]);
     let mut server = Server::start(path, &dsn);
     for (id, table, access) in [
@@ -160,7 +161,7 @@ async fn experimental_mvp_survives_restart() {
             );
         }
         assert_eq!(
-            call(&server.1, "POST", "admin/datasets", &admin, &body).0,
+            call(&server.1, "POST", "admin/datasets", &admin_json, &body).0,
             201
         );
     }
