@@ -11,7 +11,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 /// Resolves the request principal; on failure returns the stable reason logged by `authenticate`.
-pub fn principal(
+pub async fn principal(
     headers: &HeaderMap,
     verifier: Option<&Verifier>,
 ) -> Result<Principal, &'static str> {
@@ -33,7 +33,7 @@ pub fn principal(
     if token.is_empty() || token.bytes().any(|b| b.is_ascii_whitespace()) {
         return Err("malformed_header");
     }
-    verifier.ok_or("auth_disabled")?.verify(token)
+    verifier.ok_or("auth_disabled")?.verify(token).await
 }
 
 pub async fn authenticate(
@@ -41,7 +41,7 @@ pub async fn authenticate(
     mut request: Request,
     next: Next,
 ) -> Response {
-    match principal(request.headers(), verifier.as_ref().as_ref()) {
+    match principal(request.headers(), verifier.as_ref().as_ref()).await {
         Ok(principal) => {
             request.extensions_mut().insert(principal);
             next.run(request).await

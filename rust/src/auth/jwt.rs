@@ -74,23 +74,35 @@ fn unsigned(int: &[u8]) -> Option<&[u8]> {
     int.get(int.iter().position(|&b| b != 0).unwrap_or(int.len())..)
 }
 
-/// Accepts PKCS#1 `RSAPublicKey` DER with a 2048..=8192-bit modulus and odd exponent >= 3.
-fn strong_rsa(key: &DecodingKey) -> Option<()> {
-    let DecodingKeyKind::SecretOrDer(bytes) = key.kind() else {
-        return None;
-    };
+/// Splits PKCS#1 `RSAPublicKey` DER into its unsigned modulus and exponent.
+fn der_components(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
     let (body, rest) = der(bytes, 0x30)?;
     let (n, body) = der(body, 0x02)?;
     let (e, body) = der(body, 0x02)?;
-    let (n, e) = (unsigned(n)?, unsigned(e)?);
+    (rest.is_empty() && body.is_empty()).then_some((unsigned(n)?, unsigned(e)?))
+}
+
+fn trimmed(int: &[u8]) -> &[u8] {
+    &int[int.iter().position(|&b| b != 0).unwrap_or(int.len())..]
+}
+
+/// Accepts RSA keys with a 2048..=8192-bit modulus and odd exponent >= 3, from PEM or JWK.
+fn strong_rsa(key: &DecodingKey) -> Option<()> {
+    let (n, e) = match key.kind() {
+        DecodingKeyKind::SecretOrDer(bytes) => der_components(bytes)?,
+        DecodingKeyKind::RsaModulusExponent { n, e } => (trimmed(n), trimmed(e)),
+    };
     let bits = n.len() * 8 - n.first()?.leading_zeros() as usize;
     let odd = e.last()? & 1 == 1;
-    (rest.is_empty()
-        && body.is_empty()
-        && (2048..=8192).contains(&bits)
-        && odd
-        && (e.len() > 1 || e[0] >= 3))
-        .then_some(())
+    ((2048..=8192).contains(&bits) && odd && (e.len() > 1 || e[0] >= 3)).then_some(())
+}
+
+/// A strong RS256 public key the crypto provider accepts.
+pub(crate) fn usable(key: &DecodingKey) -> Option<()> {
+    strong_rsa(key)?;
+    (jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER.verifier_factory)(&Algorithm::RS256, key)
+        .ok()
+        .map(|_| ())
 }
 
 /// Object members in order, duplicates kept so they can be rejected.
@@ -151,9 +163,7 @@ impl Verifier {
             return Err(Error::InvalidRequest);
         }
         let key = DecodingKey::from_rsa_pem(pem).map_err(|_| Error::InvalidRequest)?;
-        strong_rsa(&key).ok_or(Error::InvalidRequest)?;
-        (jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER.verifier_factory)(&Algorithm::RS256, &key)
-            .map_err(|_| Error::InvalidRequest)?;
+        usable(&key).ok_or(Error::InvalidRequest)?;
         let mut validation = Validation::new(Algorithm::RS256);
         validation.set_required_spec_claims(&["sub", "iss", "aud", "exp"]);
         validation.set_issuer(&[issuer]);
@@ -184,7 +194,7 @@ impl Verifier {
     }
 
     /// On failure returns a stable reason for logs; never the token or its claims.
-    pub fn verify(&self, token: &str) -> Result<Principal, &'static str> {
+    pub async fn verify(&self, token: &str) -> Result<Principal, &'static str> {
         // Bound decoding and signature work independently of future request body limits.
         if token.len() > 16384 {
             return Err("token_too_large");
