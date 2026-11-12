@@ -9,6 +9,12 @@ fn defaults_and_overrides_are_validated() {
     assert_eq!(config.limits.data_operations, 8);
     assert_eq!(config.limits.export_operations, 2);
     assert!(config.auth.is_none());
+    assert_eq!(config.limits.shutdown_seconds, 30);
+    for seconds in [1, 3600] {
+        let text = format!("[limits]\nshutdown_seconds={seconds}");
+        let config = Config::parse(&text, None, None).unwrap();
+        assert_eq!(config.limits.shutdown_seconds, seconds);
+    }
     let config = Config::parse(
         "listen='127.0.0.1:1'\n database_url='postgres://file/db'",
         Some("postgres://env/db".into()),
@@ -26,6 +32,9 @@ fn defaults_and_overrides_are_validated() {
         "[limits]\npool_max=10\ndata_operations=10",
         "[limits]\nmax_limit=1",
         "[limits]\nquery_seconds=0",
+        "[limits]\nshutdown_seconds=0",
+        "[limits]\nshutdown_seconds=3601",
+        "[limits]\nshutdown_seconds=-1",
         "[limits]\ntile_buffer=99999",
         "[limits]\nfilter_depth=129",
         "[limits]\nmax_limit=-1",

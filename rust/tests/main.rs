@@ -21,6 +21,19 @@ impl Drop for Server {
     }
 }
 
+/// Waits for a successful exit and returns the time it took.
+fn exit_within(server: &mut Server, limit: Duration) -> Duration {
+    let start = Instant::now();
+    loop {
+        if let Some(status) = server.0.try_wait().unwrap() {
+            assert!(status.success(), "{status}");
+            return start.elapsed();
+        }
+        assert!(start.elapsed() < limit, "shutdown timed out");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[test]
 fn configuration_errors_do_not_echo_input() {
     for args in [
@@ -198,17 +211,11 @@ fn http_startup_and_shutdown() {
                 .unwrap()
                 .success()
         );
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            if let Some(status) = server.0.try_wait().unwrap() {
-                assert!(status.success());
-                break;
-            }
-            assert!(Instant::now() < deadline, "shutdown timed out");
-            thread::sleep(Duration::from_millis(10));
-        }
+        // Idle servers exit promptly and never report a forced shutdown.
+        assert!(exit_within(&mut server, Duration::from_secs(1)) < Duration::from_secs(1));
         let logs = logs.join().unwrap();
         assert!(logs.contains("shutdown_complete") && !logs.contains("secret-token"));
+        assert!(!logs.contains("shutdown_forced"));
     }
 }
 
@@ -763,9 +770,9 @@ async fn ready_reports_capacity_exceeded_when_reserved_connections_are_busy() {
             .spawn()
             .unwrap(),
     );
+    // Keep draining stderr: a closed pipe makes the server's request log panic mid-response.
     let mut lines = BufReader::new(server.0.stderr.take().unwrap()).lines();
     let listening = lines.next().unwrap().unwrap();
-    // Keep draining stderr: a closed pipe makes the server's request log panic mid-response.
     thread::spawn(move || lines.for_each(drop));
     let address = listening
         .strip_prefix("{\"event\":\"listening\",\"address\":\"")
@@ -792,11 +799,12 @@ async fn ready_reports_capacity_exceeded_when_reserved_connections_are_busy() {
         .execute(&mut *lock)
         .await
         .unwrap();
-    // The first check blocks on the lock while holding the only reserved connection.
+    // The first check blocks on the lock while holding the only reserved connection; match its
+    // query so other tests' Atlas sessions queued on the same lock are not mistaken for it.
     let held = ready();
     let mut observer = sqlx::PgConnection::connect(&dsn).await.unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
-    while sqlx::query_scalar::<_, i64>("SELECT count(*) FROM pg_stat_activity WHERE application_name='atlas-rust' AND wait_event_type='Lock'")
+    while sqlx::query_scalar::<_, i64>("SELECT count(*) FROM pg_stat_activity WHERE application_name='atlas-rust' AND wait_event_type='Lock' AND query LIKE 'SELECT id,config,metadata,revision FROM atlas_catalog.datasets LIMIT 0%'")
         .fetch_one(&mut observer)
         .await
         .unwrap()
@@ -817,4 +825,155 @@ async fn ready_reports_capacity_exceeded_when_reserved_connections_are_busy() {
     lock.rollback().await.unwrap();
     let held = held.join().unwrap();
     assert!(held.starts_with("HTTP/1.1 200"), "{held}");
+}
+
+fn terminate(server: &Server) {
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &server.0.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+/// Waits until this test's Atlas sessions are present or gone; the monitor is not `atlas-rust`.
+async fn wait_for_sessions(monitor: &mut sqlx::PgConnection, sleeping: bool, present: bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity WHERE application_name='atlas-rust' AND (query LIKE '%shutdown_test%' OR query LIKE '%atlas_export%') AND (NOT $1 OR wait_event='PgSleep')",
+        )
+        .bind(sleeping)
+        .fetch_one(&mut *monitor)
+        .await
+        .unwrap();
+        if (count > 0) == present {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{count} sessions, expected present={present}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+fn assert_forced(lines: &[String]) {
+    let events: Vec<String> = lines
+        .iter()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|log| log["event"].as_str().map(str::to_owned))
+        .collect();
+    let position = |event: &str| {
+        events
+            .iter()
+            .position(|e| e == event)
+            .unwrap_or_else(|| panic!("missing {event}: {events:?}"))
+    };
+    assert!(position("shutdown_started") < position("shutdown_forced"));
+    assert!(position("shutdown_forced") < position("shutdown_complete"));
+}
+
+#[tokio::test]
+async fn shutdown_deadline_aborts_stalled_work() {
+    use atlas::{
+        config::Config, postgis::connection::Database, services::publications::Publications,
+    };
+    use sqlx::Connection;
+    let dsn = std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required");
+    let mut config = Config::parse("", Some(dsn.clone()), None).unwrap();
+    config.allowed_schemas = vec!["shutdown_test".into()];
+    atlas::migrations::migrate(&config).await.unwrap();
+    let db = Database::open(&config).await.unwrap();
+    let mut tx = db.begin_catalog().await.unwrap();
+    for sql in [
+        "DROP SCHEMA IF EXISTS shutdown_test CASCADE",
+        "CREATE SCHEMA shutdown_test",
+        "DELETE FROM atlas_catalog.datasets WHERE id LIKE 'shutdown_%'",
+        "CREATE TABLE shutdown_test.flag(armed boolean)",
+        "CREATE FUNCTION shutdown_test.pause() RETURNS boolean LANGUAGE plpgsql VOLATILE AS $$ BEGIN IF EXISTS (SELECT FROM shutdown_test.flag) THEN PERFORM pg_sleep(60); END IF; RETURN true; END $$",
+        "CREATE TABLE shutdown_test.one(id bigint PRIMARY KEY, n integer, geom geometry(Point,4326))",
+        "INSERT INTO shutdown_test.one VALUES (1,1,ST_SetSRID(ST_Point(0,0),4326))",
+        "CREATE VIEW shutdown_test.slow AS SELECT * FROM shutdown_test.one WHERE shutdown_test.pause()",
+        // Large enough (~50 MB of GeoJSON) to outgrow every socket buffer on loopback.
+        "CREATE TABLE shutdown_test.big AS SELECT n::bigint AS id, repeat('x',200) AS pad, ST_SetSRID(ST_Point(0,0),4326)::geometry(Point,4326) AS geom FROM generate_series(1,200000) n",
+        "ALTER TABLE shutdown_test.big ADD PRIMARY KEY(id)",
+    ] {
+        sqlx::query(sql).execute(&mut *tx).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+    let service = Publications::new(db.clone(), config).unwrap();
+    for body in [
+        r#"{"id":"shutdown_slow","title":"X","source":{"schema":"shutdown_test","table":"slow","id_column":"id"},"properties":["n"],"access":{"public":true,"public_download":true}}"#,
+        r#"{"id":"shutdown_big","title":"X","source":{"schema":"shutdown_test","table":"big"},"properties":["pad"],"access":{"public":true,"public_download":true}}"#,
+    ] {
+        service.create(body.as_bytes()).await.unwrap();
+    }
+    // Arm the view only after publishing so introspection never sleeps.
+    let mut tx = db.begin_catalog().await.unwrap();
+    sqlx::query("INSERT INTO shutdown_test.flag VALUES (true)")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    db.close().await;
+    let file = std::env::temp_dir().join(format!("atlas-shutdown-{}.toml", std::process::id()));
+    std::fs::write(
+        &file,
+        "allowed_schemas = ['shutdown_test']\n[limits]\nshutdown_seconds = 1\n",
+    )
+    .unwrap();
+    let path = file.to_str().unwrap();
+    let mut monitor = sqlx::PgConnection::connect(&dsn).await.unwrap();
+
+    // A request blocked in pg_sleep is aborted at the deadline and its session cancelled.
+    let (mut server, address, logs) = start(
+        Command::new(env!("CARGO_BIN_EXE_atlas"))
+            .args(["serve", "--config", path])
+            .env("ATLAS_DATABASE_URL", &dsn),
+    );
+    let mut request = TcpStream::connect(&address).unwrap();
+    write!(
+        request,
+        "GET /api/v1/datasets/shutdown_slow/items HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    wait_for_sessions(&mut monitor, true, true).await;
+    terminate(&server);
+    assert!(exit_within(&mut server, Duration::from_secs(7)) <= Duration::from_secs(7));
+    assert_forced(&logs.join().unwrap());
+    wait_for_sessions(&mut monitor, false, false).await;
+    drop(request);
+
+    // An export whose client stopped reading cannot hold shutdown beyond the deadline.
+    let (mut server, address, logs) = start(
+        Command::new(env!("CARGO_BIN_EXE_atlas"))
+            .args(["serve", "--config", path])
+            .env("ATLAS_DATABASE_URL", &dsn),
+    );
+    let mut download = TcpStream::connect(&address).unwrap();
+    download
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    write!(
+        download,
+        "GET /api/v1/datasets/shutdown_big/export HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut head = Vec::new();
+    let mut byte = [0];
+    while !head.ends_with(b"\r\n\r\n") {
+        download.read_exact(&mut byte).unwrap();
+        head.push(byte[0]);
+    }
+    assert!(head.starts_with(b"HTTP/1.1 200"));
+    // The body is never read from here on.
+    wait_for_sessions(&mut monitor, false, true).await;
+    terminate(&server);
+    assert!(exit_within(&mut server, Duration::from_secs(1 + 6)) <= Duration::from_secs(7));
+    assert_forced(&logs.join().unwrap());
+    wait_for_sessions(&mut monitor, false, false).await;
+    drop(download);
+    let _ = std::fs::remove_file(&file);
 }
