@@ -20,7 +20,7 @@ pub async fn page(
     query: &Query,
     limits: &Limits,
 ) -> Result<Page, Error> {
-    let mut builder = select(dataset, meta, selection, query, limits)?;
+    let mut builder = select(dataset, meta, selection, query)?;
     let limit = query.limit.unwrap_or(limits.default_limit);
     builder
         .push(" LIMIT ")
@@ -60,9 +60,7 @@ pub(crate) fn select(
     meta: &Metadata,
     selection: &Selection,
     query: &Query,
-    limits: &Limits,
 ) -> Result<QueryBuilder<Postgres>, Error> {
-    query.validate(limits.max_limit, limits.max_offset)?;
     let published: Vec<&str> = meta.attributes.iter().map(|a| a.name.as_str()).collect();
     let properties = match &query.properties {
         Some(names) => names.iter().map(String::as_str).collect(),

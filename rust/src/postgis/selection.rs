@@ -4,8 +4,8 @@ use super::{
 };
 use crate::{
     config::Limits,
-    domain::{Error, Metadata},
-    query::predicate::{Predicate, Spatial, parse},
+    domain::{Dataset, Error, Metadata},
+    query::predicate::{Predicate, Spatial},
 };
 use sqlx::{Postgres, QueryBuilder, Transaction};
 
@@ -16,31 +16,30 @@ pub struct Selection {
     meta: Metadata,
 }
 
+/// Parses the admin fixed filter; call once per request, where it is used.
+pub fn fixed(dataset: &Dataset, limits: &Limits) -> Result<Option<Predicate>, Error> {
+    let text = dataset.filter.as_ref().map(|filter| filter.get());
+    text.map(|text| crate::query::predicate::parse(text, limits))
+        .transpose()
+}
+
 /// Call after authorization, in the same read transaction used to fetch source rows.
+/// Takes predicates already parsed: `fixed` from [`fixed`], `user` from the API layer.
 pub async fn prepare(
     tx: &mut Transaction<'_, Postgres>,
-    fixed: Option<&str>,
-    user: Option<&str>,
+    fixed: Option<Predicate>,
+    user: Option<Predicate>,
     bbox: Option<[f64; 4]>,
     meta: &Metadata,
-    limits: &Limits,
 ) -> Result<Selection, Error> {
-    limits.validate()?;
-    let predicates = [fixed, user]
-        .into_iter()
-        .flatten()
-        .map(|text| parse(text, limits))
-        .collect::<Result<Vec<_>, _>>()?;
+    let has_fixed = fixed.is_some();
+    let predicates: Vec<Predicate> = [fixed, user].into_iter().flatten().collect();
     // Reject unpublished attributes before even validating geometries in PostGIS.
     let mut wide = meta.clone();
     wide.attributes.extend_from_slice(&meta.filter_attributes);
     for (i, predicate) in predicates.iter().enumerate() {
         // Only the admin fixed filter may use unpublished columns.
-        let meta = if i == 0 && fixed.is_some() {
-            &wide
-        } else {
-            meta
-        };
+        let meta = if i == 0 && has_fixed { &wide } else { meta };
         compile_using(&mut QueryBuilder::new(""), predicate, meta, &mut |_, _| {
             Ok(())
         })?;

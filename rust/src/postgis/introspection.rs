@@ -2,7 +2,7 @@ use super::connection::{Database, error};
 use crate::{
     config::Config,
     domain::{Attribute, Dataset, Error, Metadata},
-    query::predicate::{Predicate, parse},
+    query::predicate::Predicate,
 };
 use sqlx::Row;
 
@@ -17,13 +17,9 @@ pub async fn inspect(
 ) -> Result<Metadata, Error> {
     dataset.validate(&config.allowed_schemas)?;
     let source = &dataset.source;
-    // ponytail: an unparsable fixed filter is reported later by selection::prepare.
+    // ponytail: an unparsable fixed filter is reported later by selection::fixed.
     let mut hidden = Vec::new();
-    if let Some(predicate) = dataset
-        .filter
-        .as_ref()
-        .and_then(|filter| parse(filter.get(), &config.limits).ok())
-    {
+    if let Ok(Some(predicate)) = super::selection::fixed(dataset, &config.limits) {
         fields(&predicate, &mut hidden);
     }
     hidden.retain(|field| !dataset.properties.contains(field));

@@ -3,9 +3,13 @@ use crate::{
     config::Limits,
     domain::{Error, Query},
     postgis::{
-        connection::Database, features, introspection::quote_identifier, predicates::query_error,
-        selection::prepare,
+        connection::Database,
+        features,
+        introspection::quote_identifier,
+        predicates::query_error,
+        selection::{fixed, prepare},
     },
+    query::predicate::Predicate,
 };
 use futures_util::TryStreamExt;
 use sqlx::{Execute, Postgres, QueryBuilder, Transaction};
@@ -31,19 +35,22 @@ pub struct Export {
 }
 
 impl Export {
+    /// `user` is `query.filter` already parsed by the caller.
     pub async fn open(
         db: &Database,
         publication: &Publication,
         query: &Query,
+        user: Option<Predicate>,
         limits: &Limits,
     ) -> Result<Self, Error> {
-        Self::admitted(db, publication, query, limits, Vec::new()).await
+        Self::admitted(db, publication, query, user, limits, Vec::new()).await
     }
 
     pub(crate) async fn admitted(
         db: &Database,
         publication: &Publication,
         query: &Query,
+        user: Option<Predicate>,
         limits: &Limits,
         permits: Vec<OwnedSemaphorePermit>,
     ) -> Result<Self, Error> {
@@ -68,16 +75,8 @@ impl Export {
         timeout_at(deadline, async {
             let tx = export.tx.as_mut().ok_or(Error::InternalError)?;
             let (dataset, meta) = (&publication.config, &publication.metadata);
-            let selection = prepare(
-                tx,
-                dataset.filter.as_ref().map(|f| f.get()),
-                query.filter.as_ref().map(|f| f.get()),
-                query.bbox,
-                meta,
-                limits,
-            )
-            .await?;
-            let mut select = features::select(dataset, meta, &selection, query, limits)?;
+            let selection = prepare(tx, fixed(dataset, limits)?, user, query.bbox, meta).await?;
+            let mut select = features::select(dataset, meta, &selection, query)?;
             let mut count = QueryBuilder::<Postgres>::new("SELECT count(*) FROM (SELECT 1 FROM ");
             count
                 .push(quote_identifier(&dataset.source.schema))

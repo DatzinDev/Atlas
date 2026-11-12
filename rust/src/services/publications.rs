@@ -8,7 +8,7 @@ use crate::{
         features::{self, Page},
         introspection::inspect,
         mvt,
-        selection::prepare,
+        selection::{fixed, prepare},
     },
 };
 use serde::{
@@ -116,11 +116,14 @@ impl Publications {
         filter: Option<&str>,
         properties: Option<&[String]>,
     ) -> Result<Vec<u8>, Error> {
+        let filter = filter
+            .map(|text| crate::query::predicate::parse(text, &self.config.limits))
+            .transpose()?;
         let permit = self.admission.acquire()?;
         let (service, publication, filter, properties) = (
             self.clone(),
             publication.clone(),
-            filter.map(str::to_owned),
+            filter,
             properties.map(<[String]>::to_vec),
         );
         self.admission
@@ -128,15 +131,9 @@ impl Publications {
                 let _permit = permit;
                 let mut tx = service.database.begin_data().await?;
                 let result = async {
-                    let selection = prepare(
-                        &mut tx,
-                        publication.config.filter.as_ref().map(|f| f.get()),
-                        filter.as_deref(),
-                        None,
-                        &publication.metadata,
-                        &service.config.limits,
-                    )
-                    .await?;
+                    let fixed = fixed(&publication.config, &service.config.limits)?;
+                    let selection =
+                        prepare(&mut tx, fixed, filter, None, &publication.metadata).await?;
                     mvt::tile(
                         &mut tx,
                         &publication.config,
@@ -159,6 +156,12 @@ impl Publications {
     }
 
     pub async fn features(&self, publication: &Publication, query: &Query) -> Result<Page, Error> {
+        query.validate(self.config.limits.max_limit, self.config.limits.max_offset)?;
+        let filter = query
+            .filter
+            .as_ref()
+            .map(|f| crate::query::predicate::parse(f.get(), &self.config.limits))
+            .transpose()?;
         let permit = self.admission.acquire()?;
         let (service, publication, query) = (self.clone(), publication.clone(), query.clone());
         self.admission
@@ -166,15 +169,9 @@ impl Publications {
                 let _permit = permit;
                 let mut tx = service.database.begin_data().await?;
                 let result = async {
-                    let selection = prepare(
-                        &mut tx,
-                        publication.config.filter.as_ref().map(|f| f.get()),
-                        query.filter.as_ref().map(|f| f.get()),
-                        query.bbox,
-                        &publication.metadata,
-                        &service.config.limits,
-                    )
-                    .await?;
+                    let fixed = fixed(&publication.config, &service.config.limits)?;
+                    let selection =
+                        prepare(&mut tx, fixed, filter, query.bbox, &publication.metadata).await?;
                     features::page(
                         &mut tx,
                         &publication.config,
@@ -202,9 +199,11 @@ impl Publications {
         query: &Query,
     ) -> Result<crate::exports::geojson::Export, Error> {
         query.validate(self.config.limits.max_limit, self.config.limits.max_offset)?;
-        if let Some(filter) = &query.filter {
-            crate::query::predicate::parse(filter.get(), &self.config.limits)?;
-        }
+        let filter = query
+            .filter
+            .as_ref()
+            .map(|f| crate::query::predicate::parse(f.get(), &self.config.limits))
+            .transpose()?;
         let publication = self.catalog.get(id).await.map_err(|e| match e {
             Error::SchemaChanged => Error::DatasetNotFound,
             other => other,
@@ -219,6 +218,7 @@ impl Publications {
                     &service.database,
                     &publication,
                     &query,
+                    filter,
                     &service.config.limits,
                     permits,
                 )
@@ -235,23 +235,17 @@ impl Publications {
     ) -> Result<Value, Error> {
         let (config, meta) = (&publication.config, &publication.metadata);
         if let Some(filter) = filter {
+            let user = crate::query::predicate::parse(filter, &self.config.limits)?;
             let permit = self.admission.acquire()?;
-            let (service, publication, filter) =
-                (self.clone(), publication.clone(), filter.to_owned());
+            let (service, publication) = (self.clone(), publication.clone());
             self.admission
                 .wait(async move {
                     let _permit = permit;
+                    let fixed = fixed(&publication.config, &service.config.limits)?;
                     let mut tx = service.database.begin_read().await?;
-                    let result = prepare(
-                        &mut tx,
-                        publication.config.filter.as_ref().map(|f| f.get()),
-                        Some(filter.as_str()),
-                        None,
-                        &publication.metadata,
-                        &service.config.limits,
-                    )
-                    .await
-                    .map(drop);
+                    let result = prepare(&mut tx, fixed, Some(user), None, &publication.metadata)
+                        .await
+                        .map(drop);
                     let cleanup = tx
                         .rollback()
                         .await
@@ -369,9 +363,9 @@ impl Publications {
                 Error::DatasetNotFound => Error::InvalidRequest,
                 other => other,
             })?;
+        let fixed = fixed(dataset, &self.config.limits)?;
         let mut tx = self.database.begin_read().await?;
-        let fixed = dataset.filter.as_ref().map(|filter| filter.get());
-        prepare(&mut tx, fixed, None, None, &meta, &self.config.limits).await?;
+        prepare(&mut tx, fixed, None, None, &meta).await?;
         Ok(())
     }
 }
