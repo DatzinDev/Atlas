@@ -12,7 +12,11 @@ use jsonwebtoken::{
     jwk::{AlgorithmParameters, JwkSet, KeyAlgorithm, PublicKeyUse},
 };
 use serde_json::json;
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
+use tokio::sync::{Mutex, RwLock};
 
 pub const MAX_JWKS_BYTES: usize = 65536;
 pub const MAX_KEYS: usize = 32;
@@ -20,15 +24,28 @@ pub const MAX_KEYS: usize = 32;
 /// Fixed in production by ADR 0010; tests shorten them.
 #[derive(Clone, Copy)]
 pub struct Timing {
+    pub min_refresh: Duration,
+    pub max_age: Duration,
+    pub max_stale: Duration,
     pub timeout: Duration,
 }
 
 impl Default for Timing {
     fn default() -> Self {
         Self {
+            min_refresh: Duration::from_secs(60),
+            max_age: Duration::from_secs(3600),
+            max_stale: Duration::from_secs(86400),
             timeout: Duration::from_secs(5),
         }
     }
+}
+
+struct Keys {
+    keys: HashMap<String, DecodingKey>,
+    fetched: Instant,
+    attempted: Instant,
+    failed: bool,
 }
 
 /// In-process cache of the operator JWKS public keys; never stores tokens or claims.
@@ -36,7 +53,8 @@ pub struct Jwks {
     url: Uri,
     timing: Timing,
     client: Client<HttpsConnector<HttpConnector>, Empty<Bytes>>,
-    keys: HashMap<String, DecodingKey>,
+    keys: RwLock<Keys>,
+    refresh: Mutex<()>,
 }
 
 /// HTTPS, or plain HTTP only towards loopback for tests.
@@ -80,13 +98,20 @@ impl Jwks {
             .https_or_http()
             .enable_http1()
             .build();
-        let mut jwks = Self {
+        let now = Instant::now();
+        let jwks = Self {
             url,
             timing,
             client: Client::builder(TokioExecutor::new()).build(connector),
-            keys: HashMap::new(),
+            keys: RwLock::new(Keys {
+                keys: HashMap::new(),
+                fetched: now,
+                attempted: now,
+                failed: false,
+            }),
+            refresh: Mutex::new(()),
         };
-        jwks.keys = jwks.fetch().await.map_err(|_| Error::InvalidRequest)?;
+        jwks.keys.write().await.keys = jwks.fetch().await.map_err(|_| Error::InvalidRequest)?;
         Ok(jwks)
     }
 
@@ -118,8 +143,47 @@ impl Jwks {
         result.map_err(|reason| log(json!({"event": "jwks_refresh_failed", "reason": reason})))
     }
 
+    /// One download at a time, at most one per `min_refresh`.
+    async fn renew(&self, kid: &str) {
+        let _single = self.refresh.lock().await;
+        {
+            let keys = self.keys.read().await;
+            let fresh = keys.fetched.elapsed() < self.timing.max_age;
+            if (fresh && keys.keys.contains_key(kid))
+                || keys.attempted.elapsed() < self.timing.min_refresh
+            {
+                return;
+            }
+        }
+        self.keys.write().await.attempted = Instant::now();
+        let result = self.fetch().await;
+        let mut keys = self.keys.write().await;
+        keys.failed = result.is_err();
+        if let Ok(fetched) = result {
+            keys.keys = fetched;
+            keys.fetched = Instant::now();
+        }
+    }
+
     /// On failure returns the stable reason logged for the 401.
     pub async fn key(&self, kid: &str) -> Result<DecodingKey, &'static str> {
-        self.keys.get(kid).cloned().ok_or("unknown_kid")
+        {
+            let keys = self.keys.read().await;
+            if keys.fetched.elapsed() < self.timing.max_age
+                && let Some(key) = keys.keys.get(kid)
+            {
+                return Ok(key.clone());
+            }
+        }
+        self.renew(kid).await;
+        let keys = self.keys.read().await;
+        if keys.fetched.elapsed() >= self.timing.max_stale {
+            return Err("jwks_expired");
+        }
+        match keys.keys.get(kid) {
+            Some(key) => Ok(key.clone()),
+            None if keys.failed => Err("jwks_unavailable"),
+            None => Err("unknown_kid"),
+        }
     }
 }

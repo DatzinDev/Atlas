@@ -16,6 +16,7 @@ use std::{
 };
 
 const FIRST: &[u8] = include_bytes!("fixtures/jwt-test-private.pem");
+const ROTATED: &[u8] = include_bytes!("fixtures/oidc-test-rotated.pem");
 
 #[derive(Default)]
 struct Provider {
@@ -54,7 +55,9 @@ fn first() -> String {
 
 fn timing() -> Timing {
     Timing {
+        min_refresh: Duration::ZERO,
         timeout: Duration::from_millis(500),
+        ..Timing::default()
     }
 }
 
@@ -73,21 +76,27 @@ async fn start(body: String) -> (Arc<Provider>, String) {
 #[tokio::test]
 async fn loads_only_trusted_signing_keys_and_fails_closed_at_startup() {
     let (provider, url) = start(set(vec![
-        jwk(FIRST, "enc", Some(PublicKeyUse::Encryption)),
+        jwk(ROTATED, "enc", Some(PublicKeyUse::Encryption)),
         jwk(FIRST, "first", Some(PublicKeyUse::Signature)),
     ]))
     .await;
     let jwks = Jwks::load(&url, timing()).await.unwrap();
     assert!(jwks.key("first").await.is_ok());
     assert_eq!(jwks.key("enc").await.err(), Some("unknown_kid"));
-    let mut weak = jwk(FIRST, "weak", None);
+    let mut weak = jwk(ROTATED, "weak", None);
     let AlgorithmParameters::RSA(rsa) = &mut weak.algorithm else {
         unreachable!()
     };
+    let mut exponent_one = rsa.clone();
+    exponent_one.e = "AQ".into();
     rsa.n.truncate(171);
-    provider.set(200, set(vec![weak, jwk(FIRST, "first", None)]), 0);
+    let mut one = jwk(ROTATED, "one", None);
+    one.algorithm = AlgorithmParameters::RSA(exponent_one);
+    provider.set(200, set(vec![weak, one, jwk(FIRST, "first", None)]), 0);
     let jwks = Jwks::load(&url, timing()).await.unwrap();
-    assert_eq!(jwks.key("weak").await.err(), Some("unknown_kid"));
+    for kid in ["weak", "one"] {
+        assert_eq!(jwks.key(kid).await.err(), Some("unknown_kid"));
+    }
     let mut anonymous = jwk(FIRST, "", None);
     anonymous.common.key_id = None;
     for (status, body, delay) in [
@@ -116,4 +125,52 @@ async fn loads_only_trusted_signing_keys_and_fails_closed_at_startup() {
             Err(Error::InvalidRequest)
         ));
     }
+}
+
+#[tokio::test]
+async fn rotates_by_kid_with_a_single_bounded_refresh() {
+    let (provider, url) = start(first()).await;
+    let limited = Timing {
+        min_refresh: Duration::from_secs(3600),
+        ..timing()
+    };
+    let jwks = Jwks::load(&url, limited).await.unwrap();
+    for _ in 0..3 {
+        assert_eq!(jwks.key("missing").await.err(), Some("unknown_kid"));
+    }
+    assert_eq!(provider.hits.load(Ordering::SeqCst), 1);
+    let (provider, url) = start(first()).await;
+    let jwks = Arc::new(Jwks::load(&url, timing()).await.unwrap());
+    provider.set(200, set(vec![jwk(ROTATED, "rotated", None)]), 100);
+    let checks: Vec<_> = (0..8)
+        .map(|_| {
+            let jwks = jwks.clone();
+            tokio::spawn(async move { jwks.key("rotated").await.is_ok() })
+        })
+        .collect();
+    for check in checks {
+        assert!(check.await.unwrap());
+    }
+    assert_eq!(provider.hits.load(Ordering::SeqCst), 2);
+    assert!(jwks.key("first").await.is_err());
+}
+
+#[tokio::test]
+async fn provider_outage_keeps_keys_until_stale_then_fails_closed() {
+    let (provider, url) = start(first()).await;
+    let short = Timing {
+        max_age: Duration::ZERO,
+        max_stale: Duration::from_secs(1),
+        ..timing()
+    };
+    let jwks = Jwks::load(&url, short).await.unwrap();
+    provider.set(503, String::new(), 0);
+    assert!(jwks.key("first").await.is_ok());
+    assert_eq!(jwks.key("other").await.err(), Some("jwks_unavailable"));
+    provider.set(200, first(), 2000);
+    assert!(jwks.key("first").await.is_ok());
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(jwks.key("first").await.err(), Some("jwks_expired"));
+    provider.set(200, first(), 0);
+    assert!(jwks.key("first").await.is_ok());
 }
