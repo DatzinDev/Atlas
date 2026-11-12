@@ -183,15 +183,19 @@ Claims externos adicionales se permiten; jku/kid no seleccionan claves ni dispar
 Tokens de más de 16 KiB se rechazan. Claves en tests/fixtures son ficticias y públicas;
 jamás usarlas en despliegues. No hay emisor, login ni OIDC.
 
-TOML admite `[auth]` opcional; al incluirlo exige los tres campos siguientes.
+TOML admite `[auth]` opcional; al incluirlo exige `public_key_file`, `issuer` y `audience`.
 Rutas relativas se resuelven desde el directorio de trabajo del proceso.
 El PEM se carga una vez antes del listener; rotarlo requiere reiniciar.
+La clave (SPKI o PKCS#1) debe ser RSA de 2048 a 8192 bits con exponente impar ≥ 3;
+si no, `serve` termina con `startup_failed` sin abrir el puerto.
+`leeway_seconds` (opcional, 0..=300, por defecto 30) tolera desfase de reloj en `exp`/`nbf`.
 
 ```toml
 [auth]
 public_key_file = '/etc/atlas/jwt-public.pem'
 issuer = 'https://identity.example.test'
 audience = 'atlas'
+leeway_seconds = 30
 ```
 
 El middleware verifica Authorization antes de ejecutar handlers, incluidas rutas públicas.

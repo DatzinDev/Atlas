@@ -11,6 +11,12 @@ pub struct Auth {
     pub public_key_file: PathBuf,
     pub issuer: String,
     pub audience: String,
+    #[serde(default = "default_leeway")]
+    pub leeway_seconds: u64,
+}
+
+fn default_leeway() -> u64 {
+    crate::auth::jwt::DEFAULT_LEEWAY_SECONDS
 }
 
 impl Auth {
@@ -18,6 +24,7 @@ impl Auth {
         if self.public_key_file.as_os_str().is_empty()
             || self.issuer.trim().is_empty()
             || self.audience.trim().is_empty()
+            || self.leeway_seconds > 300
         {
             return Err(Error::InvalidRequest);
         }
@@ -28,6 +35,7 @@ impl Auth {
         self.validate()?;
         let pem = std::fs::read(&self.public_key_file).map_err(|_| Error::InvalidRequest)?;
         crate::auth::jwt::Verifier::new(&pem, &self.issuer, &self.audience)
+            .map(|v| v.with_leeway(self.leeway_seconds))
     }
 }
 
