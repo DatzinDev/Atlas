@@ -5,8 +5,43 @@ use atlas::{
     config::Config,
     domain::Error,
 };
-use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
+use axum::{
+    Router,
+    http::{HeaderName, HeaderValue, Method, StatusCode, header},
+    response::IntoResponse,
+    routing::get,
+};
 use tokio::{net::TcpListener, signal};
+use tower_http::cors::{AllowOrigin, CorsLayer};
+
+/// `None` when no origin is configured: no CORS headers and OPTIONS stays 405.
+fn cors(origins: &[String]) -> Option<CorsLayer> {
+    if origins.is_empty() {
+        return None;
+    }
+    let origin = if origins == ["*"] {
+        AllowOrigin::any()
+    } else {
+        // Config validation guarantees ASCII origins, so no entry is dropped.
+        AllowOrigin::list(origins.iter().filter_map(|o| HeaderValue::from_str(o).ok()))
+    };
+    Some(
+        CorsLayer::new()
+            .allow_origin(origin)
+            .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE])
+            .allow_headers([
+                header::AUTHORIZATION,
+                header::CONTENT_TYPE,
+                header::IF_MATCH,
+            ])
+            .expose_headers([
+                header::ETAG,
+                header::CONTENT_DISPOSITION,
+                HeaderName::from_static("x-request-id"),
+            ])
+            .max_age(std::time::Duration::from_secs(600)),
+    )
+}
 
 fn configuration() -> Result<(bool, Config), &'static str> {
     let args: Vec<_> = env::args_os().skip(1).collect();
@@ -114,8 +149,13 @@ async fn serve(config: Config) -> Result<(), &'static str> {
         // Set after every route is added: axum applies it to existing routes and keeps `Allow`.
         .method_not_allowed_fallback(|| async { failure(Error::MethodNotAllowed) })
         .layer(axum::middleware::map_response(nosniff))
-        // Outermost: every response, including fallbacks and 401s, gets the request id.
+        // Every routed response, including fallbacks and 401s, gets the request id.
         .layer(axum::middleware::from_fn(track));
+    // Outside `track` and auth: preflights need no token and every error carries CORS.
+    let router = match cors(&config.cors.allowed_origins) {
+        Some(layer) => router.layer(layer),
+        None => router,
+    };
     eprintln!("{{\"event\":\"listening\",\"address\":\"{bound}\"}}");
     let result = axum::serve(listener, router)
         .with_graceful_shutdown(async move {

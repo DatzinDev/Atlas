@@ -1,6 +1,7 @@
 use crate::domain::{Error, names};
 use serde::Deserialize;
 use std::{
+    collections::HashSet,
     net::SocketAddr,
     path::{Path, PathBuf},
 };
@@ -143,6 +144,39 @@ impl Limits {
     }
 }
 
+#[derive(Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Cors {
+    /// Empty (default) disables CORS; `["*"]` allows any origin.
+    pub allowed_origins: Vec<String>,
+}
+
+impl Cors {
+    pub fn validate(&self) -> Result<(), Error> {
+        let origins = &self.allowed_origins;
+        // ponytail: character whitelist plus numeric port, not a full host parser.
+        let origin = |o: &String| {
+            let Some(rest) = o.strip_prefix("https://").or(o.strip_prefix("http://")) else {
+                return false;
+            };
+            let split = rest.rsplit_once(':').filter(|(_, p)| !p.contains(']'));
+            let (host, port) = split.unwrap_or((rest, "1"));
+            let v6 = host.starts_with('[') && host.ends_with(']');
+            let h = if v6 { &host[1..host.len() - 1] } else { host };
+            let ok = |c: char| c.is_ascii_alphanumeric() || "-.".contains(c) || (v6 && c == ':');
+            !h.is_empty()
+                && h.chars().all(ok)
+                && !port.is_empty()
+                && port.bytes().all(|b| b.is_ascii_digit())
+        };
+        let unique = origins.iter().collect::<HashSet<_>>().len() == origins.len();
+        if origins.len() > 100 || !unique || !(*origins == ["*"] || origins.iter().all(origin)) {
+            return Err(Error::InvalidRequest);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -152,6 +186,7 @@ pub struct Config {
     pub allowed_schemas: Vec<String>,
     pub public_url: Option<String>,
     pub limits: Limits,
+    pub cors: Cors,
 }
 
 impl Default for Config {
@@ -163,6 +198,7 @@ impl Default for Config {
             allowed_schemas: vec!["public".into()],
             public_url: None,
             limits: Limits::default(),
+            cors: Cors::default(),
         }
     }
 }
@@ -186,6 +222,7 @@ impl Config {
 
     pub fn validate(&self) -> Result<(), Error> {
         self.limits.validate()?;
+        self.cors.validate()?;
         if let Some(auth) = &self.auth {
             auth.validate()?;
         }

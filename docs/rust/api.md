@@ -129,6 +129,15 @@ cualquier Authorization se ignora. Toda respuesta, incluidas MVT y exportaciones
 lleva X-Content-Type-Options: nosniff. No convertir resultados truncados en 200. Errores tardíos de stream
 interrumpen el cuerpo y se registran; no pueden sustituir headers ya enviados.
 
+CORS (`tower_http::cors::CorsLayer`) está deshabilitado por defecto: sin `[cors]` no hay
+cabeceras `access-control-*` y `OPTIONS` devuelve 405 method_not_allowed. Con
+`allowed_origins` es la capa más externa, antes de autenticación y del log: el preflight no
+exige token (ni lleva `x-request-id`, nosniff o línea de log) y los 401/4xx/5xx también llevan
+CORS. Métodos `GET, POST, PATCH, DELETE`; cabeceras permitidas `authorization, content-type,
+if-match`; expuestas `etag, content-disposition, x-request-id`; `max-age` 600; `vary` incluye
+`origin`; nunca `Access-Control-Allow-Credentials`. Un origen no listado no recibe
+`access-control-allow-origin`; `["*"]` responde `*`.
+
 ## Ejemplo de selección
 
 ```json

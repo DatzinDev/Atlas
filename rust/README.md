@@ -204,6 +204,10 @@ Con auth sin configurar, cualquier Authorization falla cerrado. Solo Bearer en c
 credenciales en query string no se usan. No registrar tokens ni cabeceras. Cada 401
 registra `auth_failed` con `request_id` y un `reason` estable (ver auth-verification.md).
 
+CORS (#342) deshabilitado por defecto; `[cors] allowed_origins` admite hasta 100 orígenes
+únicos, `*` solo o `http(s)://host[:puerto]`; si no, `startup_failed`. Cabeceras y orden de
+capas: `docs/rust/api.md`.
+
 ## Políticas (#217)
 
 `auth::policy::{view,query,download,admin}` son funciones sin I/O: invocarlas antes de
