@@ -12,12 +12,18 @@ Recibe predicados ya parseados: el fijo con `selection::fixed`, una vez por peti
 usarse, y el de usuario desde la API.
 Su resultado se añade al WHERE mediante `Selection::append`, en la misma transacción
 de solo lectura y después de autorizar. No hay nuevos endpoints HTTP en este bloque.
+`prepare` construye un árbol preparado paralelo al `Predicate`: cada geometría queda en su
+propio nodo espacial, nunca emparejada por orden de recorrido. La compilación SQL de
+predicados es interna; no hay `restrict` ni `compile` públicos.
 
 La topología se comprueba en PostGIS antes de seleccionar filas. Geometrías inválidas,
 vacías, XY fuera del dominio 4326 o transformaciones inválidas fallan sin reparación.
 El bbox debe producir una selección poligonal válida; no se interpreta un bbox invertido
 como cruce del antimeridiano. La columna fuente permanece en su CRS nativo y sin
-envolver en ST_Transform: && prefiltra y ST_Intersects/ST_Within confirma. Reproyectar
+envolver en ST_Transform. Cada nodo espacial envía su EWKB una sola vez, en
+`ST_Intersects`/`ST_Within` sin `&&` explícito: PostGIS ≥ 3.1 usa el índice GiST mediante
+funciones de soporte. Validar el SRID y transformar la selección es un único round-trip
+por nodo (más uno del bbox). Reproyectar
 la salida pertenece al consumidor posterior del WHERE.
 
 ## Reproducción

@@ -16,35 +16,6 @@ enum Kind {
     Bool,
 }
 
-pub fn restrict(
-    builder: &mut QueryBuilder<Postgres>,
-    fixed: Option<&Predicate>,
-    user: Option<&Predicate>,
-    meta: &Metadata,
-) -> Result<(), Error> {
-    let predicates: Vec<_> = [fixed, user].into_iter().flatten().collect();
-    if predicates.is_empty() {
-        builder.push("TRUE");
-    }
-    for (i, predicate) in predicates.into_iter().enumerate() {
-        if i > 0 {
-            builder.push(" AND ");
-        }
-        compile(builder, predicate, meta)?;
-    }
-    Ok(())
-}
-
-pub fn compile(
-    builder: &mut QueryBuilder<Postgres>,
-    predicate: &Predicate,
-    meta: &Metadata,
-) -> Result<(), Error> {
-    compile_using(builder, predicate, meta, &mut |_, _| {
-        Err(Error::InvalidFilter)
-    })
-}
-
 pub(crate) fn compile_using<F>(
     builder: &mut QueryBuilder<Postgres>,
     predicate: &Predicate,
