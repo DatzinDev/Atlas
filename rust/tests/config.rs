@@ -6,6 +6,8 @@ fn defaults_and_overrides_are_validated() {
     assert_eq!(config.limits.max_limit, 10000);
     assert_eq!(config.limits.pool_max, 10);
     assert_eq!(config.limits.export_bytes, 268435456);
+    assert_eq!(config.limits.data_operations, 8);
+    assert_eq!(config.limits.export_operations, 2);
     assert!(config.auth.is_none());
     let config = Config::parse(
         "listen='127.0.0.1:1'\n database_url='postgres://file/db'",
@@ -29,10 +31,32 @@ fn defaults_and_overrides_are_validated() {
         "[limits]\nmax_limit=1.5",
         "[limits]\nextra=1",
         "[limits]\nmax_limit=1\nmax_limit=2",
+        "[limits]\nexport_operations=0",
+        "[limits]\nexport_operations=9",
+        "[limits]\ndata_operations=1",
+        "[limits]\ndata_operations=3\nexport_operations=4",
+        "[limits]\nexport_operations=-1",
     ] {
         assert!(Config::parse(text, None, None).is_err(), "{text}");
     }
     assert!(Config::parse("", None, Some("not-an-address".into())).is_err());
+    for (text, data, export) in [
+        ("[limits]\nexport_operations=1", 8, 1),
+        ("[limits]\nexport_operations=8", 8, 8),
+        ("[limits]\ndata_operations=2", 2, 2),
+        ("[limits]\ndata_operations=3\nexport_operations=1", 3, 1),
+        ("[limits]\ndata_operations=1\nexport_operations=1", 1, 1),
+    ] {
+        let limits = Config::parse(text, None, None).unwrap().limits;
+        assert_eq!(
+            (limits.data_operations, limits.export_operations),
+            (data, export),
+            "{text}"
+        );
+    }
+    let mut config = Config::default();
+    config.limits.export_operations = config.limits.data_operations + 1;
+    assert!(config.validate().is_err());
 }
 
 #[test]

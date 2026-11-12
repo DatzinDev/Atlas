@@ -61,6 +61,7 @@ async fn downloads_over_http() {
     c.allowed_schemas = vec!["http_export".into()];
     c.limits.default_limit = 1;
     c.limits.data_operations = 1;
+    c.limits.export_operations = 1;
     c.limits.pool_max = 2;
     c.limits.export_features = 10;
     migrate(&c).await.unwrap();
