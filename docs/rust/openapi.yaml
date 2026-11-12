@@ -85,11 +85,13 @@ paths:
     get:
       operationId: health
       security: []
+      description: Ignora cualquier Authorization.
       responses: {'200': {description: Proceso activo}}
   /ready:
     get:
       operationId: ready
       security: []
+      description: Ignora cualquier Authorization; 503 es database_unavailable con no-store.
       responses: {'200': {description: Pool y catálogo disponibles}, '503': {$ref: '#/components/responses/Error'}}
 components:
   securitySchemes:
@@ -104,7 +106,7 @@ components:
     Sort: {name: sort, in: query, schema: {type: string}, description: 'field:asc,other:desc; whitelist y desempate por id.'}
     IfMatch: {name: If-Match, in: header, required: true, schema: {type: string}, description: Revision entre comillas del ETag administrativo.}
   responses:
-    Error: {description: Error estructurado; códigos HTTP y limpieza en api.md, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Error: {description: 'Error estructurado (incluye 404 not_found y 405 method_not_allowed con Allow); códigos HTTP, no-store y nosniff en api.md', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     Features: {description: Página GeoJSON sin conteo total implícito, content: {application/geo+json: {schema: {$ref: '#/components/schemas/Page'}}}}
   schemas:
     Error:

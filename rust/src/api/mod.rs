@@ -17,7 +17,8 @@ pub fn status(error: Error) -> StatusCode {
         Error::InvalidRequest | Error::InvalidFilter => StatusCode::BAD_REQUEST,
         Error::InvalidToken => StatusCode::UNAUTHORIZED,
         Error::PermissionDenied => StatusCode::FORBIDDEN,
-        Error::DatasetNotFound => StatusCode::NOT_FOUND,
+        Error::DatasetNotFound | Error::NotFound => StatusCode::NOT_FOUND,
+        Error::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
         Error::PublicationConflict | Error::SchemaChanged => StatusCode::CONFLICT,
         Error::RevisionMismatch => StatusCode::PRECONDITION_FAILED,
         Error::QueryTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
@@ -40,6 +41,14 @@ pub fn failure(error: Error) -> Response {
     let body = json!({"code": code, "message": message,
         "request_id": REQUEST_ID.fetch_add(1, Ordering::Relaxed).to_string()});
     respond(status(error), Some(body), None)
+}
+
+pub async fn nosniff(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    response
 }
 
 pub fn respond(status: StatusCode, body: Option<Value>, revision: Option<i64>) -> Response {

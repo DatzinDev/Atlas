@@ -1,6 +1,10 @@
 use std::{env, process::ExitCode};
 
-use atlas::config::Config;
+use atlas::{
+    api::{failure, nosniff},
+    config::Config,
+    domain::Error,
+};
 use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
 use tokio::{net::TcpListener, signal};
 
@@ -66,20 +70,20 @@ async fn serve(config: Config) -> Result<(), &'static str> {
         .map(|db| atlas::catalog::Catalog::new(db, config.clone()))
         .transpose()
         .map_err(|_| "invalid configuration")?;
-    let router = Router::new()
+    // Probes stay outside authentication: OpenAPI declares them `security: []`.
+    let probes = Router::new()
         .route("/api/v1/health", get(|| async { StatusCode::OK }))
         .route(
             "/api/v1/ready",
             get(move || {
                 let catalog = catalog.clone();
                 async move {
-                    if let Some(catalog) = catalog && catalog.ready().await.is_ok() {
-                        return StatusCode::OK.into_response();
+                    match catalog {
+                        Some(catalog) if catalog.ready().await.is_ok() => {
+                            StatusCode::OK.into_response()
+                        }
+                        _ => failure(Error::DatabaseUnavailable),
                     }
-                    static REQUEST_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-                    let body = serde_json::json!({"code": atlas::domain::Error::DatabaseUnavailable,
-                        "message": "service not ready", "request_id": REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed).to_string()});
-                    (StatusCode::SERVICE_UNAVAILABLE, [("content-type", "application/json")], body.to_string()).into_response()
                 }
             }),
         );
@@ -89,7 +93,7 @@ async fn serve(config: Config) -> Result<(), &'static str> {
         .transpose()
         .map_err(|_| "invalid configuration")?;
     let router = match publications {
-        Some(service) => router
+        Some(service) => Router::new()
             .merge(atlas::api::datasets::router(service.clone()))
             .merge(atlas::api::tiles::router(service.clone()))
             .merge(atlas::api::features::router(service.clone()))
@@ -98,12 +102,18 @@ async fn serve(config: Config) -> Result<(), &'static str> {
                 service,
                 config.limits.admin_body_bytes,
             )),
-        None => router,
+        None => Router::new(),
     };
-    let router = router.layer(axum::middleware::from_fn_with_state(
-        verifier,
-        atlas::auth::http::authenticate,
-    ));
+    let router = router
+        .layer(axum::middleware::from_fn_with_state(
+            verifier,
+            atlas::auth::http::authenticate,
+        ))
+        .merge(probes)
+        .fallback(|| async { failure(Error::NotFound) })
+        // Set after every route is added: axum applies it to existing routes and keeps `Allow`.
+        .method_not_allowed_fallback(|| async { failure(Error::MethodNotAllowed) })
+        .layer(axum::middleware::map_response(nosniff));
     eprintln!("{{\"event\":\"listening\",\"address\":\"{bound}\"}}");
     let result = axum::serve(listener, router)
         .with_graceful_shutdown(async move {

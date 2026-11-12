@@ -107,17 +107,23 @@ Los ejemplos no incluyen tokens reales. Usar cabecera Authorization, nunca query
 
 Error uniforme `{code,message,request_id}`; sin SQL, valores filtrados, paths ni credenciales.
 400 invalid_request/invalid_filter; 401 invalid_token; 403 permission_denied;
-404 dataset_not_found; 409 publication_conflict/schema_changed; 412 revision_mismatch;
-413 query_too_large; 500 internal_error; 503 capacity_exceeded/database_unavailable;
-504 query_timeout. Mapeo de la base: `PoolTimedOut` → 503 capacity_exceeded; I/O, TLS,
+404 dataset_not_found/not_found; 405 method_not_allowed; 409 publication_conflict/schema_changed;
+412 revision_mismatch; 413 query_too_large; 500 internal_error;
+503 capacity_exceeded/database_unavailable; 504 query_timeout. Mapeo de la base: `PoolTimedOut` → 503 capacity_exceeded; I/O, TLS,
 `PoolClosed` y SQLSTATE clase 08, clase 53, 57P01, 57P02, 57P03 → 503 database_unavailable;
 57014 → 504 query_timeout; 23505 en el catálogo → 409 publication_conflict; 42703/42P01 en
 consultas de datos → 409 schema_changed; clase 22 en consultas de datos y XX000 solo al preparar
 la geometría del cliente → 400 invalid_filter; cualquier otro SQLSTATE (42501, 42883, XX000…) y
 errores de decodificación → 500 internal_error, que registra en stderr
 `{"event":"database_error","sqlstate":"42501"}` (o `"kind":"decode"`) sin mensaje, SQL ni
-valores; el cuerpo HTTP no incluye el SQLSTATE. No convertir resultados truncados en 200.
-Errores tardíos de stream interrumpen el cuerpo y se registran; no pueden sustituir headers ya enviados.
+valores; el cuerpo HTTP no incluye el SQLSTATE.
+not_found es cualquier ruta inexistente (dataset_not_found queda reservado a datasets);
+method_not_allowed es una ruta existente con otro método y conserva la cabecera Allow.
+Ambos, como /ready en 503 (database_unavailable), usan el error uniforme con
+Content-Type: application/json y Cache-Control: no-store. /health y /ready no autentican:
+cualquier Authorization se ignora. Toda respuesta, incluidas MVT y exportaciones en streaming,
+lleva X-Content-Type-Options: nosniff. No convertir resultados truncados en 200. Errores tardíos de stream
+interrumpen el cuerpo y se registran; no pueden sustituir headers ya enviados.
 
 ## Ejemplo de selección
 

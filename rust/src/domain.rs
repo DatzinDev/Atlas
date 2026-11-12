@@ -9,6 +9,8 @@ pub enum Error {
     InvalidToken,
     PermissionDenied,
     DatasetNotFound,
+    NotFound,
+    MethodNotAllowed,
     PublicationConflict,
     SchemaChanged,
     RevisionMismatch,
