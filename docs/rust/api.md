@@ -146,6 +146,26 @@ if-match`; expuestas `etag, content-disposition, x-request-id`; `max-age` 600; `
 `origin`; nunca `Access-Control-Allow-Credentials`. Un origen no listado no recibe
 `access-control-allow-origin`; `["*"]` responde `*`.
 
+`message` es una frase fija en inglés por código, sin datos de la petición:
+
+| code | message |
+|---|---|
+| invalid_request | The request has an invalid or unsupported parameter, header or body. |
+| invalid_filter | The filter is not a valid predicate for this dataset. |
+| invalid_token | The bearer token is not valid. |
+| permission_denied | The principal is not allowed to perform this operation. |
+| dataset_not_found | The dataset does not exist or is not visible. |
+| not_found | No route matches this path. |
+| method_not_allowed | The method is not allowed for this route. |
+| publication_conflict | A publication with this id already exists. |
+| schema_changed | The publication no longer matches its source. |
+| revision_mismatch | The If-Match revision does not match the current revision. |
+| query_too_large | The request exceeds a configured size or result budget. |
+| internal_error | Unexpected server error; report the request_id. |
+| capacity_exceeded | The server is at capacity; retry later. |
+| database_unavailable | The database is unavailable; retry later. |
+| query_timeout | The query exceeded its time budget. |
+
 ## Ejemplo de selección
 
 ```json

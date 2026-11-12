@@ -92,6 +92,29 @@ pub fn status(error: Error) -> StatusCode {
     }
 }
 
+/// Fixed English hint per code; never carries request data.
+fn message(error: Error) -> &'static str {
+    match error {
+        Error::InvalidRequest => {
+            "The request has an invalid or unsupported parameter, header or body."
+        }
+        Error::InvalidFilter => "The filter is not a valid predicate for this dataset.",
+        Error::InvalidToken => "The bearer token is not valid.",
+        Error::PermissionDenied => "The principal is not allowed to perform this operation.",
+        Error::DatasetNotFound => "The dataset does not exist or is not visible.",
+        Error::NotFound => "No route matches this path.",
+        Error::MethodNotAllowed => "The method is not allowed for this route.",
+        Error::PublicationConflict => "A publication with this id already exists.",
+        Error::SchemaChanged => "The publication no longer matches its source.",
+        Error::RevisionMismatch => "The If-Match revision does not match the current revision.",
+        Error::QueryTooLarge => "The request exceeds a configured size or result budget.",
+        Error::InternalError => "Unexpected server error; report the request_id.",
+        Error::CapacityExceeded => "The server is at capacity; retry later.",
+        Error::DatabaseUnavailable => "The database is unavailable; retry later.",
+        Error::QueryTimeout => "The query exceeded its time budget.",
+    }
+}
+
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
         failure(self)
@@ -100,8 +123,7 @@ impl IntoResponse for Error {
 
 pub fn failure(error: Error) -> Response {
     let code = serde_json::to_value(error).unwrap_or(Value::Null);
-    let message = code.as_str().unwrap_or("error").replace('_', " ");
-    let body = json!({"code": code, "message": message, "request_id": request_id()});
+    let body = json!({"code": code, "message": message(error), "request_id": request_id()});
     let mut response = respond(status(error), Some(body), None);
     response.extensions_mut().insert(error);
     response
