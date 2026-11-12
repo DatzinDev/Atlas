@@ -1,7 +1,7 @@
 use super::{introspection::quote_identifier, predicates::query_error, selection::Selection};
 use crate::{
     config::Limits,
-    domain::{Dataset, Error, Metadata},
+    domain::{Dataset, Error, FilterClass, Metadata, MvtEncoding, property_type},
 };
 use sqlx::{Postgres, QueryBuilder, Transaction};
 
@@ -56,34 +56,57 @@ pub async fn tile(
         .filter(|a| names.contains(&a.name.as_str()))
     {
         let column = quote_identifier(&attribute.name);
-        match attribute.data_type.as_str() {
-            "numeric" | "date" | "timestamp" | "timestamptz" => builder.push(format!("{column}::text AS {column}, ")),
-            "float4" | "float8" => builder.push(format!("CASE WHEN {column}::text IN ('NaN','Infinity','-Infinity') THEN NULL ELSE {column} END AS {column}, ")),
+        match property_type(&attribute.data_type).map(|t| t.mvt) {
+            Some(MvtEncoding::Text) => builder.push(format!("{column}::text AS {column}, ")),
+            // Same ISO 8601 text as the GeoJSON properties (row_to_json).
+            Some(MvtEncoding::IsoText) => {
+                builder.push(format!("to_json({column}) #>> '{{}}' AS {column}, "))
+            }
+            Some(MvtEncoding::FiniteFloat) => builder.push(format!("CASE WHEN {column}::text IN ('NaN','Infinity','-Infinity') THEN NULL ELSE {column} END AS {column}, ")),
             _ => builder.push(format!("{column}, ")),
         };
     }
-    builder.push(format!("{source} AS {geom}, CASE WHEN pg_typeof({key}) IN ('smallint'::regtype, 'integer'::regtype, 'bigint'::regtype) THEN CASE WHEN {key}::text::numeric BETWEEN 0 AND 9007199254740991 THEN {key}::text::bigint END END AS {id} FROM "));
+    if matches!(
+        property_type(&meta.id_type).map(|t| t.filter),
+        Some(FilterClass::Integer(..))
+    ) {
+        builder.push(format!("{source} AS {geom}, CASE WHEN {key} BETWEEN 0 AND 9007199254740991 THEN {key}::bigint END AS {id} FROM "));
+    } else {
+        builder.push(format!("{source} AS {geom}, NULL::bigint AS {id} FROM "));
+    }
     builder
         .push(quote_identifier(&dataset.source.schema))
         .push(".")
         .push(quote_identifier(&dataset.source.table))
         .push(" WHERE ");
+    let margin =
+        (bounds[2] - bounds[0]) * f64::from(limits.tile_buffer) / f64::from(limits.tile_extent);
+    let expanded = [
+        (bounds[0] - margin).max(-HALF_WORLD),
+        (bounds[1] - margin).max(-HALF_WORLD),
+        (bounds[2] + margin).min(HALF_WORLD),
+        (bounds[3] + margin).min(HALF_WORLD),
+    ];
     if z != 0 || meta.srid == 4326 || meta.srid == 3857 {
-        let margin =
-            (bounds[2] - bounds[0]) * f64::from(limits.tile_buffer) / f64::from(limits.tile_extent);
-        builder
-            .push(&source)
-            .push(" && ST_Transform(ST_MakeEnvelope(");
-        for (i, value) in bounds.iter().enumerate() {
-            let expanded = if i < 2 {
-                (value - margin).max(-HALF_WORLD)
-            } else {
-                (value + margin).min(HALF_WORLD)
-            };
-            builder.push_bind(expanded).push(", ");
+        // Densify the envelope so its edges stay faithful in curved native projections (UTM).
+        let densify = meta.srid != 4326 && meta.srid != 3857;
+        builder.push(&source).push(" && ST_Transform(");
+        if densify {
+            builder.push("ST_Segmentize(");
+        }
+        builder.push("ST_MakeEnvelope(");
+        for value in expanded {
+            builder.push_bind(value).push(", ");
+        }
+        builder.push("3857)");
+        if densify {
+            builder
+                .push(", ")
+                .push_bind((expanded[2] - expanded[0]) / 16.0)
+                .push(")");
         }
         builder
-            .push("3857), ")
+            .push(", ")
             .push(meta.srid.to_string())
             .push(") AND ");
     }
@@ -108,9 +131,25 @@ pub async fn tile(
     for name in &names {
         builder.push(quote_identifier(name)).push(", ");
     }
-    builder.push(format!(
-        "{id}, ST_AsMVTGeom(ST_Transform({geom}, 3857), ST_MakeEnvelope("
-    ));
+    builder.push(format!("{id}, ST_AsMVTGeom("));
+    if meta.srid == 3857 {
+        builder.push(format!("ST_Transform({geom}, 3857)"));
+    } else {
+        // Clip in 4326 to the buffered tile (at most ±85.0511°) so ST_Transform to 3857
+        // never sees latitudes outside the Mercator domain.
+        builder.push("ST_Transform(ST_ClipByBox2D(");
+        if meta.srid == 4326 {
+            builder.push(&geom);
+        } else {
+            builder.push(format!("ST_Transform({geom}, 4326)"));
+        }
+        builder.push(", ST_Transform(ST_MakeEnvelope(");
+        for value in expanded {
+            builder.push_bind(value).push(", ");
+        }
+        builder.push("3857), 4326)::box2d), 3857)");
+    }
+    builder.push(", ST_MakeEnvelope(");
     for value in bounds {
         builder.push_bind(value).push(", ");
     }

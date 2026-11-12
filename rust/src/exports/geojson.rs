@@ -3,10 +3,15 @@ use crate::{
     config::Limits,
     domain::{Error, Query},
     postgis::{
-        connection::Database, features, introspection::quote_identifier, predicates::query_error,
-        selection::prepare,
+        connection::Database,
+        features,
+        introspection::quote_identifier,
+        predicates::query_error,
+        selection::{fixed, prepare},
     },
+    query::predicate::Predicate,
 };
+use futures_util::TryStreamExt;
 use sqlx::{Execute, Postgres, QueryBuilder, Transaction};
 use std::{collections::VecDeque, time::Duration};
 use tokio::{
@@ -14,35 +19,31 @@ use tokio::{
     time::{Instant, timeout_at},
 };
 
+const HEADER: &str = r#"{"type":"FeatureCollection","features":["#;
 const END: &str = "]}";
 
 pub struct Export {
     tx: Option<Transaction<'static, Postgres>>,
-    permit: Option<OwnedSemaphorePermit>,
+    permits: Vec<OwnedSemaphorePermit>,
     pending: VecDeque<String>,
     deadline: Instant,
     remaining: usize,
     first: bool,
     started: bool,
     done: bool,
+    overflow: bool,
 }
 
 impl Export {
-    pub async fn open(
-        db: &Database,
-        publication: &Publication,
-        query: &Query,
-        limits: &Limits,
-    ) -> Result<Self, Error> {
-        Self::admitted(db, publication, query, limits, None).await
-    }
-
+    /// Only `Publications::export` opens exports, holding its admission `permits`.
+    /// `user` is `query.filter` already parsed by the caller.
     pub(crate) async fn admitted(
         db: &Database,
         publication: &Publication,
         query: &Query,
+        user: Option<Predicate>,
         limits: &Limits,
-        permit: Option<OwnedSemaphorePermit>,
+        permits: Vec<OwnedSemaphorePermit>,
     ) -> Result<Self, Error> {
         if query.limit.is_some() || query.offset != 0 || query.sort.is_some() {
             return Err(Error::InvalidRequest);
@@ -51,29 +52,22 @@ impl Export {
             .checked_sub(END.len())
             .ok_or(Error::QueryTooLarge)?;
         let mut export = Self {
-            tx: Some(db.begin_read().await?),
-            permit,
+            tx: Some(db.begin_data().await?),
+            permits,
             pending: VecDeque::new(),
             deadline: Instant::now() + Duration::from_secs(limits.stream_seconds.into()),
             remaining,
             first: true,
             started: false,
             done: false,
+            overflow: false,
         };
         let deadline = export.deadline;
         timeout_at(deadline, async {
             let tx = export.tx.as_mut().ok_or(Error::InternalError)?;
             let (dataset, meta) = (&publication.config, &publication.metadata);
-            let selection = prepare(
-                tx,
-                dataset.filter.as_ref().map(|f| f.get()),
-                query.filter.as_ref().map(|f| f.get()),
-                query.bbox,
-                meta,
-                limits,
-            )
-            .await?;
-            let mut select = features::select(dataset, meta, &selection, query, limits)?;
+            let selection = prepare(tx, fixed(dataset, limits)?, user, query.bbox, meta).await?;
+            let mut select = features::select(dataset, meta, &selection, query)?;
             let mut count = QueryBuilder::<Postgres>::new("SELECT count(*) FROM (SELECT 1 FROM ");
             count
                 .push(quote_identifier(&dataset.source.schema))
@@ -96,12 +90,20 @@ impl Export {
             // QueryBuilder keeps bind values separate even inside DECLARE.
             let mut cursor =
                 QueryBuilder::<Postgres>::new("DECLARE atlas_export NO SCROLL CURSOR FOR ");
-            let sql = select.sql().as_str().to_owned();
+            // Oversized features come back as NULL so they never cross the wire.
+            let inner = select.sql().as_str().to_owned();
+            select.push_bind(i64::from(limits.export_bytes));
+            let bound = select.sql().as_str()[inner.len()..].to_owned();
             let arguments = select
                 .build()
                 .take_arguments()
                 .map_err(|_| Error::InternalError)?;
-            cursor.push(sql);
+            cursor
+                .push("SELECT CASE WHEN octet_length(f) <= ")
+                .push(bound)
+                .push(" THEN f END FROM (")
+                .push(inner)
+                .push(") atlas_rows(f)");
             sqlx::query_with(cursor.sql(), arguments.ok_or(Error::InternalError)?)
                 .execute(&mut **tx)
                 .await
@@ -116,12 +118,29 @@ impl Export {
 
     async fn fetch(&mut self) -> Result<(), Error> {
         let tx = self.tx.as_mut().ok_or(Error::InternalError)?;
-        let rows: Vec<String> = sqlx::query_scalar("FETCH FORWARD 128 FROM atlas_export")
-            .fetch_all(&mut **tx)
-            .await
-            .map_err(query_error)?;
-        self.done = rows.len() < 128;
-        self.pending.extend(rows);
+        // Called with `pending` empty: buffer rows one by one only while they fit the budget.
+        let mut budget = self
+            .remaining
+            .saturating_sub(if self.started { 0 } else { HEADER.len() });
+        let mut rows =
+            sqlx::query_scalar::<_, Option<String>>("FETCH FORWARD 128 FROM atlas_export")
+                .fetch(&mut **tx);
+        let mut fetched = 0;
+        while let Some(row) = rows.try_next().await.map_err(query_error)? {
+            fetched += 1;
+            let cost = usize::from(!(self.first && self.pending.is_empty()));
+            match row.filter(|row| row.len() + cost <= budget) {
+                Some(row) => {
+                    budget -= row.len() + cost;
+                    self.pending.push_back(row);
+                }
+                None => {
+                    self.overflow = true;
+                    break;
+                }
+            }
+        }
+        self.done = self.overflow || fetched < 128;
         Ok(())
     }
 
@@ -129,20 +148,11 @@ impl Export {
         self.deadline
     }
 
+    /// No deadline here: `api/export.rs` wraps its whole pump loop in one `timeout_at(deadline())`.
     pub async fn next(&mut self) -> Result<Option<String>, Error> {
-        let deadline = self.deadline;
-        timeout_at(deadline, self.chunk())
-            .await
-            .map_err(|_| Error::QueryTimeout)?
-    }
-
-    async fn chunk(&mut self) -> Result<Option<String>, Error> {
-        if Instant::now() >= self.deadline {
-            return Err(Error::QueryTimeout);
-        }
         let chunk = if !self.started {
             self.started = true;
-            r#"{"type":"FeatureCollection","features":["#.to_owned()
+            HEADER.to_owned()
         } else {
             if self.pending.is_empty() && !self.done {
                 self.fetch().await?;
@@ -151,10 +161,12 @@ impl Export {
                 let comma = if self.first { "" } else { "," };
                 self.first = false;
                 format!("{comma}{row}")
+            } else if self.overflow {
+                return Err(Error::QueryTooLarge);
             } else if let Some(tx) = self.tx.take() {
-                let permit = self.permit.take();
+                let permits = std::mem::take(&mut self.permits);
                 tokio::spawn(async move {
-                    let _permit = permit;
+                    let _permits = permits;
                     tx.rollback()
                         .await
                         .map_err(crate::postgis::connection::error)
@@ -178,9 +190,9 @@ impl Drop for Export {
     fn drop(&mut self) {
         if let Some(tx) = self.tx.take() {
             // Keep the connection leased until rollback has really completed.
-            let permit = self.permit.take();
+            let permits = std::mem::take(&mut self.permits);
             tokio::spawn(async move {
-                let _permit = permit;
+                let _permits = permits;
                 let _ = tx.rollback().await;
             });
         }

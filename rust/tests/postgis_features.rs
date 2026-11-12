@@ -11,21 +11,32 @@ use atlas::{
 use serde_json::Value;
 
 async fn run(db: &Database, source: &(Dataset, Metadata), query: &str) -> Result<Page, Error> {
+    run_with(db, source, query, &Limits::default()).await
+}
+
+async fn run_with(
+    db: &Database,
+    source: &(Dataset, Metadata),
+    query: &str,
+    limits: &Limits,
+) -> Result<Page, Error> {
     let (dataset, meta) = source;
     let query: Query = serde_json::from_str(query).unwrap();
-    let limits = Limits::default();
+    query.validate(limits.max_limit, limits.max_offset)?;
+    let fixed = atlas::postgis::selection::fixed(dataset, limits)?;
+    let user = query
+        .filter
+        .as_ref()
+        .map(|f| atlas::query::predicate::parse(f.get(), limits))
+        .transpose()?;
     let mut tx = db.begin_read().await?;
-    let fixed = dataset.filter.as_ref().map(|f| f.get());
-    let user = query.filter.as_ref().map(|f| f.get());
-    let selection = prepare(&mut tx, fixed, user, query.bbox, meta, &limits).await?;
-    page(&mut tx, dataset, meta, &selection, &query, &limits).await
+    let selection = prepare(&mut tx, fixed, user, query.bbox, meta).await?;
+    page(&mut tx, dataset, meta, &selection, &query, limits).await
 }
 
 fn features(page: &Page) -> Vec<Value> {
-    page.features
-        .iter()
-        .map(|f| serde_json::from_str(f.get()).unwrap())
-        .collect()
+    let body: Value = serde_json::from_str(&page.body).unwrap();
+    body["features"].as_array().unwrap().clone()
 }
 
 fn ids(page: &Page) -> Vec<i64> {
@@ -82,6 +93,7 @@ async fn setup() -> (Database, Source, Source, Source) {
     (db, sources.pop().unwrap(), view, wide)
 }
 
+// R04, R08, R09
 #[tokio::test]
 async fn feature_pages_against_real_postgis() {
     let (db, places, view, wide) = setup().await;
@@ -112,7 +124,7 @@ async fn feature_pages_against_real_postgis() {
     assert_eq!(ids(&run(&db, &places, by_id).await.unwrap()), [7, 6]);
 
     let first = run(&db, &places, r#"{"limit":1}"#).await.unwrap();
-    let raw = first.features[0].get();
+    let raw = first.body.as_str();
     assert!(raw.contains("9223372036854775807") && raw.contains("12345678901234567890.123"));
     assert!(!raw.contains("secret") && !raw.contains("\"x\""));
     let feature = &features(&first)[0];
@@ -138,17 +150,14 @@ async fn feature_pages_against_real_postgis() {
     assert_eq!(ids(&run(&db, &places, boxed).await.unwrap()), [1, 2]);
     let views = run(&db, &view, r#"{"limit":2,"offset":1}"#).await.unwrap();
     assert_eq!((ids(&views), views.more), (vec![20, 30], true));
-    let wide = &features(&run(&db, &wide, "{}").await.unwrap())[0]["properties"];
-    let wide = wide.as_object().unwrap();
+    let columns = &features(&run(&db, &wide, "{}").await.unwrap())[0]["properties"];
+    let columns = columns.as_object().unwrap();
     assert_eq!(
-        (wide.len(), &wide["p"], &wide["c59"]),
+        (columns.len(), &columns["p"], &columns["c59"]),
         (60, &0.into(), &59.into())
     );
 
     for query in [
-        r#"{"limit":10001}"#,
-        r#"{"limit":0}"#,
-        r#"{"offset":100001}"#,
         r#"{"properties":["secret"]}"#,
         r#"{"properties":["geom"]}"#,
         r#"{"properties":["rank","rank"]}"#,
@@ -162,4 +171,34 @@ async fn feature_pages_against_real_postgis() {
             "{query}"
         );
     }
+
+    let tight = Limits {
+        page_bytes: 1,
+        ..Limits::default()
+    };
+    for query in [r#"{"limit":1}"#, "{}", r#"{"limit":7,"offset":6}"#] {
+        assert_eq!(
+            run_with(&db, &places, query, &tight).await.err(),
+            Some(Error::QueryTooLarge),
+            "{query}"
+        );
+    }
+    // The 60-property row is far larger than one narrow place row.
+    let narrow = Limits {
+        page_bytes: 2048,
+        ..Limits::default()
+    };
+    assert!(
+        run_with(&db, &places, r#"{"limit":1}"#, &narrow)
+            .await
+            .is_ok()
+    );
+    let wide_limits = Limits {
+        page_bytes: 300,
+        ..Limits::default()
+    };
+    assert_eq!(
+        run_with(&db, &wide, "{}", &wide_limits).await.err(),
+        Some(Error::QueryTooLarge)
+    );
 }

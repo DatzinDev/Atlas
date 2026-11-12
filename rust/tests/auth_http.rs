@@ -1,8 +1,16 @@
 use atlas::{
-    auth::{http::authenticate, jwt::Verifier},
+    auth::{
+        http::{authenticate, principal},
+        jwt::Verifier,
+    },
     domain::Principal,
 };
-use axum::{Extension, Router, middleware, routing::get};
+use axum::{
+    Extension, Router,
+    http::{HeaderMap, HeaderValue},
+    middleware,
+    routing::get,
+};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode, get_current_timestamp};
 use std::{
     io::{Read, Write},
@@ -14,8 +22,10 @@ use std::{
     time::Duration,
 };
 
+// R12, R14
 #[test]
 fn real_http_authenticates_before_handlers() {
+    let mut ids = std::collections::HashSet::new();
     for configured in [false, true] {
         let calls = Arc::new(AtomicUsize::new(0));
         let count = calls.clone();
@@ -120,6 +130,19 @@ fn real_http_authenticates_before_handlers() {
             assert!(!response.contains("secret-token") && !response.contains(&token));
             if expected == "401" {
                 assert!(response.contains("invalid_token") && response.contains("request_id"));
+                let (head, body) = response.split_once("\r\n\r\n").unwrap();
+                let body: serde_json::Value = serde_json::from_str(body).unwrap();
+                let id = body["request_id"].as_str().unwrap();
+                assert!(well_formed(id), "{response}");
+                assert!(ids.insert(id.to_owned()), "repeated {id}");
+                // When the middleware sets the header itself, it must match the body.
+                if let Some(header) = head.lines().find_map(|line| {
+                    line.to_lowercase()
+                        .strip_prefix("x-request-id:")
+                        .map(|v| v.trim().to_owned())
+                }) {
+                    assert_eq!(header, id, "{response}");
+                }
                 assert_eq!(calls.load(Ordering::Relaxed), before);
             } else {
                 assert!(response.ends_with(if header.is_empty() {
@@ -132,4 +155,40 @@ fn real_http_authenticates_before_handlers() {
         stop.send(()).unwrap();
         server.join().unwrap();
     }
+}
+
+fn headers(values: &[&str]) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    for value in values {
+        headers.append("authorization", HeaderValue::from_str(value).unwrap());
+    }
+    headers
+}
+
+#[test]
+fn header_failures_report_their_reason() {
+    for (values, expected) in [
+        (vec!["Basic x"], "unsupported_scheme"),
+        (vec!["Bearer x", "Bearer x"], "multiple_headers"),
+        (vec!["Bearer x"], "auth_disabled"),
+        (vec!["Bearer"], "malformed_header"),
+    ] {
+        assert_eq!(
+            principal(&headers(&values), None).err(),
+            Some(expected),
+            "{values:?}"
+        );
+    }
+}
+
+/// `^[0-9a-f]{16}-[0-9]+$` without a regex dependency.
+fn well_formed(id: &str) -> bool {
+    id.split_once('-').is_some_and(|(nonce, n)| {
+        nonce.len() == 16
+            && nonce
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            && !n.is_empty()
+            && n.bytes().all(|b| b.is_ascii_digit())
+    })
 }

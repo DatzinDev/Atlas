@@ -1,6 +1,7 @@
 use crate::domain::{Error, names};
 use serde::Deserialize;
 use std::{
+    collections::HashSet,
     net::SocketAddr,
     path::{Path, PathBuf},
 };
@@ -11,6 +12,12 @@ pub struct Auth {
     pub public_key_file: PathBuf,
     pub issuer: String,
     pub audience: String,
+    #[serde(default = "default_leeway")]
+    pub leeway_seconds: u64,
+}
+
+fn default_leeway() -> u64 {
+    crate::auth::jwt::DEFAULT_LEEWAY_SECONDS
 }
 
 impl Auth {
@@ -18,6 +25,7 @@ impl Auth {
         if self.public_key_file.as_os_str().is_empty()
             || self.issuer.trim().is_empty()
             || self.audience.trim().is_empty()
+            || self.leeway_seconds > 300
         {
             return Err(Error::InvalidRequest);
         }
@@ -28,6 +36,7 @@ impl Auth {
         self.validate()?;
         let pem = std::fs::read(&self.public_key_file).map_err(|_| Error::InvalidRequest)?;
         crate::auth::jwt::Verifier::new(&pem, &self.issuer, &self.audience)
+            .map(|v| v.with_leeway(self.leeway_seconds))
     }
 }
 
@@ -49,7 +58,9 @@ pub struct Limits {
     pub acquire_seconds: u32,
     pub query_seconds: u32,
     pub stream_seconds: u32,
+    pub shutdown_seconds: u32,
     pub data_operations: u32,
+    pub export_operations: u32,
     pub tile_candidates: u32,
     pub tile_bytes: u32,
     pub tile_zoom: u32,
@@ -59,6 +70,7 @@ pub struct Limits {
     pub export_bytes: u32,
     pub query_body_bytes: u32,
     pub admin_body_bytes: u32,
+    pub page_bytes: u32,
 }
 
 impl Default for Limits {
@@ -79,7 +91,9 @@ impl Default for Limits {
             acquire_seconds: 5,
             query_seconds: 30,
             stream_seconds: 300,
+            shutdown_seconds: 30,
             data_operations: 8,
+            export_operations: 2,
             tile_candidates: 100000,
             tile_bytes: 8 * 1024 * 1024,
             tile_zoom: 22,
@@ -89,6 +103,7 @@ impl Default for Limits {
             export_bytes: 256 * 1024 * 1024,
             query_body_bytes: 128 * 1024,
             admin_body_bytes: 256 * 1024,
+            page_bytes: 32 * 1024 * 1024,
         }
     }
 }
@@ -110,6 +125,7 @@ impl Limits {
             self.query_seconds,
             self.stream_seconds,
             self.data_operations,
+            self.export_operations,
             self.tile_candidates,
             self.tile_bytes,
             self.tile_extent,
@@ -117,18 +133,55 @@ impl Limits {
             self.export_bytes,
             self.query_body_bytes,
             self.admin_body_bytes,
+            self.page_bytes,
         ];
         if positive.contains(&0)
             || self.default_limit > self.max_limit
             || self.catalog_default > self.catalog_max
             || self.pool_min > self.pool_max
-            || self.pool_max > 10
+            || self.export_operations > self.data_operations
+            || self.data_operations >= self.pool_max
             || self.tile_zoom > 22
             || self.tile_extent > 65536
             || self.tile_buffer > self.tile_extent
             || self.query_seconds > i32::MAX as u32 / 1000
             || self.filter_depth > 128
+            || !(1..=3600).contains(&self.shutdown_seconds)
+            || self.page_bytes > 1 << 30
         {
+            return Err(Error::InvalidRequest);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Cors {
+    /// Empty (default) disables CORS; `["*"]` allows any origin.
+    pub allowed_origins: Vec<String>,
+}
+
+impl Cors {
+    pub fn validate(&self) -> Result<(), Error> {
+        let origins = &self.allowed_origins;
+        // ponytail: character whitelist plus numeric port, not a full host parser.
+        let origin = |o: &String| {
+            let Some(rest) = o.strip_prefix("https://").or(o.strip_prefix("http://")) else {
+                return false;
+            };
+            let split = rest.rsplit_once(':').filter(|(_, p)| !p.contains(']'));
+            let (host, port) = split.unwrap_or((rest, "1"));
+            let v6 = host.starts_with('[') && host.ends_with(']');
+            let h = if v6 { &host[1..host.len() - 1] } else { host };
+            let ok = |c: char| c.is_ascii_alphanumeric() || "-.".contains(c) || (v6 && c == ':');
+            !h.is_empty()
+                && h.chars().all(ok)
+                && !port.is_empty()
+                && port.bytes().all(|b| b.is_ascii_digit())
+        };
+        let unique = origins.iter().collect::<HashSet<_>>().len() == origins.len();
+        if origins.len() > 100 || !unique || !(*origins == ["*"] || origins.iter().all(origin)) {
             return Err(Error::InvalidRequest);
         }
         Ok(())
@@ -144,6 +197,7 @@ pub struct Config {
     pub allowed_schemas: Vec<String>,
     pub public_url: Option<String>,
     pub limits: Limits,
+    pub cors: Cors,
 }
 
 impl Default for Config {
@@ -155,6 +209,7 @@ impl Default for Config {
             allowed_schemas: vec!["public".into()],
             public_url: None,
             limits: Limits::default(),
+            cors: Cors::default(),
         }
     }
 }
@@ -178,11 +233,15 @@ impl Config {
 
     pub fn validate(&self) -> Result<(), Error> {
         self.limits.validate()?;
+        self.cors.validate()?;
         if let Some(auth) = &self.auth {
             auth.validate()?;
         }
         if !names(&self.allowed_schemas)
-            || self.allowed_schemas.iter().any(|s| s == "atlas_catalog")
+            || self.allowed_schemas.iter().any(|s| {
+                ["atlas_catalog", "information_schema"].contains(&s.as_str())
+                    || s.starts_with("pg_")
+            })
             || self.database_url.as_ref().is_some_and(|s| {
                 !(s.starts_with("postgres://") || s.starts_with("postgresql://"))
                     || s.chars().any(char::is_control)

@@ -28,6 +28,7 @@ fn group(args: usize) -> String {
     format!(r#"{{"op":"or","args":[{}]}}"#, vec![leaf; args].join(","))
 }
 
+// R05
 #[test]
 fn parses_attribute_predicates_and_preserves_numbers() {
     for op in ["eq", "ne", "gt", "gte", "lt", "lte", "like", "ilike"] {
@@ -57,6 +58,50 @@ fn parses_attribute_predicates_and_preserves_numbers() {
     assert_eq!(values[2], Scalar::Bool(false));
 }
 
+#[test]
+fn keeps_out_of_f64_range_numbers_verbatim() {
+    // Range checks belong to the column type; parsing must not lose numeric precision.
+    for literal in [
+        "1e400",
+        "-1e400",
+        "1e-400",
+        "123456789012345678901234567890.5",
+        "-0.000000000000000000000000000001",
+    ] {
+        let Predicate::Compare {
+            value: Scalar::Number(n),
+            ..
+        } = ok(&format!(r#"{{"op":"gt","field":"a","value":{literal}}}"#))
+        else {
+            panic!("{literal}")
+        };
+        assert_eq!(n.to_string().replace("e+", "e"), literal, "{literal}");
+    }
+    let Predicate::In { values, .. } = ok(r#"{"op":"in","field":"a","value":[1e400,1e-400]}"#)
+    else {
+        panic!("in")
+    };
+    assert_eq!(values.len(), 2);
+}
+
+#[test]
+fn string_length_is_bounded_only_by_filter_bytes() {
+    let limits = Limits::default();
+    let long = "x".repeat(60 * 1024);
+    let json = format!(r#"{{"op":"eq","field":"a","value":"{long}"}}"#);
+    assert!(json.len() <= limits.filter_bytes as usize);
+    assert!(matches!(
+        ok(&json),
+        Predicate::Compare { value: Scalar::Text(text), .. } if text == long
+    ));
+    let over = format!(
+        r#"{{"op":"eq","field":"a","value":"{}"}}"#,
+        "x".repeat(limits.filter_bytes as usize)
+    );
+    assert!(rejected(&over, &limits));
+}
+
+// R05
 #[test]
 fn parses_logical_groups() {
     let Predicate::And(args) = ok(
@@ -95,7 +140,8 @@ fn rejects_malformed_keys_types_and_operators() {
         r#"{"op":"eq","field":"a","value":{"x":1}}"#,
         r#"{"op":"eq","field":"a","value":{"$serde_json::private::Number":"1"}}"#,
         r#"{"op":"in","field":"a","value":[{"$serde_json::private::Number":"1"}]}"#,
-        r#"{"op":"eq","field":"a","value":1e999}"#,
+        r#"{"op":"eq","field":"a","value":Infinity}"#,
+        r#"{"op":"eq","field":"a","value":-Infinity}"#,
         r#"{"op":"eq","field":"a","value":NaN}"#,
         r#"{"op":"is_null","field":"a","value":true}"#,
         r#"{"op":"in","field":"a","value":[]}"#,
@@ -114,6 +160,7 @@ fn rejects_malformed_keys_types_and_operators() {
     }
 }
 
+// R06
 #[test]
 fn validates_selection_geometry_structure() {
     let limits = Limits::default();

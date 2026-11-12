@@ -3,9 +3,10 @@ use atlas::{
     config::Config,
     domain::{Dataset, Error},
     migrations::migrate,
-    postgis::connection::Database,
+    postgis::{connection::Database, introspection::inspect},
 };
 
+// R01
 #[tokio::test]
 async fn persistent_publications_compare_and_swap_and_source_survives() {
     let mut config = Config::parse(
@@ -21,13 +22,14 @@ async fn persistent_publications_compare_and_swap_and_source_survives() {
     for statement in [
         "DROP SCHEMA IF EXISTS catalog_test CASCADE",
         "CREATE SCHEMA catalog_test",
-        "CREATE TABLE catalog_test.source(id bigint PRIMARY KEY, geom geometry(Point,4326))",
+        "CREATE TABLE catalog_test.source(id bigint PRIMARY KEY, geom geometry(Point,4326), tenant_id int4) WITH (autovacuum_enabled=false)",
         "INSERT INTO catalog_test.source VALUES (1,ST_SetSRID(ST_Point(0,0),4326))",
-        "DELETE FROM atlas_catalog.datasets WHERE id IN ('persist_test','invalid_test')",
+        "DELETE FROM atlas_catalog.datasets WHERE id IN ('persist_test','invalid_test','hidden_test')",
         "DO $$ BEGIN IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname='atlas_service_block') THEN CREATE ROLE atlas_service_block NOLOGIN; END IF; END $$",
         "GRANT USAGE ON SCHEMA atlas_catalog,catalog_test TO atlas_service_block",
         "GRANT SELECT ON catalog_test.source TO atlas_service_block",
         "GRANT SELECT,INSERT,UPDATE,DELETE ON atlas_catalog.datasets TO atlas_service_block",
+        "GRANT SELECT ON atlas_catalog.migrations TO atlas_service_block",
     ] {
         sqlx::query(statement).execute(&mut *tx).await.unwrap();
     }
@@ -52,9 +54,12 @@ async fn persistent_publications_compare_and_swap_and_source_survives() {
     let mut dataset: Dataset = serde_json::from_str(r#"{"id":"persist_test","title":"Persistent","source":{"schema":"catalog_test","table":"source"},"properties":["id"]}"#).unwrap();
     let catalog = Catalog::new(db.clone(), config.clone()).unwrap();
     catalog.ready().await.unwrap();
-    assert_eq!(catalog.create(&dataset).await.unwrap().revision, 1);
+    // The catalog stores the metadata its caller already inspected.
+    let meta = inspect(&db, &config, &dataset).await.unwrap();
+    let created = catalog.create(&dataset, meta.clone()).await.unwrap();
+    assert_eq!(created.revision, 1);
     assert!(matches!(
-        catalog.create(&dataset).await,
+        catalog.create(&dataset, meta.clone()).await,
         Err(Error::PublicationConflict)
     ));
     db.close().await;
@@ -65,14 +70,17 @@ async fn persistent_publications_compare_and_swap_and_source_survives() {
         "Persistent"
     );
     dataset.title = "Updated".into();
-    let (first, second) = tokio::join!(catalog.update(&dataset, 1), catalog.update(&dataset, 1));
+    let (first, second) = tokio::join!(
+        catalog.update(&dataset, meta.clone(), 1),
+        catalog.update(&dataset, meta.clone(), 1)
+    );
     assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
     assert!(
         matches!(first, Err(Error::RevisionMismatch))
             || matches!(second, Err(Error::RevisionMismatch))
     );
     assert!(matches!(
-        catalog.update(&dataset, 1).await,
+        catalog.update(&dataset, meta.clone(), 1).await,
         Err(Error::RevisionMismatch)
     ));
     assert_eq!(
@@ -93,6 +101,22 @@ async fn persistent_publications_compare_and_swap_and_source_survives() {
     let mut tx = db.begin_catalog().await.unwrap();
     sqlx::query("UPDATE atlas_catalog.datasets SET metadata=jsonb_set(metadata,'{srid}','4326') WHERE id='persist_test'").execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
+    assert_eq!(
+        catalog.get(&dataset.id).await.unwrap().metadata.id_type,
+        "int8"
+    );
+    for stored in ["\"uuid\"", "\"\"", "null"] {
+        let mut tx = db.begin_catalog().await.unwrap();
+        sqlx::query("UPDATE atlas_catalog.datasets SET metadata=jsonb_set(metadata,'{id_type}',$1::jsonb) WHERE id='persist_test'").bind(stored).execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        assert!(
+            matches!(catalog.get(&dataset.id).await, Err(Error::SchemaChanged)),
+            "{stored}"
+        );
+    }
+    let mut tx = db.begin_catalog().await.unwrap();
+    sqlx::query("UPDATE atlas_catalog.datasets SET metadata=jsonb_set(metadata,'{id_type}','\"int8\"') WHERE id='persist_test'").execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
     let mut tx = db.begin_catalog().await.unwrap();
     sqlx::query("UPDATE atlas_catalog.datasets SET config=jsonb_set(config,'{access,view_roles}','[\" viewer\"]') WHERE id='persist_test'").execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
@@ -100,33 +124,182 @@ async fn persistent_publications_compare_and_swap_and_source_survives() {
         catalog.get(&dataset.id).await,
         Err(Error::SchemaChanged)
     ));
-    assert!(matches!(
-        catalog.list(100, 0).await,
-        Err(Error::SchemaChanged)
-    ));
+    // An invalid row no longer blocks the administrative page: it is listed in place.
+    assert!(
+        catalog.list(100, 0).await.unwrap().iter().any(
+            |p| matches!(p, Err(invalid) if invalid.id == dataset.id && invalid.revision == 2)
+        )
+    );
     assert!(
         catalog
-            .servable(|_| true, 0, 100)
+            .servable(&[], |_| true, 0, 100)
             .await
             .unwrap()
             .iter()
             .all(|p| p.config.id != dataset.id)
     );
-    let mut tx = db.begin_catalog().await.unwrap();
-    sqlx::query("UPDATE atlas_catalog.datasets SET config=jsonb_set(config,'{access,view_roles}','[]') WHERE id='persist_test'").execute(&mut *tx).await.unwrap();
-    tx.commit().await.unwrap();
+    // The invalid row is still deletable with its stored revision.
+    assert_eq!(
+        catalog.delete(&dataset.id, 1).await,
+        Err(Error::RevisionMismatch)
+    );
     catalog.delete(&dataset.id, 2).await.unwrap();
     assert!(matches!(
         catalog.get(&dataset.id).await,
         Err(Error::DatasetNotFound)
     ));
     dataset.id = "invalid_test".into();
+    // Given metadata is persisted as is, never re-inspected: a sentinel extent survives.
+    let mut stale = meta.clone();
+    stale.extent = Some([1.0, 2.0, 3.0, 4.0]);
+    catalog.create(&dataset, stale.clone()).await.unwrap();
+    let stored = catalog.get(&dataset.id).await.unwrap();
+    assert_eq!(stored.metadata.extent, stale.extent);
+    catalog.delete(&dataset.id, 1).await.unwrap();
     dataset.properties = vec!["missing".into()];
-    assert!(catalog.create(&dataset).await.is_err());
+    assert!(inspect(&db, &config, &dataset).await.is_err());
+    // Metadata that does not describe the dataset is refused and nothing is persisted.
+    assert!(catalog.create(&dataset, meta).await.is_err());
     assert!(matches!(
         catalog.get(&dataset.id).await,
         Err(Error::DatasetNotFound)
     ));
+
+    // The fixed filter's unpublished columns are stored apart and checked on read.
+    let hidden: Dataset = serde_json::from_str(r#"{"id":"hidden_test","title":"Hidden","source":{"schema":"catalog_test","table":"source"},"properties":["id"],"filter":{"op":"eq","field":"tenant_id","value":7}}"#).unwrap();
+    let hidden_meta = inspect(&db, &config, &hidden).await.unwrap();
+    catalog.create(&hidden, hidden_meta).await.unwrap();
+    let read = catalog.get("hidden_test").await.unwrap().metadata;
+    assert_eq!(read.attributes[0].name, "id");
+    assert_eq!(read.filter_attributes.len(), 1);
+    assert_eq!(read.filter_attributes[0].name, "tenant_id");
+    let edit = |sql: String| {
+        let db = db.clone();
+        async move {
+            let mut tx = db.begin_catalog().await.unwrap();
+            sqlx::query(sqlx::AssertSqlSafe(sql))
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        }
+    };
+    let row = "WHERE id='hidden_test'";
+    edit(format!(
+        "UPDATE atlas_catalog.datasets SET metadata = metadata - 'filter_attributes' {row}"
+    ))
+    .await;
+    let legacy = catalog.get("hidden_test").await.unwrap().metadata;
+    assert!(legacy.filter_attributes.is_empty());
+    // The extent is stored with the publication: one point, no statistics, so exact.
+    assert_eq!(legacy.extent, Some([0.0, 0.0, 0.0, 0.0]));
+    // Rows written before the extent existed decode as `null`.
+    edit(format!(
+        "UPDATE atlas_catalog.datasets SET metadata = metadata - 'extent' {row}"
+    ))
+    .await;
+    assert_eq!(
+        catalog.get("hidden_test").await.unwrap().metadata.extent,
+        None
+    );
+    for (stored, expected) in [
+        ("null", None),
+        ("[-180,-90,180,90]", Some([-180.0, -90.0, 180.0, 90.0])),
+        ("[5,5,5,5]", Some([5.0, 5.0, 5.0, 5.0])),
+    ] {
+        edit(format!("UPDATE atlas_catalog.datasets SET metadata = jsonb_set(metadata, '{{extent}}', '{stored}') {row}")).await;
+        let read = catalog.get("hidden_test").await;
+        assert_eq!(read.unwrap().metadata.extent, expected, "{stored}");
+    }
+    // Non-finite, unordered, out-of-range or malformed extents mean the schema changed.
+    for stored in [
+        "[1,0,0,0]",
+        "[-180.5,0,0,0]",
+        "[0,0,1e400,1]",
+        "[0,0,0]",
+        r#"["0",0,0,0]"#,
+    ] {
+        edit(format!("UPDATE atlas_catalog.datasets SET metadata = jsonb_set(metadata, '{{extent}}', '{stored}') {row}")).await;
+        let result = catalog.get("hidden_test").await;
+        assert!(matches!(result, Err(Error::SchemaChanged)), "{stored}");
+    }
+    edit(format!(
+        "UPDATE atlas_catalog.datasets SET metadata = jsonb_set(metadata, '{{extent}}', 'null') {row}"
+    ))
+    .await;
+    // A published property, the geometry, an invalid name and an unsupported type.
+    for (name, data_type) in [
+        ("id", "int8"),
+        ("geom", "int4"),
+        ("", "int4"),
+        ("tenant_id", "bytea"),
+    ] {
+        let broken = format!(r#"[{{"name":"{name}","data_type":"{data_type}","nullable":true}}]"#);
+        edit(format!("UPDATE atlas_catalog.datasets SET metadata = jsonb_set(metadata, '{{filter_attributes}}', '{broken}') {row}")).await;
+        let result = catalog.get("hidden_test").await;
+        assert!(matches!(result, Err(Error::SchemaChanged)), "{broken}");
+    }
+    edit(format!("DELETE FROM atlas_catalog.datasets {row}")).await;
+    // Readiness requires exactly the latest embedded migration version (3).
+    // Hold migrate()'s advisory lock so concurrent tests cannot re-apply what this hides.
+    let mut lock =
+        <sqlx::PgConnection as sqlx::Connection>::connect(owner.database_url.as_deref().unwrap())
+            .await
+            .unwrap();
+    for statement in [
+        "SELECT pg_advisory_lock(657852314)",
+        "DROP TABLE IF EXISTS atlas_catalog.migrations_hidden",
+    ] {
+        sqlx::query(statement).execute(&mut lock).await.unwrap();
+    }
+    let admin = Database::open(&owner).await.unwrap();
+    for (statement, ready) in [
+        (
+            "DELETE FROM atlas_catalog.migrations WHERE version = 3",
+            false,
+        ),
+        (
+            "INSERT INTO atlas_catalog.migrations(version) VALUES (4)",
+            false,
+        ),
+        (
+            "INSERT INTO atlas_catalog.migrations(version) VALUES (3)",
+            false,
+        ),
+        (
+            "DELETE FROM atlas_catalog.migrations WHERE version = 4",
+            true,
+        ),
+        ("DELETE FROM atlas_catalog.migrations", false),
+        (
+            "INSERT INTO atlas_catalog.migrations(version) VALUES (3)",
+            true,
+        ),
+        (
+            "INSERT INTO atlas_catalog.migrations(version) VALUES (1)",
+            true,
+        ),
+        (
+            "ALTER TABLE atlas_catalog.migrations RENAME TO migrations_hidden",
+            false,
+        ),
+        (
+            "ALTER TABLE atlas_catalog.migrations_hidden RENAME TO migrations",
+            true,
+        ),
+    ] {
+        let mut tx = admin.begin_catalog().await.unwrap();
+        sqlx::query(statement).execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        let expected = if ready {
+            Ok(())
+        } else {
+            Err(Error::DatabaseUnavailable)
+        };
+        assert_eq!(catalog.ready().await, expected, "{statement}");
+    }
+    admin.close().await;
+    sqlx::Connection::close(lock).await.unwrap();
     let mut tx = db.begin_read().await.unwrap();
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM catalog_test.source")
@@ -146,4 +319,24 @@ async fn persistent_publications_compare_and_swap_and_source_survives() {
     cleanup.close().await;
     db.close().await;
     assert_eq!(catalog.ready().await, Err(Error::DatabaseUnavailable));
+}
+
+#[tokio::test]
+async fn catalog_transactions_queue_for_reserved_connections() {
+    let dsn = std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required");
+    // pool_max - data_operations = 1: exactly one catalog transaction at a time.
+    let config = Config::parse(
+        "[limits]\npool_max=3\ndata_operations=2\nexport_operations=1\nacquire_seconds=1",
+        Some(dsn),
+        None,
+    )
+    .unwrap();
+    migrate(&config).await.unwrap();
+    let db = Database::open(&config).await.unwrap();
+    let catalog = Catalog::new(db.clone(), config).unwrap();
+    // Concurrent catalog reads wait for the single connection instead of failing.
+    let (first, second) = tokio::join!(catalog.get("slots_missing"), catalog.get("slots_missing"));
+    assert_eq!(first.err(), Some(Error::DatasetNotFound));
+    assert_eq!(second.err(), Some(Error::DatasetNotFound));
+    db.close().await;
 }

@@ -3,11 +3,12 @@ use crate::{
     config::Limits,
     domain::{Dataset, Direction, Error, Metadata, Query},
 };
-use serde_json::value::RawValue;
+use futures_util::TryStreamExt;
 use sqlx::{Postgres, QueryBuilder, Transaction};
 
+/// A complete FeatureCollection body, built once and bounded by `limits.page_bytes`.
 pub struct Page {
-    pub features: Vec<Box<RawValue>>,
+    pub body: String,
     pub more: bool,
 }
 
@@ -19,25 +20,38 @@ pub async fn page(
     query: &Query,
     limits: &Limits,
 ) -> Result<Page, Error> {
-    let mut builder = select(dataset, meta, selection, query, limits)?;
+    let mut builder = select(dataset, meta, selection, query)?;
     let limit = query.limit.unwrap_or(limits.default_limit);
     builder
         .push(" LIMIT ")
         .push_bind(i64::from(limit) + 1)
         .push(" OFFSET ")
         .push_bind(i64::from(query.offset));
-    let rows: Vec<String> = builder
-        .build_query_scalar()
-        .fetch_all(&mut **tx)
-        .await
-        .map_err(query_error)?;
-    let more = rows.len() > limit as usize;
-    let features = rows
-        .into_iter()
-        .take(limit as usize)
-        .map(|row| RawValue::from_string(row).map_err(|_| Error::InternalError))
-        .collect::<Result<_, _>>()?;
-    Ok(Page { features, more })
+    let budget = limits.page_bytes as usize;
+    let mut body = String::from(r#"{"type":"FeatureCollection","features":["#);
+    let (mut returned, mut more) = (0, false);
+    let mut rows = builder.build_query_scalar::<String>().fetch(&mut **tx);
+    while let Some(row) = rows.try_next().await.map_err(query_error)? {
+        if returned == limit as usize {
+            more = true;
+            break;
+        }
+        if returned > 0 {
+            body.push(',');
+        }
+        body.push_str(&row);
+        returned += 1;
+        if body.len() > budget {
+            return Err(Error::QueryTooLarge);
+        }
+    }
+    body.push_str(&format!(
+        r#"],"numberReturned":{returned},"hasMore":{more}}}"#
+    ));
+    if body.len() > budget {
+        return Err(Error::QueryTooLarge);
+    }
+    Ok(Page { body, more })
 }
 
 // Keep feature encoding, field validation and ordering identical for pages and cursors.
@@ -46,9 +60,7 @@ pub(crate) fn select(
     meta: &Metadata,
     selection: &Selection,
     query: &Query,
-    limits: &Limits,
 ) -> Result<QueryBuilder<Postgres>, Error> {
-    query.validate(limits.max_limit, limits.max_offset)?;
     let published: Vec<&str> = meta.attributes.iter().map(|a| a.name.as_str()).collect();
     let properties = match &query.properties {
         Some(names) => names.iter().map(String::as_str).collect(),

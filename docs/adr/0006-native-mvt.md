@@ -82,5 +82,12 @@ Se descarta encoder Python por copias/coste; se difieren WMTS, TileJSON completo
 GWC REST, estilos cliente, catálogo y seeding. Un tile recortado/cuantizado no sustituye
 una descarga completa ni promete servir volumen ilimitado.
 
+## Implementación Rust (2026-11-12)
+
+Nota posterior; la decisión anterior se conserva como registro histórico. El MVP Rust
+construye la envolvente del tile con `ST_MakeEnvelope` en EPSG:3857, acotada al mundo Web
+Mercator (±20037508.342789244) tras sumar el buffer, en lugar de `ST_TileEnvelope`. Ver
+`docs/rust/api.md`.
+
 Fuentes: [ST_AsMVT](https://postgis.net/docs/ST_AsMVT.html),
 [ST_AsMVTGeom](https://postgis.net/docs/ST_AsMVTGeom.html).

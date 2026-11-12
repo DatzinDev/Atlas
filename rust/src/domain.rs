@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::value::RawValue;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -9,6 +9,8 @@ pub enum Error {
     InvalidToken,
     PermissionDenied,
     DatasetNotFound,
+    NotFound,
+    MethodNotAllowed,
     PublicationConflict,
     SchemaChanged,
     RevisionMismatch,
@@ -57,8 +59,117 @@ pub fn identifier(value: &str) -> bool {
     !value.is_empty() && value.len() <= 63 && !value.contains('\0')
 }
 
+/// WGS84 bbox `[minx, miny, maxx, maxy]` with positive area; NaN fails every comparison.
+pub fn bbox(b: [f64; 4]) -> bool {
+    let [x0, y0, x1, y1] = b;
+    -180.0 <= x0 && x0 < x1 && x1 <= 180.0 && -90.0 <= y0 && y0 < y1 && y1 <= 90.0
+}
+
 pub const MAX_ROLES: usize = 1000;
 pub const MAX_ROLE_LENGTH: usize = 128;
+pub const ID_TYPES: [&str; 6] = ["int2", "int4", "int8", "text", "varchar", "bpchar"];
+pub const GEOMETRY_TYPES: [&str; 7] = [
+    "POINT",
+    "MULTIPOINT",
+    "LINESTRING",
+    "MULTILINESTRING",
+    "POLYGON",
+    "MULTIPOLYGON",
+    "GEOMETRYCOLLECTION",
+];
+
+/// How a filter literal is validated before it is bound.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FilterClass {
+    Text,
+    Date,
+    Timestamp { zoned: bool },
+    Integer(i64, i64),
+    Float(f64),
+    Numeric,
+    Bool,
+}
+
+/// How a property is selected into an MVT tag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MvtEncoding {
+    Native,
+    Text,
+    IsoText,
+    FiniteFloat,
+}
+
+#[derive(Debug)]
+pub struct PropertyType {
+    pub name: &'static str,
+    pub filter: FilterClass,
+    pub mvt: MvtEncoding,
+    pub tilejson: &'static str,
+}
+
+const fn property(
+    name: &'static str,
+    filter: FilterClass,
+    mvt: MvtEncoding,
+    tilejson: &'static str,
+) -> PropertyType {
+    PropertyType {
+        name,
+        filter,
+        mvt,
+        tilejson,
+    }
+}
+
+/// The only list of publishable PostgreSQL property types (pg_catalog typname).
+pub static PROPERTY_TYPES: [PropertyType; 13] = {
+    use FilterClass as F;
+    use MvtEncoding as M;
+    [
+        property(
+            "int2",
+            F::Integer(i16::MIN as i64, i16::MAX as i64),
+            M::Native,
+            "Number",
+        ),
+        property(
+            "int4",
+            F::Integer(i32::MIN as i64, i32::MAX as i64),
+            M::Native,
+            "Number",
+        ),
+        property("int8", F::Integer(i64::MIN, i64::MAX), M::Native, "Number"),
+        property(
+            "float4",
+            F::Float(f32::MAX as f64),
+            M::FiniteFloat,
+            "Number",
+        ),
+        property("float8", F::Float(f64::MAX), M::FiniteFloat, "Number"),
+        property("numeric", F::Numeric, M::Text, "String"),
+        property("bool", F::Bool, M::Native, "Boolean"),
+        property("text", F::Text, M::Native, "String"),
+        property("varchar", F::Text, M::Native, "String"),
+        property("bpchar", F::Text, M::Native, "String"),
+        property("date", F::Date, M::IsoText, "String"),
+        property(
+            "timestamp",
+            F::Timestamp { zoned: false },
+            M::IsoText,
+            "String",
+        ),
+        property(
+            "timestamptz",
+            F::Timestamp { zoned: true },
+            M::IsoText,
+            "String",
+        ),
+    ]
+};
+
+pub fn property_type(name: &str) -> Option<&'static PropertyType> {
+    PROPERTY_TYPES.iter().find(|t| t.name == name)
+}
 
 pub fn roles(values: &[String]) -> bool {
     values.len() <= MAX_ROLES
@@ -142,13 +253,31 @@ impl Dataset {
 #[derive(Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Query {
+    #[serde(default, deserialize_with = "filter")]
     pub filter: Option<Box<RawValue>>,
+    #[serde(default, deserialize_with = "present")]
     pub bbox: Option<[f64; 4]>,
+    #[serde(default, deserialize_with = "present")]
     pub properties: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "present")]
     pub sort: Option<Vec<SortField>>,
+    #[serde(default, deserialize_with = "present")]
     pub limit: Option<u32>,
     #[serde(default)]
     pub offset: u32,
+}
+
+// An absent field is None; an explicit JSON null is rejected.
+fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error> {
+    T::deserialize(d).map(Some)
+}
+
+fn filter<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Box<RawValue>>, D::Error> {
+    let raw = Box::<RawValue>::deserialize(d)?;
+    if raw.get().trim() == "null" {
+        return Err(de::Error::custom("null filter"));
+    }
+    Ok(Some(raw))
 }
 
 #[derive(Clone, Deserialize)]
@@ -169,9 +298,7 @@ impl Query {
     pub fn validate(&self, max_limit: u32, max_offset: u32) -> Result<(), Error> {
         if self.limit.is_some_and(|n| n == 0 || n > max_limit)
             || self.offset > max_offset
-            || self
-                .bbox
-                .is_some_and(|b| b.iter().any(|v| !v.is_finite()) || b[0] > b[2] || b[1] > b[3])
+            || self.bbox.is_some_and(|b| !bbox(b))
             || self.properties.as_ref().is_some_and(|v| !names(v))
             || self
                 .sort
@@ -191,7 +318,14 @@ pub struct Metadata {
     pub geometry_type: String,
     pub srid: i32,
     pub id_column: String,
+    pub id_type: String,
     pub attributes: Vec<Attribute>,
+    /// Unpublished columns referenced only by the fixed filter; never exposed.
+    #[serde(default)]
+    pub filter_attributes: Vec<Attribute>,
+    /// EPSG:4326 `[minx, miny, maxx, maxy]` captured at publish time; `None` without rows.
+    #[serde(default)]
+    pub extent: Option<[f64; 4]>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

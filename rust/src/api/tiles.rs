@@ -1,4 +1,4 @@
-use super::{decode, identifier, respond};
+use super::{identifier, params, respond};
 use crate::{
     domain::{Error, Principal},
     postgis::mvt::bounds,
@@ -30,12 +30,10 @@ async fn vector(
     let xyz = (number(&z)?, number(&x)?, number(y)?);
     bounds(xyz.0, xyz.1, xyz.2, service.limits().tile_zoom)?;
     let (filter, properties) = parameters(query.as_deref())?;
-    if let Some(filter) = &filter {
-        crate::query::predicate::parse(filter, service.limits())?;
-    }
+    let filter = super::filter(filter.as_deref(), service.limits())?;
     let publication = service.detail(id, &principal).await?;
     let body = service
-        .tile(&publication, xyz, filter.as_deref(), properties.as_deref())
+        .tile(&publication, xyz, filter.as_ref(), properties.as_deref())
         .await?;
     let headers = [
         (header::CONTENT_TYPE, "application/vnd.mapbox-vector-tile"),
@@ -50,15 +48,15 @@ async fn tilejson(
     Path(id): Path<String>,
     RawQuery(query): RawQuery,
 ) -> Result<Response, Error> {
-    if query.is_some_and(|q| !q.is_empty()) {
-        return Err(Error::InvalidRequest);
-    }
-    let publication = service.detail(identifier(&id)?, &principal).await?;
-    Ok(respond(
-        StatusCode::OK,
-        Some(service.tilejson(&publication)),
-        None,
-    ))
+    let id = identifier(&id)?;
+    let (filter, properties) = parameters(query.as_deref())?;
+    let user = super::filter(filter.as_deref(), service.limits())?;
+    let publication = service.detail(id, &principal).await?;
+    let filter = filter.as_deref().zip(user.as_ref());
+    let body = service
+        .tilejson(&publication, filter, properties.as_deref())
+        .await?;
+    Ok(respond(StatusCode::OK, Some(body), None))
 }
 
 fn number(text: &str) -> Result<u32, Error> {
@@ -71,25 +69,11 @@ fn number(text: &str) -> Result<u32, Error> {
 type Parameters = (Option<String>, Option<Vec<String>>);
 
 fn parameters(query: Option<&str>) -> Result<Parameters, Error> {
-    let (mut filter, mut properties) = (None, None);
-    for pair in query
-        .unwrap_or_default()
-        .split('&')
-        .filter(|p| !p.is_empty())
-    {
-        let (key, value) = pair.split_once('=').ok_or(Error::InvalidRequest)?;
-        let value = decode(value)?;
-        match key {
-            "filter" if filter.is_none() => filter = Some(value),
-            "properties" if properties.is_none() => {
-                let names: Vec<String> = value.split(',').map(str::to_owned).collect();
-                if names.iter().any(String::is_empty) {
-                    return Err(Error::InvalidRequest);
-                }
-                properties = Some(names);
-            }
-            _ => return Err(Error::InvalidRequest),
-        }
+    let [filter, properties] = params(query, ["filter", "properties"])?;
+    let properties: Option<Vec<String>> =
+        properties.map(|v| v.split(',').map(str::to_owned).collect());
+    if properties.iter().flatten().any(String::is_empty) {
+        return Err(Error::InvalidRequest);
     }
     Ok((filter, properties))
 }

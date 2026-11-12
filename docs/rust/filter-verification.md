@@ -3,17 +3,27 @@
 ## Contrato implementado
 
 Parser cerrado con límites antes de descender, escalares sin coerción, precisión
-bigint/numeric preservada, Polygon/MultiPolygon XY y claves duplicadas rechazadas.
+bigint/numeric preservada (numeric admite `1e400` o `1e-400` sin pasar por f64),
+Polygon/MultiPolygon XY y claves duplicadas rechazadas. date exige `YYYY-MM-DD`,
+timestamp rechaza `Z`/offset y timestamptz sin offset se lee en UTC.
 SQLx enlaza valores; identificadores provienen de atributos publicados e introspección.
 La entrada común `selection::prepare` combina siempre filtro fijo AND usuario AND bbox.
+Recibe predicados ya parseados: el fijo con `selection::fixed`, una vez por petición al
+usarse, y el de usuario desde la API.
 Su resultado se añade al WHERE mediante `Selection::append`, en la misma transacción
 de solo lectura y después de autorizar. No hay nuevos endpoints HTTP en este bloque.
+`prepare` construye un árbol preparado paralelo al `Predicate`: cada geometría queda en su
+propio nodo espacial, nunca emparejada por orden de recorrido. La compilación SQL de
+predicados es interna; no hay `restrict` ni `compile` públicos.
 
 La topología se comprueba en PostGIS antes de seleccionar filas. Geometrías inválidas,
 vacías, XY fuera del dominio 4326 o transformaciones inválidas fallan sin reparación.
 El bbox debe producir una selección poligonal válida; no se interpreta un bbox invertido
 como cruce del antimeridiano. La columna fuente permanece en su CRS nativo y sin
-envolver en ST_Transform: && prefiltra y ST_Intersects/ST_Within confirma. Reproyectar
+envolver en ST_Transform. Cada nodo espacial envía su EWKB una sola vez, en
+`ST_Intersects`/`ST_Within` sin `&&` explícito: PostGIS ≥ 3.1 usa el índice GiST mediante
+funciones de soporte. Validar el SRID y transformar la selección es un único round-trip
+por nodo (más uno del bbox). Reproyectar
 la salida pertenece al consumidor posterior del WHERE.
 
 ## Reproducción
@@ -36,12 +46,13 @@ No se necesitan dependencias nuevas ni modificar el runtime Python.
   anidamiento ofensivo; tipos, operadores, claves duplicadas/desconocidas y geometrías.
 - Regresión: un objeto con `$serde_json::private::Number` nunca se acepta como escalar,
   ni en comparación ni en IN, aunque Serde tenga arbitrary_precision activado.
-- Atributos: bigint máximo y numeric de 23 dígitos, NULL/NOT, fechas, booleanos,
+- Atributos: bigint máximo, numeric de 31 dígitos y `1e400`, float/int fuera de rango,
+  date/timestamp/timestamptz estrictos, string de 60 KiB, NULL/NOT, booleanos,
   LIKE/ILIKE, nombres con comillas, columnas ocultas y entradas ofensivas rechazadas.
 - Espacio: topología inválida, huecos, borde incluido en intersects y excluido en within,
   reproyección 4326 a 3857, CRS desconocido y selección fuera del dominio geográfico.
   Incluye MultiPolygon, anillo degenerado, hueco fuera del exterior y polos: válidos
-  en 4326, rechazados al transformar a Web Mercator, donde la proyección es indefinida.
+  en 4326 y recortados a ±85.0511287798066 en Web Mercator, donde los polos no existen.
 - Composición: OR/NOT mezclado con espacio nunca amplía el filtro fijo; bbox se suma
   como AND. Se prueban IDs efectivos contra PostGIS, no solo texto SQL.
 - EXPLAIN con enable_seqscan deshabilitado confirma elegibilidad de GIST.

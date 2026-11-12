@@ -50,6 +50,7 @@ async fn request(a: SocketAddr, path: &str, headers: &str, abandon: bool) -> (St
     .unwrap()
 }
 
+// R04, R11
 #[tokio::test]
 async fn downloads_over_http() {
     let mut c = Config::parse(
@@ -61,6 +62,7 @@ async fn downloads_over_http() {
     c.allowed_schemas = vec!["http_export".into()];
     c.limits.default_limit = 1;
     c.limits.data_operations = 1;
+    c.limits.export_operations = 1;
     c.limits.pool_max = 2;
     c.limits.export_features = 10;
     migrate(&c).await.unwrap();
@@ -119,6 +121,7 @@ async fn downloads_over_http() {
             "export_public",
             &atlas::domain::Principal::default(),
             &atlas::domain::Query::default(),
+            None,
         )
         .await
         .unwrap();
@@ -287,6 +290,240 @@ async fn hides_invalid_stored_private_publication() {
     .await
     .unwrap();
     assert!(text.starts_with("HTTP/1.1 409"), "{text}");
+    server.abort();
+    db.close().await;
+}
+
+/// Head, raw chunked body and its decoded complete chunks, read until the server drops the connection.
+async fn cut_request(a: SocketAddr, path: &str) -> (String, String, String) {
+    let request = format!(
+        "GET /api/v1/datasets/{path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    );
+    tokio::task::spawn_blocking(move || {
+        let mut s = TcpStream::connect(a).unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        s.write_all(request.as_bytes()).unwrap();
+        let mut raw = Vec::new();
+        let mut buf = [0; 8192];
+        // An aborted stream may end in a reset instead of EOF; both end the body.
+        while let Ok(n @ 1..) = s.read(&mut buf) {
+            raw.extend_from_slice(&buf[..n]);
+        }
+        let text = String::from_utf8_lossy(&raw).into_owned();
+        let (head, body) = text.split_once("\r\n\r\n").unwrap();
+        (head.to_lowercase(), body.to_owned(), decode(body))
+    })
+    .await
+    .unwrap()
+}
+
+/// The complete chunks of a raw chunked body, stopping at the terminator or a cut.
+fn decode(body: &str) -> String {
+    let mut decoded = String::new();
+    let mut rest = body;
+    while let Some((len, data)) = rest.split_once("\r\n") {
+        match usize::from_str_radix(len, 16) {
+            Ok(n) if n > 0 && data.len() >= n + 2 => {
+                decoded.push_str(&data[..n]);
+                rest = &data[n + 2..];
+            }
+            _ => break,
+        }
+    }
+    decoded
+}
+
+/// Retries while the export slot is still busy (503): its release after a cut is asynchronous.
+async fn admitted(a: SocketAddr, path: &str) -> (String, String, String) {
+    for _ in 0..500 {
+        let response = cut_request(a, path).await;
+        if !response.0.starts_with("http/1.1 503") {
+            return response;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("{path}: export slot never released");
+}
+
+async fn serve(service: Publications) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let app = router(service).layer(axum::middleware::from_fn_with_state(
+        Arc::new(None::<Verifier>),
+        authenticate,
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let a = listener.local_addr().unwrap();
+    (
+        a,
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() }),
+    )
+}
+
+// R11
+#[tokio::test]
+async fn cuts_oversized_downloads_mid_stream() {
+    let mut c = Config::parse(
+        "",
+        Some(std::env::var("ATLAS_TEST_DATABASE_URL").unwrap()),
+        None,
+    )
+    .unwrap();
+    c.allowed_schemas = vec!["http_export_batch".into()];
+    c.limits.data_operations = 1;
+    c.limits.export_operations = 1;
+    c.limits.pool_max = 2;
+    c.limits.export_bytes = 65536;
+    migrate(&c).await.unwrap();
+    let db = Database::open(&c).await.unwrap();
+    let mut tx = db.begin_catalog().await.unwrap();
+    for sql in [
+        "DROP SCHEMA IF EXISTS http_export_batch CASCADE",
+        "CREATE SCHEMA http_export_batch",
+        "DELETE FROM atlas_catalog.datasets WHERE id IN ('batch_big','batch_small')",
+        "CREATE TABLE http_export_batch.big(id bigint PRIMARY KEY, label text, geom geometry(Point,4326))",
+        "INSERT INTO http_export_batch.big SELECT 1, repeat('b', 1000000), ST_SetSRID(ST_Point(1,1),4326)",
+        "CREATE TABLE http_export_batch.small(id bigint PRIMARY KEY, label text, geom geometry(Point,4326))",
+        "INSERT INTO http_export_batch.small SELECT n, repeat('s', 150), ST_SetSRID(ST_Point(1,1),4326) FROM generate_series(1,5) n",
+    ] {
+        sqlx::query(sql).execute(&mut *tx).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+    let service = Publications::new(db.clone(), c.clone()).unwrap();
+    for table in ["big", "small"] {
+        let body = format!(
+            r#"{{"id":"batch_{table}","title":"X","source":{{"schema":"http_export_batch","table":"{table}"}},"properties":["label"],"access":{{"public":true,"public_download":true}}}}"#
+        );
+        service.create(body.as_bytes()).await.unwrap();
+    }
+    let header = r#"{"type":"FeatureCollection","features":["#;
+    let (a, server) = serve(service).await;
+    let (head, body, decoded) = cut_request(a, "batch_big/export").await;
+    assert!(head.starts_with("http/1.1 200"), "{head}");
+    assert!(head.contains("transfer-encoding: chunked"));
+    assert!(decoded.starts_with(header));
+    assert!(!body.contains("bbbb") && !body.contains("]}"));
+    assert!(!body.ends_with("0\r\n\r\n"));
+    let (head, body, baseline) = admitted(a, "batch_small/export").await;
+    assert!(head.starts_with("http/1.1 200"), "{head}");
+    assert!(body.ends_with("0\r\n\r\n"));
+    assert!(baseline.starts_with(header) && baseline.ends_with("]}"));
+    // One-digit ids and equal labels and points: every feature has the same size.
+    let size = (baseline.len() - header.len() - 2 - 4) / 5;
+    assert_eq!(header.len() + 5 * size + 4 + 2, baseline.len());
+    server.abort();
+    let two = header.len() + 2 * size + 1;
+    c.limits.export_bytes = (two + 2) as u32;
+    let (a, server) = serve(Publications::new(db.clone(), c).unwrap()).await;
+    let (head, body, decoded) = cut_request(a, "batch_small/export").await;
+    assert!(head.starts_with("http/1.1 200"), "{head}");
+    assert_eq!(decoded, &baseline[..two]);
+    assert!(!body.contains("}]}") && !body.ends_with("0\r\n\r\n"));
+    assert!(!decoded.ends_with("]}"));
+    let (head, _, _) = admitted(a, "batch_small/export").await;
+    assert!(head.starts_with("http/1.1 200"), "{head}");
+    server.abort();
+    db.close().await;
+}
+
+#[tokio::test]
+async fn stalled_download_hits_stream_deadline_and_frees_slots() {
+    let mut c = Config::parse(
+        "",
+        Some(std::env::var("ATLAS_TEST_DATABASE_URL").unwrap()),
+        None,
+    )
+    .unwrap();
+    c.allowed_schemas = vec!["http_export_slow".into()];
+    c.limits.stream_seconds = 1;
+    c.limits.data_operations = 1;
+    c.limits.export_operations = 1;
+    c.limits.pool_max = 2;
+    migrate(&c).await.unwrap();
+    let db = Database::open(&c).await.unwrap();
+    let exec = |statements: &'static [&'static str]| {
+        let db = db.clone();
+        async move {
+            let mut tx = db.begin_catalog().await.unwrap();
+            for sql in statements {
+                sqlx::query(*sql).execute(&mut *tx).await.unwrap();
+            }
+            tx.commit().await.unwrap();
+        }
+    };
+    exec(&[
+        "DROP SCHEMA IF EXISTS http_export_slow CASCADE",
+        "CREATE SCHEMA http_export_slow",
+        "DELETE FROM atlas_catalog.datasets WHERE id = 'slow_export'",
+        "CREATE TABLE http_export_slow.flag(armed boolean)",
+        "CREATE TABLE http_export_slow.data(id bigint PRIMARY KEY, label text, geom geometry(Point,4326))",
+        "INSERT INTO http_export_slow.data SELECT n, 'x', ST_SetSRID(ST_Point(1,1),4326) FROM generate_series(1,300) n",
+        // Armed, rows past the first 128-row fetch take 10 ms each: the stream outlives stream_seconds.
+        // STABLE keeps the view inlined, so the admission count never evaluates the label.
+        "CREATE FUNCTION http_export_slow.pace(n bigint, t text) RETURNS text LANGUAGE plpgsql STABLE AS $$ BEGIN IF n > 128 AND EXISTS (SELECT FROM http_export_slow.flag) THEN PERFORM pg_sleep(0.01); END IF; RETURN t; END $$",
+        "CREATE VIEW http_export_slow.slow AS SELECT id, http_export_slow.pace(id, label) AS label, geom FROM http_export_slow.data",
+    ])
+    .await;
+    let service = Publications::new(db.clone(), c).unwrap();
+    service
+        .create(br#"{"id":"slow_export","title":"X","source":{"schema":"http_export_slow","table":"slow","id_column":"id"},"properties":["label"],"access":{"public":true,"public_download":true}}"#)
+        .await
+        .unwrap();
+    let publication = service.get("slow_export").await.unwrap();
+    // Arm the view only after publishing so introspection never sleeps.
+    exec(&["INSERT INTO http_export_slow.flag VALUES (true)"]).await;
+    let all = atlas::domain::Query::default();
+    let header = r#"{"type":"FeatureCollection","features":["#;
+    let (a, server) = serve(service.clone()).await;
+    let started = std::time::Instant::now();
+    // The client reads the head and the first bytes, then stops reading.
+    let (mut stalled, mut raw) = tokio::task::spawn_blocking(move || {
+        let mut s = TcpStream::connect(a).unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        s.write_all(b"GET /api/v1/datasets/slow_export/export HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut raw = Vec::new();
+        let mut buf = [0; 8192];
+        while !String::from_utf8_lossy(&raw).contains(header) {
+            let n = s.read(&mut buf).unwrap();
+            assert!(n > 0, "closed before the first bytes");
+            raw.extend_from_slice(&buf[..n]);
+        }
+        (s, raw)
+    })
+    .await
+    .unwrap();
+    assert!(raw.starts_with(b"HTTP/1.1 200"));
+    // The open download holds its export slot.
+    let (head, body) = request(a, "slow_export/export", "", false).await;
+    assert!(head.starts_with("http/1.1 503"), "{head} {body}");
+    // Disarmed for new snapshots only: the open download keeps sleeping in its own.
+    exec(&["DELETE FROM http_export_slow.flag"]).await;
+    let raw = tokio::task::spawn_blocking(move || {
+        let mut buf = [0; 8192];
+        // A cut stream may end in a reset instead of EOF; both end the body.
+        while let Ok(n @ 1..) = stalled.read(&mut buf) {
+            raw.extend_from_slice(&buf[..n]);
+        }
+        raw
+    })
+    .await
+    .unwrap();
+    let cut = std::time::Instant::now();
+    let elapsed = cut - started;
+    assert!(elapsed <= std::time::Duration::from_secs(2), "{elapsed:?}");
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    let (_, body) = text.split_once("\r\n\r\n").unwrap();
+    assert!(!body.ends_with("0\r\n\r\n"));
+    let decoded = decode(body);
+    assert!(decoded.starts_with(header) && !decoded.ends_with("]}"));
+    // Both slots come back once the aborted stream is gone.
+    let (head, body, decoded) = admitted(a, "slow_export/export").await;
+    let elapsed = cut.elapsed();
+    assert!(elapsed <= std::time::Duration::from_secs(1), "{elapsed:?}");
+    assert!(head.starts_with("http/1.1 200"), "{head}");
+    assert!(body.ends_with("0\r\n\r\n") && decoded.ends_with("]}"));
+    assert!(service.features(&publication, &all, None).await.is_ok());
     server.abort();
     db.close().await;
 }

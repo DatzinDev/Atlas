@@ -1,7 +1,13 @@
 use atlas::{
     config::{Config, Limits},
-    domain::{Dataset, Error, Metadata},
-    postgis::{connection::Database, introspection::inspect, mvt::tile, selection::prepare},
+    domain::{Dataset, Error, Metadata, Query},
+    postgis::{
+        connection::Database,
+        features::page,
+        introspection::inspect,
+        mvt::{bounds, tile},
+        selection::prepare,
+    },
 };
 use std::collections::BTreeMap;
 
@@ -11,6 +17,7 @@ type Source = (Dataset, Metadata);
 struct Feature {
     id: Option<u64>,
     properties: BTreeMap<String, String>,
+    geometry: Vec<u64>,
 }
 
 fn varint(buf: &[u8], pos: &mut usize) -> u64 {
@@ -94,12 +101,39 @@ fn decode(tile: &[u8]) -> BTreeMap<String, (u64, Vec<Feature>)> {
                         .chunks(2)
                         .map(|t| (keys[t[0] as usize].clone(), values[t[1] as usize].clone()))
                         .collect(),
+                    geometry: parts
+                        .iter()
+                        .find(|f| f.0 == 4)
+                        .map_or(vec![], |f| packed(f.2)),
                 }
             })
             .collect();
         layers.insert(name, (extent, features));
     }
     layers
+}
+
+/// Absolute tile-space vertices of an MVT command stream (MoveTo/LineTo; ClosePath has none).
+fn vertices(geometry: &[u64]) -> Vec<(i64, i64)> {
+    let zigzag = |n: u64| (n >> 1) as i64 ^ -((n & 1) as i64);
+    let (mut out, mut cursor, mut i) = (Vec::new(), (0, 0), 0);
+    while i < geometry.len() {
+        let (command, count) = (geometry[i] & 7, (geometry[i] >> 3) as usize);
+        i += 1;
+        if command == 7 {
+            continue;
+        }
+        assert!(command == 1 || command == 2, "unexpected command {command}");
+        for _ in 0..count {
+            cursor = (
+                cursor.0 + zigzag(geometry[i]),
+                cursor.1 + zigzag(geometry[i + 1]),
+            );
+            out.push(cursor);
+            i += 2;
+        }
+    }
+    out
 }
 
 fn tile_of(lon: f64, lat: f64, z: u32) -> (u32, u32, u32) {
@@ -116,12 +150,15 @@ async fn fetch(
     properties: Option<&[String]>,
     limits: &Limits,
 ) -> Result<Vec<u8>, Error> {
+    let filter = filter
+        .map(|t| atlas::query::predicate::parse(t, limits))
+        .transpose()?;
     let mut tx = db.begin_read().await?;
-    let selection = prepare(&mut tx, None, filter, None, meta, limits).await?;
+    let selection = prepare(&mut tx, None, filter, None, meta).await?;
     tile(&mut tx, dataset, meta, &selection, xyz, properties, limits).await
 }
 
-async fn setup() -> (Database, Source, Source, Source) {
+async fn setup() -> (Database, [Source; 5]) {
     let mut config = Config::parse(
         "",
         Some(std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required")),
@@ -134,21 +171,33 @@ async fn setup() -> (Database, Source, Source, Source) {
     for statement in [
         "DROP SCHEMA IF EXISTS mvt_test CASCADE",
         "CREATE SCHEMA mvt_test",
-        "CREATE TABLE mvt_test.points(id bigint PRIMARY KEY, name text, amount numeric, ratio float8, big int8, day date, geom geometry(Point,4326))",
-        "INSERT INTO mvt_test.points VALUES (1,'a',12345678901234567890.123,'NaN',9223372036854775807,'2026-01-01',ST_SetSRID(ST_Point(10,10),4326)), (2,'b',1.5,0.5,1,'2026-01-02',ST_SetSRID(ST_Point(10.1,10.1),4326)), (9007199254740993,'c',NULL,NULL,NULL,NULL,ST_SetSRID(ST_Point(10.2,10.2),4326)), (4,'east',NULL,NULL,NULL,NULL,ST_SetSRID(ST_Point(179.9,10),4326)), (5,'west',NULL,NULL,NULL,NULL,ST_SetSRID(ST_Point(-179.9,10),4326)), (6,'none',NULL,NULL,NULL,NULL,NULL)",
+        "CREATE TABLE mvt_test.points(id bigint PRIMARY KEY, name text, amount numeric, ratio float8, big int8, day date, at timestamptz, local timestamp, geom geometry(Point,4326))",
+        "INSERT INTO mvt_test.points(id,name,amount,ratio,big,day,geom) VALUES (1,'a',12345678901234567890.123,'NaN',9223372036854775807,'2026-01-01',ST_SetSRID(ST_Point(10,10),4326)), (9007199254740993,'c',NULL,NULL,NULL,NULL,ST_SetSRID(ST_Point(10.2,10.2),4326)), (4,'east',NULL,NULL,NULL,NULL,ST_SetSRID(ST_Point(179.9,10),4326)), (5,'west',NULL,NULL,NULL,NULL,ST_SetSRID(ST_Point(-179.9,10),4326)), (6,'none',NULL,NULL,NULL,NULL,NULL), (9007199254740991,'max',NULL,NULL,NULL,NULL,ST_SetSRID(ST_Point(50,-50),4326)), (-1,'negative',NULL,NULL,NULL,NULL,ST_SetSRID(ST_Point(50,-50),4326))",
+        "INSERT INTO mvt_test.points VALUES (2,'b',1.5,0.5,1,'2026-01-02','2024-05-01 12:00:00+00','2024-05-01 12:00:00',ST_SetSRID(ST_Point(10.1,10.1),4326))",
         "CREATE TABLE mvt_test.utm(id integer PRIMARY KEY, name text, geom geometry(Point,32613))",
         "INSERT INTO mvt_test.utm VALUES (1,'gdl',ST_Transform(ST_SetSRID(ST_Point(-103.35,20.67),4326),32613))",
         "CREATE TABLE mvt_test.areas(id integer PRIMARY KEY, name text, geom geometry(Polygon,3857))",
         "INSERT INTO mvt_test.areas VALUES (1,'cross',ST_Transform(ST_MakeEnvelope(-1,-1,1,1,4326),3857))",
+        "CREATE TABLE mvt_test.grid(id integer PRIMARY KEY, name text, geom geometry(Point,32614))",
+        // 0.05 degree mesh covering the buffered tile 6/14/28; offset so a row (lat 16.56) falls in
+        // the curved bottom band an undensified envelope misses.
+        "INSERT INTO mvt_test.grid SELECT i * 1000 + j, 'p', ST_Transform(ST_SetSRID(ST_Point((-102 + i * 0.05)::float8, (16.01 + j * 0.05)::float8), 4326), 32614) FROM generate_series(0, 140) AS i, generate_series(0, 130) AS j",
+        "CREATE TABLE mvt_test.codes(code text PRIMARY KEY, name text, geom geometry(Point,4326))",
+        "INSERT INTO mvt_test.codes VALUES ('5','five',ST_SetSRID(ST_Point(10,10),4326))",
     ] {
         sqlx::query(statement).execute(&mut *tx).await.unwrap();
     }
     tx.commit().await.unwrap();
     let mut sources = Vec::new();
     for (table, properties) in [
-        ("points", vec!["name", "amount", "ratio", "big", "day"]),
+        (
+            "points",
+            vec!["name", "amount", "ratio", "big", "day", "at", "local"],
+        ),
         ("utm", vec!["name"]),
         ("areas", vec!["name"]),
+        ("grid", vec!["name"]),
+        ("codes", vec!["name"]),
     ] {
         let dataset: Dataset =
             serde_json::from_value(serde_json::json!({"id": table, "title": table,
@@ -157,14 +206,13 @@ async fn setup() -> (Database, Source, Source, Source) {
         let meta = inspect(&db, &config, &dataset).await.unwrap();
         sources.push((dataset, meta));
     }
-    let areas = sources.pop().unwrap();
-    let utm = sources.pop().unwrap();
-    (db, sources.pop().unwrap(), utm, areas)
+    (db, sources.try_into().ok().unwrap())
 }
 
+// R10
 #[tokio::test]
 async fn native_mvt_against_real_postgis() {
-    let (db, points, utm, areas) = setup().await;
+    let (db, [points, utm, areas, grid, codes]) = setup().await;
     let limits = Limits::default();
     let here = tile_of(10.1, 10.1, 4);
     let encoded = fetch(&db, &points, here, None, None, &limits)
@@ -277,4 +325,221 @@ async fn native_mvt_against_real_postgis() {
             Err(Error::InvalidRequest)
         );
     }
+
+    // The densified envelope returns exactly the UTM rows intersecting the buffered tile.
+    let xyz = (6, 14, 28);
+    let b = bounds(xyz.0, xyz.1, xyz.2, limits.tile_zoom).unwrap();
+    let m = (b[2] - b[0]) * f64::from(limits.tile_buffer) / f64::from(limits.tile_extent);
+    let mut tx = db.begin_read().await.unwrap();
+    let (expected, missed): (Vec<i64>, i64) = sqlx::query_as(
+        "SELECT array_agg(id::int8 ORDER BY id), count(*) FILTER (WHERE NOT geom && ST_Transform(e, 32614)) FROM mvt_test.grid, ST_MakeEnvelope($1, $2, $3, $4, 3857) AS e WHERE ST_Intersects(ST_Transform(geom, 3857), e)",
+    )
+    .bind(b[0] - m)
+    .bind(b[1] - m)
+    .bind(b[2] + m)
+    .bind(b[3] + m)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    drop(tx);
+    assert!(
+        missed > 0,
+        "the fixture must include rows the undensified envelope misses"
+    );
+    let encoded = fetch(&db, &grid, xyz, None, None, &limits).await.unwrap();
+    let mut found: Vec<i64> = decode(&encoded)["grid"]
+        .1
+        .iter()
+        .map(|f| f.id.unwrap() as i64)
+        .collect();
+    found.sort_unstable();
+    assert_eq!(found, expected);
+
+    // Temporal values are the GeoJSON ISO text; the zone is pinned for the exact offset.
+    let mut tx = db.begin_read().await.unwrap();
+    sqlx::query("SET LOCAL TimeZone = 'UTC'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let (dataset, meta) = &points;
+    let selection = prepare(&mut tx, None, None, None, meta).await.unwrap();
+    let encoded = tile(&mut tx, dataset, meta, &selection, here, None, &limits)
+        .await
+        .unwrap();
+    let query: Query = serde_json::from_str("{}").unwrap();
+    let geojson = page(&mut tx, dataset, meta, &selection, &query, &limits)
+        .await
+        .unwrap();
+    drop(tx);
+    let geojson: serde_json::Value = serde_json::from_str(&geojson.body).unwrap();
+    let feature = geojson["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["id"] == 2)
+        .unwrap();
+    let layers = decode(&encoded);
+    let mvt = &layers["points"].1.iter().find(|f| f.id == Some(2)).unwrap();
+    for column in ["at", "local", "day"] {
+        let text = feature["properties"][column].as_str().unwrap();
+        assert_eq!(mvt.properties[column], text, "{column}");
+    }
+    assert_eq!(mvt.properties["at"], "2024-05-01T12:00:00+00:00");
+
+    // Only integer ids in 0..=2^53-1 are encoded; a text id never is.
+    let south = fetch(
+        &db,
+        &points,
+        tile_of(50.0, -50.0, 4),
+        None,
+        Some(&name),
+        &limits,
+    )
+    .await
+    .unwrap();
+    let mut ids: Vec<_> = decode(&south)["points"]
+        .1
+        .iter()
+        .map(|f| (f.properties["name"].clone(), f.id))
+        .collect();
+    ids.sort();
+    assert_eq!(
+        ids,
+        [
+            ("max".to_owned(), Some(9007199254740991)),
+            ("negative".to_owned(), None)
+        ]
+    );
+    let text = decode(&fetch(&db, &codes, here, None, None, &limits).await.unwrap());
+    assert_eq!(text["codes"].1[0].id, None);
+}
+
+#[tokio::test]
+async fn polar_vertices_are_clipped_to_the_mercator_domain() {
+    let mut config = Config::parse(
+        "",
+        Some(std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required")),
+        None,
+    )
+    .unwrap();
+    config.allowed_schemas = vec!["mvt_polar".into()];
+    let db = Database::open(&config).await.unwrap();
+    let mut tx = db.begin_catalog().await.unwrap();
+    for statement in [
+        "DROP SCHEMA IF EXISTS mvt_polar CASCADE",
+        "CREATE SCHEMA mvt_polar",
+        "CREATE TABLE mvt_polar.world(id integer PRIMARY KEY, name text, geom geometry(Polygon,4326))",
+        "INSERT INTO mvt_polar.world VALUES (1,'antarctica',ST_GeomFromText('POLYGON((-180 -90,180 -90,180 -60,-180 -60,-180 -90))',4326))",
+        "CREATE TABLE mvt_polar.world_points(id integer PRIMARY KEY, name text, geom geometry(Geometry,4326))",
+        "INSERT INTO mvt_polar.world_points VALUES (2,'pole',ST_GeomFromText('POINT(0 90)',4326)), (3,'mixed',ST_GeomFromText('MULTIPOINT((10 10),(0 90))',4326))",
+        "CREATE TABLE mvt_polar.line(id integer PRIMARY KEY, name text, geom geometry(LineString,4326))",
+        "INSERT INTO mvt_polar.line VALUES (1,'meridian',ST_GeomFromText('LINESTRING(0 0,0 90)',4326))",
+        "CREATE TABLE mvt_polar.nad(id integer PRIMARY KEY, name text, geom geometry(Polygon,4269))",
+        "INSERT INTO mvt_polar.nad VALUES (1,'antarctica',ST_GeomFromText('POLYGON((-180 -90,180 -90,180 -60,-180 -60,-180 -90))',4269))",
+        "CREATE TABLE mvt_polar.nad_points(id integer PRIMARY KEY, name text, geom geometry(Geometry,4269))",
+        "INSERT INTO mvt_polar.nad_points VALUES (2,'pole',ST_GeomFromText('POINT(0 90)',4269))",
+    ] {
+        sqlx::query(statement).execute(&mut *tx).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+    let mut sources = BTreeMap::new();
+    for table in ["world", "world_points", "line", "nad", "nad_points"] {
+        let dataset: Dataset =
+            serde_json::from_value(serde_json::json!({"id": table, "title": table,
+            "source": {"schema": "mvt_polar", "table": table}, "properties": ["name"]}))
+            .unwrap();
+        let meta = inspect(&db, &config, &dataset).await.unwrap();
+        sources.insert(table, (dataset, meta));
+    }
+    let limits = Limits::default();
+    let ids = |tile: &[u8], layer: &str| -> Vec<u64> {
+        let mut ids: Vec<u64> = decode(tile)
+            .get(layer)
+            .map_or(vec![], |l| l.1.iter().filter_map(|f| f.id).collect());
+        ids.sort_unstable();
+        ids
+    };
+
+    // Regression: a vertex at latitude +-90 made ST_Transform fail and the tile return 503.
+    for (polygons, points, xyz) in [
+        ("world", "world_points", (0, 0, 0)),
+        ("world", "world_points", (1, 0, 1)),
+        ("nad", "nad_points", (0, 0, 0)),
+        ("nad", "nad_points", (1, 0, 1)),
+    ] {
+        for (table, wanted, unwanted) in [(polygons, Some(1), None), (points, None, Some(2))] {
+            let encoded = fetch(&db, &sources[table], xyz, None, None, &limits).await;
+            let found = ids(
+                &encoded.unwrap_or_else(|e| panic!("{table} {xyz:?}: {e:?}")),
+                table,
+            );
+            assert!(
+                wanted.is_none_or(|id| found.contains(&id))
+                    && unwanted.is_none_or(|id| !found.contains(&id)),
+                "{table} {xyz:?}: {found:?}"
+            );
+        }
+    }
+    // Only the representable part of a multi-geometry survives the clip.
+    let world = fetch(
+        &db,
+        &sources["world_points"],
+        (0, 0, 0),
+        None,
+        None,
+        &limits,
+    )
+    .await
+    .unwrap();
+    assert_eq!(ids(&world, "world_points"), [3]);
+    let mixed = decode(&world)["world_points"]
+        .1
+        .iter()
+        .find(|f| f.id == Some(3))
+        .map(|f| vertices(&f.geometry))
+        .unwrap();
+    assert_eq!(mixed.len(), 1, "{mixed:?}");
+    // A point seen only beyond +-85.0511 is never encoded, not even as an error.
+    let north = fetch(
+        &db,
+        &sources["world_points"],
+        (1, 0, 0),
+        None,
+        None,
+        &limits,
+    )
+    .await
+    .unwrap();
+    assert!(!ids(&north, "world_points").contains(&2));
+
+    let (extent, buffer) = (i64::from(limits.tile_extent), i64::from(limits.tile_buffer));
+    for xyz in [(0, 0, 0), (1, 0, 0), (1, 1, 0)] {
+        let encoded = fetch(&db, &sources["line"], xyz, None, None, &limits)
+            .await
+            .unwrap_or_else(|e| panic!("{xyz:?}: {e:?}"));
+        let layers = decode(&encoded);
+        let line = &layers["line"].1;
+        assert_eq!(
+            line.iter().map(|f| f.id).collect::<Vec<_>>(),
+            [Some(1)],
+            "{xyz:?}"
+        );
+        let points = vertices(&line[0].geometry);
+        assert!(points.len() >= 2, "{xyz:?}: {points:?}");
+        assert!(
+            points
+                .iter()
+                .all(|&(x, y)| (-buffer..=extent + buffer).contains(&x)
+                    && (-buffer..=extent + buffer).contains(&y)),
+            "{xyz:?}: {points:?}"
+        );
+    }
+    let corner = fetch(&db, &sources["line"], (1, 0, 1), None, None, &limits).await;
+    assert!(corner.is_ok(), "{corner:?}");
+}
+
+#[test]
+fn tile_sql_does_not_inspect_the_id_type_per_row() {
+    // ponytail: the SQL builder is private, so the generated text is checked at its source.
+    assert!(!include_str!("../src/postgis/mvt.rs").contains("pg_typeof"));
 }

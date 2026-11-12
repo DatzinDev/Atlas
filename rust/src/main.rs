@@ -1,8 +1,47 @@
 use std::{env, process::ExitCode};
 
-use atlas::config::Config;
-use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
+use atlas::{
+    api::{failure, nosniff, track},
+    config::Config,
+    domain::Error,
+};
+use axum::{
+    Router,
+    http::{HeaderName, HeaderValue, Method, StatusCode, header},
+    response::IntoResponse,
+    routing::get,
+};
 use tokio::{net::TcpListener, signal};
+use tower_http::cors::{AllowOrigin, CorsLayer};
+
+/// `None` when no origin is configured: no CORS headers and OPTIONS stays 405.
+fn cors(origins: &[String]) -> Option<CorsLayer> {
+    if origins.is_empty() {
+        return None;
+    }
+    let origin = if origins == ["*"] {
+        AllowOrigin::any()
+    } else {
+        // Config validation guarantees ASCII origins, so no entry is dropped.
+        AllowOrigin::list(origins.iter().filter_map(|o| HeaderValue::from_str(o).ok()))
+    };
+    Some(
+        CorsLayer::new()
+            .allow_origin(origin)
+            .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE])
+            .allow_headers([
+                header::AUTHORIZATION,
+                header::CONTENT_TYPE,
+                header::IF_MATCH,
+            ])
+            .expose_headers([
+                header::ETAG,
+                header::CONTENT_DISPOSITION,
+                HeaderName::from_static("x-request-id"),
+            ])
+            .max_age(std::time::Duration::from_secs(600)),
+    )
+}
 
 fn configuration() -> Result<(bool, Config), &'static str> {
     let args: Vec<_> = env::args_os().skip(1).collect();
@@ -29,6 +68,9 @@ fn configuration() -> Result<(bool, Config), &'static str> {
 }
 
 async fn serve(config: Config) -> Result<(), &'static str> {
+    if config.database_url.is_none() {
+        return Err("database url required");
+    }
     let verifier = std::sync::Arc::new(
         config
             .auth
@@ -52,60 +94,62 @@ async fn serve(config: Config) -> Result<(), &'static str> {
     let bound = listener
         .local_addr()
         .map_err(|_| "cannot inspect listener")?;
-    let database = if config.database_url.is_some() {
-        Some(
-            atlas::postgis::connection::Database::open(&config)
-                .await
-                .map_err(|_| "database unavailable")?,
-        )
-    } else {
-        None
-    };
-    let catalog = database
-        .clone()
-        .map(|db| atlas::catalog::Catalog::new(db, config.clone()))
-        .transpose()
+    let database = atlas::postgis::connection::Database::open(&config)
+        .await
+        .map_err(|_| "database unavailable")?;
+    let catalog = atlas::catalog::Catalog::new(database.clone(), config.clone())
         .map_err(|_| "invalid configuration")?;
-    let router = Router::new()
+    // Probes stay outside authentication: OpenAPI declares them `security: []`.
+    let probes = Router::new()
         .route("/api/v1/health", get(|| async { StatusCode::OK }))
         .route(
             "/api/v1/ready",
             get(move || {
                 let catalog = catalog.clone();
                 async move {
-                    if let Some(catalog) = catalog && catalog.ready().await.is_ok() {
-                        return StatusCode::OK.into_response();
+                    match catalog.ready().await {
+                        Ok(()) => StatusCode::OK.into_response(),
+                        Err(e @ Error::CapacityExceeded) => failure(e),
+                        Err(_) => failure(Error::DatabaseUnavailable),
                     }
-                    static REQUEST_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-                    let body = serde_json::json!({"code": atlas::domain::Error::DatabaseUnavailable,
-                        "message": "service not ready", "request_id": REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed).to_string()});
-                    (StatusCode::SERVICE_UNAVAILABLE, [("content-type", "application/json")], body.to_string()).into_response()
                 }
             }),
         );
-    let publications = database
-        .clone()
-        .map(|db| atlas::services::publications::Publications::new(db, config.clone()))
-        .transpose()
-        .map_err(|_| "invalid configuration")?;
-    let router = match publications {
-        Some(service) => router
-            .merge(atlas::api::datasets::router(service.clone()))
-            .merge(atlas::api::tiles::router(service.clone()))
-            .merge(atlas::api::features::router(service.clone()))
-            .merge(atlas::api::export::router(service.clone()))
-            .merge(atlas::api::admin::router(
-                service,
-                config.limits.admin_body_bytes,
-            )),
+    let service =
+        atlas::services::publications::Publications::new(database.clone(), config.clone())
+            .map_err(|_| "invalid configuration")?;
+    let router = Router::new()
+        .merge(atlas::api::datasets::router(service.clone()))
+        .merge(atlas::api::tiles::router(service.clone()))
+        .merge(atlas::api::features::router(service.clone()))
+        .merge(atlas::api::export::router(service.clone()))
+        .merge(atlas::api::admin::router(
+            service,
+            config.limits.admin_body_bytes,
+        ));
+    let router = router
+        .layer(axum::middleware::from_fn_with_state(
+            verifier,
+            atlas::auth::http::authenticate,
+        ))
+        .merge(probes)
+        .fallback(|| async { failure(Error::NotFound) })
+        // Set after every route is added: axum applies it to existing routes and keeps `Allow`.
+        .method_not_allowed_fallback(|| async { failure(Error::MethodNotAllowed) })
+        .layer(axum::middleware::map_response(nosniff))
+        // Every routed response, including fallbacks and 401s, gets the request id.
+        .layer(axum::middleware::from_fn(track));
+    // Outside `track` and auth: preflights need no token and every error carries CORS.
+    let router = match cors(&config.cors.allowed_origins) {
+        Some(layer) => router.layer(layer),
         None => router,
     };
-    let router = router.layer(axum::middleware::from_fn_with_state(
-        verifier,
-        atlas::auth::http::authenticate,
-    ));
+    if config.public_url.is_none() {
+        eprintln!("{{\"event\":\"public_url_missing\"}}");
+    }
     eprintln!("{{\"event\":\"listening\",\"address\":\"{bound}\"}}");
-    let result = axum::serve(listener, router)
+    let (started, signalled) = tokio::sync::oneshot::channel();
+    let server = axum::serve(listener, router)
         .with_graceful_shutdown(async move {
             #[cfg(unix)]
             tokio::select! {
@@ -115,11 +159,24 @@ async fn serve(config: Config) -> Result<(), &'static str> {
             #[cfg(not(unix))]
             let _ = interrupt.await;
             eprintln!("{{\"event\":\"shutdown_started\"}}");
+            let _ = started.send(());
         })
-        .await;
-    if let Some(database) = database {
-        database.close().await;
-    }
+        .into_future();
+    let drain = std::time::Duration::from_secs(config.limits.shutdown_seconds.into());
+    // Dropping the server stops tracking leftover connections; their tasks (and any export
+    // transaction, rolled back when its connection drops) are aborted when the runtime exits.
+    let result = tokio::select! {
+        result = server => result,
+        () = async {
+            let _ = signalled.await;
+            tokio::time::sleep(drain).await;
+        } => {
+            eprintln!("{{\"event\":\"shutdown_forced\"}}");
+            Ok(())
+        }
+    };
+    // Connections still held by aborted work keep `close` waiting; bound it.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), database.close()).await;
     result.map_err(|_| "server failed")?;
     eprintln!("{{\"event\":\"shutdown_complete\"}}");
     Ok(())

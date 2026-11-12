@@ -44,6 +44,10 @@ rango, booleanos estrictos, números finitos, texto y fechas ISO compatibles. No
 libre ni expresiones SQL. Bigint y numeric se conservan sin convertirlos a f64; documentar
 su serialización JSON como en Python, sin prometer precisión en clientes JavaScript.
 Tipos no soportados no se exponen silenciosamente: se rechazan al publicar o se excluyen explícitamente.
+`domain.rs` es la única lista de tipos admitidos: `PROPERTY_TYPES` (int2, int4, int8, float4,
+float8, numeric, bool, text, varchar, bpchar, date, timestamp, timestamptz), `ID_TYPES` y
+`GEOMETRY_TYPES`. Cada tipo de propiedad fija su clase de filtro, su codificación MVT y su tipo
+de campo TileJSON; introspección, catálogo, predicados, MVT y TileJSON la consultan.
 
 MVP: tablas con PK simple y vistas con id_column declarado único/no nulo. Registrar verifica
 esa condición; el publicador debe mantenerla tras cambios de datos. Consultas paginan con el
@@ -70,12 +74,16 @@ No se aceptan claves, issuer o rutas de JWKS suministradas por el token.
 | Catálogo por defecto / máximo | 100 / 1.000 |
 | Filtro: bytes / profundidad / nodos | 65.536 / 8 / 100 |
 | IN / pares XY | 1.000 / 10.000 |
-| Pool mínimo / máximo; adquisición | 1 / 10; 5 s |
+| Pool mínimo / máximo; adquisición | 1 / 10; `data_operations < pool_max`; 5 s |
+| Conexiones reservadas fuera de la admisión | `pool_max − data_operations`; catálogo, inspección y `/ready` esperan hasta `acquire_seconds`, luego 503 `capacity_exceeded` |
 | Consulta SQL; stream total | 30 s; 300 s |
+| Drenado en apagado (`shutdown_seconds`, 1..=3600) | 30 s; después aborta y cierra el pool en ≤ 5 s |
 | Operaciones de datos simultáneas | 8; sin cola propia, rechazo 503 |
+| Exportaciones simultáneas (`export_operations`) | 2; `1 ≤ n ≤ data_operations`; consume además un cupo de datos; sin cola, rechazo 503 |
 | MVT candidatos / bytes / zoom máximo | 100.000 / 8 MiB / 22 |
 | MVT extent / buffer | 4.096 / 64 |
 | Exportación features / bytes emitidos | 1.000.000 / 256 MiB |
+| Página items/query: bytes del cuerpo (`page_bytes`, 1 B–1 GiB) | 32 MiB |
 | Body Query / administración | 128 KiB / 256 KiB |
 
 Todas las consultas de datos usan transacciones de solo lectura; la cuenta de servicio solo

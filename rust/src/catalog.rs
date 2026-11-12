@@ -1,10 +1,8 @@
 use crate::{
     config::Config,
     domain::{Dataset, Error, Metadata},
-    postgis::{
-        connection::{Database, error},
-        introspection::inspect,
-    },
+    migrations::CATALOG_VERSION,
+    postgis::connection::{Database, error},
 };
 use sqlx::{Row, postgres::PgRow, types::Json};
 
@@ -14,6 +12,13 @@ const SERVABLE_BATCH: i64 = 256;
 pub struct Publication {
     pub config: Dataset,
     pub metadata: Metadata,
+    pub revision: i64,
+}
+
+/// A stored row that no longer decodes or validates; it can still be deleted by revision.
+#[derive(Clone, Debug)]
+pub struct Invalid {
+    pub id: String,
     pub revision: i64,
 }
 
@@ -30,7 +35,25 @@ impl Catalog {
             .execute(&mut *tx)
             .await
             .map_err(error)?;
-        tx.rollback().await.map_err(error)
+        // A missing versions table means an unmigrated catalog (503), not a 500 from 42P01.
+        let tracked: bool =
+            sqlx::query_scalar("SELECT to_regclass('atlas_catalog.migrations') IS NOT NULL")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(error)?;
+        let version: Option<i32> = if tracked {
+            sqlx::query_scalar("SELECT max(version) FROM atlas_catalog.migrations")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(error)?
+        } else {
+            None
+        };
+        tx.rollback().await.map_err(error)?;
+        if version != Some(CATALOG_VERSION) {
+            return Err(Error::DatabaseUnavailable);
+        }
+        Ok(())
     }
     pub fn new(database: Database, config: Config) -> Result<Self, Error> {
         config.validate()?;
@@ -47,45 +70,39 @@ impl Catalog {
         config
             .validate(&self.config.allowed_schemas)
             .map_err(|_| Error::SchemaChanged)?;
+        let columns = || {
+            metadata
+                .attributes
+                .iter()
+                .chain(&metadata.filter_attributes)
+        };
         if id != config.id
             || revision <= 0
             || metadata.srid <= 0
-            || ![
-                "POINT",
-                "MULTIPOINT",
-                "LINESTRING",
-                "MULTILINESTRING",
-                "POLYGON",
-                "MULTIPOLYGON",
-                "GEOMETRYCOLLECTION",
-            ]
-            .contains(&metadata.geometry_type.as_str())
+            || !crate::domain::GEOMETRY_TYPES.contains(&metadata.geometry_type.as_str())
             || !crate::domain::identifier(&metadata.geometry_column)
             || !crate::domain::identifier(&metadata.id_column)
+            || !crate::domain::ID_TYPES.contains(&metadata.id_type.as_str())
             || metadata
                 .attributes
                 .iter()
                 .map(|a| &a.name)
                 .collect::<Vec<_>>()
                 != config.properties.iter().collect::<Vec<_>>()
-            || metadata.attributes.iter().any(|a| {
+            || metadata
+                .filter_attributes
+                .iter()
+                .any(|a| !crate::domain::identifier(&a.name) || config.properties.contains(&a.name))
+            || columns().any(|a| {
                 a.name == metadata.geometry_column
-                    || ![
-                        "int2",
-                        "int4",
-                        "int8",
-                        "float4",
-                        "float8",
-                        "numeric",
-                        "bool",
-                        "text",
-                        "varchar",
-                        "bpchar",
-                        "date",
-                        "timestamp",
-                        "timestamptz",
-                    ]
-                    .contains(&a.data_type.as_str())
+                    || crate::domain::property_type(&a.data_type).is_none()
+            })
+            || metadata.extent.is_some_and(|[minx, miny, maxx, maxy]| {
+                // RangeInclusive::contains also rejects NaN and infinities.
+                minx > maxx
+                    || miny > maxy
+                    || ![minx, maxx].iter().all(|x| (-180.0..=180.0).contains(x))
+                    || ![miny, maxy].iter().all(|y| (-90.0..=90.0).contains(y))
             })
         {
             return Err(Error::SchemaChanged);
@@ -97,7 +114,21 @@ impl Catalog {
         })
     }
 
+    fn entry(&self, row: PgRow) -> Result<Result<Publication, Invalid>, Error> {
+        let id: String = row.try_get("id").map_err(error)?;
+        let revision: i64 = row.try_get("revision").map_err(error)?;
+        match self.decode(row) {
+            Ok(publication) => Ok(Ok(publication)),
+            Err(Error::SchemaChanged) => Ok(Err(Invalid { id, revision })),
+            Err(other) => Err(other),
+        }
+    }
+
     pub async fn get(&self, id: &str) -> Result<Publication, Error> {
+        self.find(id).await?.map_err(|_| Error::SchemaChanged)
+    }
+
+    pub async fn find(&self, id: &str) -> Result<Result<Publication, Invalid>, Error> {
         let mut tx = self.database.begin_read().await?;
         let row = sqlx::query(
             "SELECT id, config, metadata, revision FROM atlas_catalog.datasets WHERE id=$1",
@@ -107,18 +138,24 @@ impl Catalog {
         .await
         .map_err(error)?
         .ok_or(Error::DatasetNotFound)?;
-        let record = self.decode(row)?;
+        let record = self.entry(row)?;
         tx.rollback().await.map_err(error)?;
         Ok(record)
     }
 
-    pub async fn list(&self, limit: u32, offset: u32) -> Result<Vec<Publication>, Error> {
+    pub async fn list(
+        &self,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<Result<Publication, Invalid>>, Error> {
         let rows = self.rows(limit, offset).await?;
-        rows.into_iter().map(|row| self.decode(row)).collect()
+        rows.into_iter().map(|row| self.entry(row)).collect()
     }
 
+    /// `roles` only prefilters rows in SQL; `decode` and `keep` stay authoritative.
     pub async fn servable(
         &self,
+        roles: &[String],
         keep: impl Fn(&Publication) -> bool,
         skip: usize,
         take: usize,
@@ -128,9 +165,10 @@ impl Catalog {
         let mut after = String::new();
         loop {
             let mut tx = self.database.begin_read().await?;
-            let rows = sqlx::query("SELECT id, config, metadata, revision FROM atlas_catalog.datasets WHERE id > $1 ORDER BY id LIMIT $2")
+            let rows = sqlx::query("SELECT id, config, metadata, revision FROM atlas_catalog.datasets WHERE id > $1 AND config->'enabled' IS DISTINCT FROM 'false'::jsonb AND (config->'access'->'public' = 'true'::jsonb OR config->'access'->'view_roles' ?| $3::text[]) ORDER BY id LIMIT $2")
                 .bind(&after)
                 .bind(SERVABLE_BATCH)
+                .bind(roles)
                 .fetch_all(&mut *tx)
                 .await
                 .map_err(error)?;
@@ -169,8 +207,12 @@ impl Catalog {
         Ok(rows)
     }
 
-    pub async fn create(&self, dataset: &Dataset) -> Result<Publication, Error> {
-        let metadata = inspect(&self.database, &self.config, dataset).await?;
+    /// `metadata` is the caller's single inspection of `dataset`.
+    pub async fn create(
+        &self,
+        dataset: &Dataset,
+        metadata: Metadata,
+    ) -> Result<Publication, Error> {
         let mut tx = self.database.begin_catalog().await?;
         let row = sqlx::query("INSERT INTO atlas_catalog.datasets(id,config,metadata) VALUES ($1,$2,$3) RETURNING id,config,metadata,revision")
             .bind(&dataset.id).bind(Json(dataset)).bind(Json(metadata)).fetch_one(&mut *tx).await.map_err(error)?;
@@ -179,11 +221,16 @@ impl Catalog {
         Ok(record)
     }
 
-    pub async fn update(&self, dataset: &Dataset, revision: i64) -> Result<Publication, Error> {
+    /// `metadata` is the caller's single inspection of `dataset`.
+    pub async fn update(
+        &self,
+        dataset: &Dataset,
+        metadata: Metadata,
+        revision: i64,
+    ) -> Result<Publication, Error> {
         if revision <= 0 {
             return Err(Error::InvalidRequest);
         }
-        let metadata = inspect(&self.database, &self.config, dataset).await?;
         let mut tx = self.database.begin_catalog().await?;
         let row = sqlx::query("UPDATE atlas_catalog.datasets SET config=$1, metadata=$2, revision=revision+1, updated_at=now() WHERE id=$3 AND revision=$4 RETURNING id,config,metadata,revision")
             .bind(Json(dataset)).bind(Json(metadata)).bind(&dataset.id).bind(revision).fetch_optional(&mut *tx).await.map_err(error)?;

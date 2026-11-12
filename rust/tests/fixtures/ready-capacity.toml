@@ -1,0 +1,5 @@
+[limits]
+pool_max = 2
+data_operations = 1
+export_operations = 1
+acquire_seconds = 1

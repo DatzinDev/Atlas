@@ -15,12 +15,15 @@ API Axum ── identidad JWT ── servicios de publicación/consulta/tiles/ex
 
 ## Fronteras
 
-- domain: Dataset/Query/Predicate/AccessPolicy y límites; no conoce HTTP ni SQLx.
+- domain: Dataset/Query/Predicate/AccessPolicy, límites y tipos PostgreSQL admitidos; no conoce HTTP ni SQLx.
 - postgis: pool, introspección, compilación de predicados, lectura por cursor y MVT.
 - catalog: persistencia en atlas_catalog y revisión de publicación; no es un ORM de datos fuente.
 - services: autorizar y combinar restricciones antes de I/O; comparten Query, no paginación.
 - api/auth: validación de transporte, JWT→Principal y errores; no construyen SQL.
-- main/config: configuración, migraciones explícitas, wiring y shutdown. TLS/rate limiting en proxy.
+  La API ejecuta `Query::validate` y parsea el filtro de usuario una sola vez por petición,
+  antes de cualquier I/O, y entrega el `Predicate` a servicios y selección.
+- main/config: configuración, migraciones explícitas, wiring y shutdown. El proxy es obligatorio para TLS, rate limiting,
+  timeouts de cabeceras y cuerpo (slowloris) y límite de conexiones; Atlas no los implementa.
 
 Stack elegido: Rust estable fijado al crear Cargo, Tokio, Axum, SQLx Postgres, Serde/serde_json,
 tracing, jsonwebtoken, TOML y Tower HTTP. Solo features necesarias; Cargo.lock versionado.
@@ -50,6 +53,9 @@ MVT se produce en PostGIS; Rust no decodifica geometrías para volver a codifica
 Migración inicial crea atlas_catalog.datasets: id, configuración validada JSONB, metadatos
 inspeccionados JSONB, revision bigint y timestamps. id único; PATCH/DELETE con If-Match de la
 revision para evitar actualizaciones perdidas (412). Config/metadata siempre validados al leer.
+atlas_catalog.migrations(version, applied_at) registra cada migración embebida aplicada;
+`migrate` ejecuta solo las pendientes bajo el advisory lock y `/ready` exige que la versión
+máxima sea exactamente la última embebida (otra versión o tabla ausente → 503).
 Un repositorio concreto SQLx; sin interfaz genérica para otros backends.
 No caché de catálogo en el MVP: resolver publicación vigente por petición evita invalidación
 entre instancias. Actualizar publicación no revoca un stream ya autorizado; aplica a solicitudes

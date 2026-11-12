@@ -1,14 +1,15 @@
-use super::{decode, identifier, no_query};
+use super::{identifier, json_body, no_query, number, params};
 use crate::{
+    config::Limits,
     domain::{Direction, Error, Principal, Query, SortField},
-    postgis::features::Page,
+    query::predicate::Predicate,
     services::publications::Publications,
 };
 use axum::{
     Extension, Router,
     body::Bytes,
     extract::{DefaultBodyLimit, Path, RawQuery, State, rejection::BytesRejection},
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -39,10 +40,12 @@ async fn query(
     Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
     RawQuery(raw): RawQuery,
+    headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, Error> {
     let id = identifier(&id)?;
     no_query(raw.as_deref())?;
+    json_body(&headers, false)?;
     let body = body.map_err(|rejection| match rejection.status() {
         StatusCode::PAYLOAD_TOO_LARGE => Error::QueryTooLarge,
         _ => Error::InvalidRequest,
@@ -57,59 +60,60 @@ async fn select(
     id: &str,
     selection: &Query,
 ) -> Result<Response, Error> {
-    let limits = service.limits();
-    selection.validate(limits.max_limit, limits.max_offset)?;
-    if let Some(filter) = &selection.filter {
-        crate::query::predicate::parse(filter.get(), limits)?;
-    }
+    let filter = checked(selection, service.limits())?;
     let publication = service.detail(id, principal).await?;
-    let Page { features, more } = service.features(&publication, selection).await?;
-    let list: Vec<&str> = features.iter().map(|f| f.get()).collect();
-    let body = format!(
-        r#"{{"type":"FeatureCollection","features":[{}],"numberReturned":{},"hasMore":{more}}}"#,
-        list.join(","),
-        list.len()
-    );
+    let page = service
+        .features(&publication, selection, filter.as_ref())
+        .await?;
     let headers = [
         (header::CONTENT_TYPE, "application/geo+json"),
         (header::CACHE_CONTROL, "no-store"),
     ];
-    Ok((headers, body).into_response())
+    Ok((headers, page.body).into_response())
+}
+
+/// The only `Query::validate`: also parses its user filter, both before any I/O.
+pub(crate) fn checked(query: &Query, limits: &Limits) -> Result<Option<Predicate>, Error> {
+    query.validate(limits.max_limit, limits.max_offset)?;
+    super::filter(query.filter.as_ref().map(|f| f.get()), limits)
 }
 
 pub(crate) fn parse(raw: Option<&str>) -> Result<Query, Error> {
-    let mut selection = Query::default();
-    let mut seen = Vec::new();
-    for pair in raw.unwrap_or_default().split('&').filter(|p| !p.is_empty()) {
-        let (key, value) = pair.split_once('=').ok_or(Error::InvalidRequest)?;
-        if seen.contains(&key) {
-            return Err(Error::InvalidRequest);
-        }
-        seen.push(key);
-        let value = decode(value)?;
-        let list = || value.split(',').map(str::to_owned).collect::<Vec<_>>();
-        match key {
-            "filter" => {
-                let raw = RawValue::from_string(value.clone()).map_err(|_| Error::InvalidFilter)?;
-                selection.filter = Some(raw);
-            }
-            "bbox" => {
-                let numbers: Vec<f64> = list()
-                    .iter()
-                    .map(|v| v.parse().map_err(|_| Error::InvalidRequest))
-                    .collect::<Result<_, _>>()?;
-                selection.bbox = Some(numbers.try_into().map_err(|_| Error::InvalidRequest)?);
-            }
-            "properties" => selection.properties = Some(list()),
-            "sort" => {
-                selection.sort = Some(list().iter().map(|v| sort(v)).collect::<Result<_, _>>()?)
-            }
-            "limit" => selection.limit = Some(number(&value)?),
-            "offset" => selection.offset = number(&value)?,
-            _ => return Err(Error::InvalidRequest),
-        }
-    }
+    let [filter, bbox, properties, order, limit, offset] = params(
+        raw,
+        ["filter", "bbox", "properties", "sort", "limit", "offset"],
+    )?;
+    let mut selection = selection(filter, bbox, properties)?;
+    selection.sort = order
+        .map(|v| v.split(',').map(sort).collect::<Result<Vec<_>, _>>())
+        .transpose()?;
+    selection.limit = limit.as_deref().map(number).transpose()?;
+    selection.offset = offset.as_deref().map(number).transpose()?.unwrap_or(0);
     Ok(selection)
+}
+
+/// The `filter`/`bbox`/`properties` part of a GET Query, shared by items and export.
+pub(crate) fn selection(
+    filter: Option<String>,
+    bbox: Option<String>,
+    properties: Option<String>,
+) -> Result<Query, Error> {
+    let filter = filter.map(RawValue::from_string).transpose();
+    let bbox: Option<[f64; 4]> = bbox
+        .map(|v| {
+            let numbers: Vec<f64> = v
+                .split(',')
+                .map(|n| n.parse().map_err(|_| Error::InvalidRequest))
+                .collect::<Result<_, _>>()?;
+            numbers.try_into().map_err(|_| Error::InvalidRequest)
+        })
+        .transpose()?;
+    Ok(Query {
+        filter: filter.map_err(|_| Error::InvalidFilter)?,
+        bbox,
+        properties: properties.map(|v| v.split(',').map(str::to_owned).collect()),
+        ..Query::default()
+    })
 }
 
 fn sort(text: &str) -> Result<SortField, Error> {
@@ -123,11 +127,4 @@ fn sort(text: &str) -> Result<SortField, Error> {
         field: field.to_owned(),
         direction,
     })
-}
-
-fn number(text: &str) -> Result<u32, Error> {
-    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(Error::InvalidRequest);
-    }
-    text.parse().map_err(|_| Error::InvalidRequest)
 }

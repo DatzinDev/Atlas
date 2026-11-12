@@ -1,5 +1,6 @@
 use atlas::domain::{Dataset, Error, Query};
 
+// R14
 #[test]
 fn closed_models_and_private_defaults() {
     let json = r#"{"id":"roads","title":"Roads","source":{"schema":"public","table":"roads"},"properties":["id"]}"#;
@@ -85,6 +86,21 @@ fn access_roles_are_bounded() {
 }
 
 #[test]
+fn closed_query_rejects_null_fields() {
+    let rejected = |json: &str| {
+        serde_json::from_str::<Query>(json)
+            .ok()
+            .is_none_or(|q| q.validate(10000, 100000).is_err())
+    };
+    for field in ["filter", "bbox", "properties", "sort", "limit", "offset"] {
+        assert!(rejected(&format!(r#"{{"{field}":null}}"#)), "{field}");
+    }
+    for valid in ["{}", r#"{"limit":1,"offset":0,"properties":["id"]}"#] {
+        assert!(!rejected(valid), "{valid}");
+    }
+}
+
+#[test]
 fn query_validation_preserves_numeric_filter() {
     for json in [
         r#"{"limit":0}"#,
@@ -105,5 +121,132 @@ fn query_validation_preserves_numeric_filter() {
     assert_eq!(
         Error::DatabaseUnavailable.to_string(),
         "DatabaseUnavailable"
+    );
+}
+
+#[test]
+fn bbox_must_lie_in_the_wgs84_domain() {
+    let check = |bbox: &str| {
+        serde_json::from_str::<Query>(&format!(r#"{{"bbox":{bbox}}}"#))
+            .unwrap()
+            .validate(10000, 100000)
+    };
+    for valid in [
+        "[-180,-90,180,90]",
+        "[-102,18,-96,22]",
+        "[0,0,1e-9,1e-9]",
+        "[179,89,180,90]",
+    ] {
+        assert_eq!(check(valid), Ok(()), "{valid}");
+    }
+    for invalid in [
+        // Antimeridian crossing must be split by the client.
+        "[170,-10,-170,10]",
+        "[0,0,0,1]",
+        "[0,0,1,0]",
+        "[1,1,1,1]",
+        "[2,0,1,1]",
+        "[0,1,1,0]",
+        "[-181,0,0,1]",
+        "[0,0,181,1]",
+        "[0,-91,1,0]",
+        "[0,0,1,91]",
+        "[-180.000001,-90,180,90]",
+    ] {
+        assert_eq!(check(invalid), Err(Error::InvalidRequest), "{invalid}");
+    }
+}
+
+#[test]
+fn routing_errors_serialize_as_snake_case_codes() {
+    for (error, code) in [
+        (Error::NotFound, "not_found"),
+        (Error::MethodNotAllowed, "method_not_allowed"),
+        (Error::DatasetNotFound, "dataset_not_found"),
+        (Error::DatabaseUnavailable, "database_unavailable"),
+    ] {
+        assert_eq!(serde_json::to_value(error).unwrap(), code);
+    }
+    assert_ne!(Error::NotFound, Error::DatasetNotFound);
+    assert_eq!(Error::NotFound.to_string(), "NotFound");
+    assert_eq!(Error::MethodNotAllowed.to_string(), "MethodNotAllowed");
+}
+
+// R04
+#[test]
+fn supported_types_have_one_source_of_truth() {
+    use atlas::domain::{
+        FilterClass as F, GEOMETRY_TYPES, ID_TYPES, MvtEncoding as M, PROPERTY_TYPES, property_type,
+    };
+    // Behavior before the refactor: predicates, MVT select list and TileJSON fields.
+    let expected = [
+        (
+            "int2",
+            F::Integer(i16::MIN.into(), i16::MAX.into()),
+            M::Native,
+            "Number",
+        ),
+        (
+            "int4",
+            F::Integer(i32::MIN.into(), i32::MAX.into()),
+            M::Native,
+            "Number",
+        ),
+        ("int8", F::Integer(i64::MIN, i64::MAX), M::Native, "Number"),
+        (
+            "float4",
+            F::Float(f32::MAX.into()),
+            M::FiniteFloat,
+            "Number",
+        ),
+        ("float8", F::Float(f64::MAX), M::FiniteFloat, "Number"),
+        ("numeric", F::Numeric, M::Text, "String"),
+        ("bool", F::Bool, M::Native, "Boolean"),
+        ("text", F::Text, M::Native, "String"),
+        ("varchar", F::Text, M::Native, "String"),
+        ("bpchar", F::Text, M::Native, "String"),
+        ("date", F::Date, M::IsoText, "String"),
+        (
+            "timestamp",
+            F::Timestamp { zoned: false },
+            M::IsoText,
+            "String",
+        ),
+        (
+            "timestamptz",
+            F::Timestamp { zoned: true },
+            M::IsoText,
+            "String",
+        ),
+    ];
+    assert_eq!(PROPERTY_TYPES.len(), expected.len());
+    for (name, filter, mvt, tilejson) in expected {
+        let found = property_type(name).unwrap_or_else(|| panic!("{name}"));
+        assert_eq!(found.name, name);
+        assert_eq!(found.filter, filter, "{name}");
+        assert_eq!(found.mvt, mvt, "{name}");
+        assert_eq!(found.tilejson, tilejson, "{name}");
+    }
+    // Lookup is exact: no aliases, no case folding, no non-scalar types.
+    for unknown in ["TIMESTAMPTZ", "integer", "jsonb", "geometry", "int4 "] {
+        assert!(property_type(unknown).is_none(), "{unknown:?}");
+    }
+    // Ids keep their previous set and are always publishable property types.
+    assert_eq!(
+        ID_TYPES,
+        ["int2", "int4", "int8", "text", "varchar", "bpchar"]
+    );
+    assert!(ID_TYPES.iter().all(|t| property_type(t).is_some()));
+    assert_eq!(
+        GEOMETRY_TYPES,
+        [
+            "POINT",
+            "MULTIPOINT",
+            "LINESTRING",
+            "MULTILINESTRING",
+            "POLYGON",
+            "MULTIPOLYGON",
+            "GEOMETRYCOLLECTION",
+        ]
     );
 }

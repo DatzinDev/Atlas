@@ -28,9 +28,20 @@ preparar PostGIS descartable y `ATLAS_TEST_DATABASE_URL` como en
   sub/exp faltantes, expiración, nbf futuro, tipos inválidos y claims duplicados.
 - PEM público exclusivamente; jku/kid no resuelven confianza ni hacen red.
   Claims adicionales permitidos; roles ausentes equivalen a lista vacía.
+- Llave RSA fuera de 2048..=8192 bits, exponente par o < 3, o DER truncado:
+  `Verifier::new` falla y `serve` sale con `startup_failed` antes del listener.
+- `auth.leeway_seconds` (0..=300, por defecto 30) aplica a `exp` y `nbf`;
+  `exp` de hace 20 s es válido por defecto e inválido con 0; 301 invalida la config.
 - R14: anónimo sin cabecera; cualquier token falla si no hay verificador configurado.
   Inválido devuelve 401 incluso en ruta pública, antes de ejecutar el handler.
   Cabeceras repetidas/malformadas fallan; query string no autentica.
+- A5: cada 401 registra `{"event":"auth_failed","request_id":"…","reason":"<r>"}` con
+  `r` ∈ `multiple_headers`, `malformed_header`, `unsupported_scheme`, `auth_disabled`,
+  `token_too_large`, `malformed_token`, `invalid_signature`, `invalid_algorithm`,
+  `expired`, `not_yet_valid`, `invalid_issuer`, `invalid_audience`, `invalid_claims`.
+  `Verifier::verify` y `auth::http::principal` devuelven ese motivo (`&'static str`,
+  derivado de `ErrorKind`). La respuesta no cambia (401 `invalid_token`, `Bearer`) y el
+  log nunca incluye token, cabecera, `sub` ni roles.
 - Arranque real con TOML/PEM local, rechazo de clave inválida antes del listener,
   health/readiness y cierre limpio; respuestas/logs no incluyen el token de prueba.
 - R13: 256 combinaciones de public/public_download/enabled, identidad y roles;
@@ -43,5 +54,5 @@ preparar PostGIS descartable y `ATLAS_TEST_DATABASE_URL` como en
 Las políticas aún no protegen endpoints geoespaciales: esos endpoints no existen;
 #218–#219 y siguientes deben invocarlas antes del acceso a datos. No se demuestra
 todavía paginación HTTP de catálogo, SQL de filtros ni revocación de streams.
-Rotación de PEM requiere reinicio; reloj del host sincronizado, tolerancia cero.
+Rotación de PEM requiere reinicio; reloj del host sincronizado dentro de `leeway_seconds`.
 Sin pruebas de carga, auditoría criptográfica propia ni validación en producción.

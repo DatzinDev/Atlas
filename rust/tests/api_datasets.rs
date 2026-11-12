@@ -70,7 +70,7 @@ async fn server() -> (SocketAddr, Publications) {
     for statement in [
         "DROP SCHEMA IF EXISTS discovery_test CASCADE",
         "CREATE SCHEMA discovery_test",
-        "CREATE TABLE discovery_test.places(id integer PRIMARY KEY, name text, geom geometry(Point,4326))",
+        "CREATE TABLE discovery_test.places(id integer PRIMARY KEY, name text, geom geometry(Point,4326)) WITH (autovacuum_enabled=false)",
         "DELETE FROM atlas_catalog.datasets WHERE config->'source'->>'schema' <> 'discovery_test' OR id LIKE 'disc\\_%'",
     ] {
         sqlx::query(statement).execute(&mut *tx).await.unwrap();
@@ -116,6 +116,7 @@ async fn server() -> (SocketAddr, Publications) {
     (address, service)
 }
 
+// R03
 #[tokio::test]
 async fn discovery_lists_only_authorized_datasets_over_real_http() {
     let (a, service) = server().await;
@@ -171,4 +172,163 @@ async fn discovery_lists_only_authorized_datasets_over_real_http() {
     let public = br#"{"access":{"public":true}}"#;
     service.update("disc_b_view", public, 1).await.unwrap();
     assert_eq!(page(a, "", "").await.0, "disc_a_public,disc_b_view");
+
+    // An empty typed table publishes `"extent": null`, present in detail and list.
+    let (_, detail) = get(a, &format!("{LIST}/disc_a_public"), "").await;
+    assert_eq!(
+        detail.get("extent"),
+        Some(&serde_json::Value::Null),
+        "{detail}"
+    );
+    let (_, list) = get(a, LIST, "").await;
+    assert_eq!(list["datasets"][0]["extent"], serde_json::Value::Null);
+    let tilejson = service
+        .tilejson(&service.get("disc_a_public").await.unwrap(), None, None)
+        .await
+        .unwrap();
+
+    // New rows do not move the published snapshot; a PATCH refreshes it.
+    let mut config = Config::parse(
+        "",
+        Some(std::env::var("ATLAS_TEST_DATABASE_URL").unwrap()),
+        None,
+    )
+    .unwrap();
+    config.allowed_schemas = vec!["discovery_test".into()];
+    let db = Database::open(&config).await.unwrap();
+    let mut tx = db.begin_catalog().await.unwrap();
+    sqlx::query("INSERT INTO discovery_test.places VALUES (1,'a',ST_SetSRID(ST_Point(-100,19),4326)), (2,'b',ST_SetSRID(ST_Point(-98,21),4326))")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    db.close().await;
+    let (_, detail) = get(a, &format!("{LIST}/disc_a_public"), "").await;
+    assert_eq!(detail["extent"], serde_json::Value::Null);
+    service
+        .update("disc_a_public", br#"{"title":"Located"}"#, 1)
+        .await
+        .unwrap();
+    let expected = serde_json::json!([-100.0, 19.0, -98.0, 21.0]);
+    let (status, detail) = get(a, &format!("{LIST}/disc_a_public"), "").await;
+    assert_eq!(status, "200");
+    assert_eq!(detail["extent"], expected, "{detail}");
+    let (_, list) = get(a, LIST, "").await;
+    let located = list["datasets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["id"] == "disc_a_public")
+        .unwrap();
+    assert_eq!(located["extent"], expected);
+    let (_, detail) = get(a, &format!("{LIST}/disc_c_query"), &viewer).await;
+    assert_eq!(detail["extent"], serde_json::Value::Null);
+
+    // TileJSON is unchanged: no extent or bounds leak into it.
+    let refreshed = service
+        .tilejson(&service.get("disc_a_public").await.unwrap(), None, None)
+        .await
+        .unwrap();
+    let mut tilejson = tilejson;
+    tilejson["name"] = serde_json::json!("Located");
+    assert_eq!(tilejson, refreshed);
+    assert!(refreshed.get("bounds").is_none() && refreshed.get("extent").is_none());
+
+    discovery_scales_past_one_batch(a, &config).await;
+}
+
+/// Ids of `disc_s_NNN` rows that a principal with `roles` may see (`None`: anonymous).
+fn expected(roles: Option<&[&str]>) -> Vec<String> {
+    let has = |role: &str| roles.is_some_and(|r| r.contains(&role));
+    (0..300)
+        .filter(|g| {
+            // Non-array `view_roles`, `enabled` that is not a boolean, an invalid source.
+            ![7, 13, 19, 30, 42, 48].contains(g)
+                && match g % 6 {
+                    0 => true,
+                    1 => has("viewer"),
+                    2 => has("other"),
+                    _ => false,
+                }
+        })
+        .map(|g| format!("disc_s_{g:03}"))
+        .collect()
+}
+
+/// 300 rows (more than one 256-row batch) mixing every visibility case.
+async fn discovery_scales_past_one_batch(a: SocketAddr, config: &Config) {
+    let db = Database::open(config).await.unwrap();
+    let id = "format('disc_s_%s', lpad(g::text, 3, '0'))";
+    let access = r#"CASE g % 6 WHEN 0 THEN '{"public":true}' WHEN 1 THEN '{"view_roles":["viewer"]}' WHEN 2 THEN '{"view_roles":["other"]}' WHEN 3 THEN '{"public":true}' WHEN 4 THEN '{"view_roles":["viewer"]}' ELSE '{"view_roles":[]}' END::jsonb"#;
+    let row = |g: u32, set: &str| {
+        format!("UPDATE atlas_catalog.datasets SET config = {set} WHERE id = 'disc_s_{g:03}'")
+    };
+    let statements = [
+        format!("INSERT INTO atlas_catalog.datasets(id, config, metadata) SELECT {id}, jsonb_set(jsonb_set(jsonb_set(d.config, '{{id}}', to_jsonb({id})), '{{access}}', {access}), '{{enabled}}', to_jsonb(g % 6 NOT IN (3, 4))), d.metadata FROM atlas_catalog.datasets d, generate_series(0, 299) g WHERE d.id = 'disc_a_public'"),
+        "DELETE FROM atlas_catalog.datasets WHERE id LIKE 'disc\\_%' AND id NOT LIKE 'disc\\_s\\_%'".into(),
+        // `?|` matches a scalar string or an object key: SQL keeps them, decode drops them.
+        row(7, r#"jsonb_set(config, '{access,view_roles}', '"viewer"')"#),
+        row(13, r#"jsonb_set(config, '{access,view_roles}', '{"viewer":1}')"#),
+        row(19, "jsonb_set(config, '{access,view_roles}', '5')"),
+        row(48, r#"jsonb_set(config, '{access,view_roles}', '"viewer"')"#),
+        // A missing `enabled` means enabled; a string "false" is not a boolean.
+        row(24, "config - 'enabled'"),
+        row(30, r#"jsonb_set(config, '{enabled}', '"false"')"#),
+        row(42, r#"jsonb_set(config, '{source,schema}', '"elsewhere"')"#),
+    ];
+    let mut tx = db.begin_catalog().await.unwrap();
+    for statement in &statements {
+        sqlx::query(sqlx::AssertSqlSafe(statement.clone()))
+            .execute(&mut *tx)
+            .await
+            .unwrap_or_else(|e| panic!("{statement}: {e}"));
+    }
+    tx.commit().await.unwrap();
+
+    let (viewer, both, cased, none) = (
+        bearer(&["viewer"]),
+        bearer(&["other", "viewer"]),
+        bearer(&["Viewer", "VIEWER"]),
+        bearer(&[]),
+    );
+    for (headers, roles) in [
+        ("", None),
+        (viewer.as_str(), Some(&["viewer"][..])),
+        (both.as_str(), Some(&["other", "viewer"][..])),
+        (cased.as_str(), Some(&[][..])),
+        (none.as_str(), Some(&[][..])),
+    ] {
+        let ids = expected(roles);
+        let n = ids.len();
+        assert_eq!(page(a, "limit=1000", headers).await, (ids.join(","), false));
+        for offset in (0..=n + 50).step_by(50) {
+            let slice = &ids[offset.min(n)..(offset + 50).min(n)];
+            assert_eq!(
+                page(a, &format!("limit=50&offset={offset}"), headers).await,
+                (slice.join(","), offset + 50 < n),
+                "{roles:?} offset {offset}"
+            );
+        }
+        assert_eq!(
+            page(a, &format!("limit={}", n - 1), headers).await,
+            (ids[..n - 1].join(","), true)
+        );
+        assert_eq!(
+            page(a, &format!("limit=1&offset={}", n - 1), headers).await,
+            (ids[n - 1].clone(), false)
+        );
+    }
+    // The rows with a non-array `view_roles` are still absent from detail.
+    for g in [7, 13, 48] {
+        let (status, _) = get(a, &format!("{LIST}/disc_s_{g:03}"), &viewer).await;
+        assert_eq!(status, "404", "{g}");
+    }
+
+    let mut tx = db.begin_catalog().await.unwrap();
+    sqlx::query("DELETE FROM atlas_catalog.datasets WHERE id LIKE 'disc\\_%'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    db.close().await;
 }

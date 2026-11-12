@@ -1,21 +1,36 @@
 use crate::{
     auth::policy,
-    catalog::{Catalog, Publication},
+    catalog::{Catalog, Invalid, Publication},
     config::{Config, Limits},
-    domain::{Dataset, Error, Principal, Query},
+    domain::{Dataset, Error, Metadata, Principal, Query},
     postgis::{
         connection::Database,
         features::{self, Page},
         introspection::inspect,
         mvt,
-        selection::prepare,
+        selection::{Selection, fixed, prepare},
     },
+    query::predicate::Predicate,
 };
+use futures_util::future::BoxFuture;
 use serde::{
     Deserialize, Deserializer,
     de::{self, DeserializeOwned, MapAccess, SeqAccess, Visitor},
 };
 use serde_json::{Map, Value, json};
+use sqlx::{Postgres, Transaction};
+
+/// Percent-encodes every byte except RFC 3986 unreserved characters.
+fn encode(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                char::from(b).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
 
 #[derive(Clone)]
 pub struct Publications {
@@ -23,6 +38,7 @@ pub struct Publications {
     database: Database,
     config: Config,
     admission: super::admission::Admission,
+    exports: super::admission::Admission,
 }
 
 impl Publications {
@@ -34,6 +50,10 @@ impl Publications {
                 config.limits.data_operations,
                 config.limits.query_seconds,
             ),
+            exports: super::admission::Admission::new(
+                config.limits.export_operations,
+                config.limits.query_seconds,
+            ),
             config,
         })
     }
@@ -42,7 +62,7 @@ impl Publications {
         &self,
         limit: Option<u32>,
         offset: u32,
-    ) -> Result<(Vec<Publication>, bool), Error> {
+    ) -> Result<(Vec<Result<Publication, Invalid>>, bool), Error> {
         let limits = &self.config.limits;
         let limit = limit.unwrap_or(limits.catalog_default);
         if limit == 0 || limit > limits.catalog_max || offset > limits.max_offset {
@@ -68,6 +88,11 @@ impl Publications {
         let mut page = self
             .catalog
             .servable(
+                if principal.sub.is_some() {
+                    principal.roles.as_slice()
+                } else {
+                    &[]
+                },
                 |p| policy::view(&p.config, principal).is_ok(),
                 offset as usize,
                 limit as usize + 1,
@@ -91,77 +116,93 @@ impl Publications {
         &self,
         publication: &Publication,
         xyz: (u32, u32, u32),
-        filter: Option<&str>,
+        filter: Option<&Predicate>,
         properties: Option<&[String]>,
     ) -> Result<Vec<u8>, Error> {
-        let permit = self.admission.acquire()?;
-        let (service, publication, filter, properties) = (
-            self.clone(),
-            publication.clone(),
-            filter.map(str::to_owned),
-            properties.map(<[String]>::to_vec),
-        );
-        self.admission
-            .wait(async move {
-                let _permit = permit;
-                let mut tx = service.database.begin_read().await?;
-                let result = async {
-                    let selection = prepare(
-                        &mut tx,
-                        publication.config.filter.as_ref().map(|f| f.get()),
-                        filter.as_deref(),
-                        None,
-                        &publication.metadata,
-                        &service.config.limits,
-                    )
-                    .await?;
+        let properties = properties.map(<[String]>::to_vec);
+        self.data(
+            publication,
+            filter,
+            None,
+            move |tx, publication, selection, limits| {
+                Box::pin(async move {
                     mvt::tile(
-                        &mut tx,
+                        tx,
                         &publication.config,
                         &publication.metadata,
-                        &selection,
+                        selection,
                         xyz,
                         properties.as_deref(),
-                        &service.config.limits,
+                        limits,
                     )
                     .await
-                }
-                .await;
-                let cleanup = tx
-                    .rollback()
-                    .await
-                    .map_err(crate::postgis::connection::error);
-                cleanup.and(result)
-            })
-            .await
+                })
+            },
+        )
+        .await
     }
 
-    pub async fn features(&self, publication: &Publication, query: &Query) -> Result<Page, Error> {
+    /// `filter` is `query.filter` already parsed by the API layer.
+    pub async fn features(
+        &self,
+        publication: &Publication,
+        query: &Query,
+        filter: Option<&Predicate>,
+    ) -> Result<Page, Error> {
+        let query = query.clone();
+        let bbox = query.bbox;
+        self.data(
+            publication,
+            filter,
+            bbox,
+            move |tx, publication, selection, limits| {
+                Box::pin(async move {
+                    features::page(
+                        tx,
+                        &publication.config,
+                        &publication.metadata,
+                        selection,
+                        &query,
+                        limits,
+                    )
+                    .await
+                })
+            },
+        )
+        .await
+    }
+
+    /// Admits a data operation and runs `run` on its selection in one rolled-back transaction.
+    async fn data<T, F>(
+        &self,
+        publication: &Publication,
+        filter: Option<&Predicate>,
+        bbox: Option<[f64; 4]>,
+        run: F,
+    ) -> Result<T, Error>
+    where
+        T: Send + 'static,
+        F: for<'a> FnOnce(
+                &'a mut Transaction<'static, Postgres>,
+                &'a Publication,
+                &'a Selection,
+                &'a Limits,
+            ) -> BoxFuture<'a, Result<T, Error>>
+            + Send
+            + 'static,
+    {
         let permit = self.admission.acquire()?;
-        let (service, publication, query) = (self.clone(), publication.clone(), query.clone());
+        let (service, publication, filter) = (self.clone(), publication.clone(), filter.cloned());
         self.admission
             .wait(async move {
                 let _permit = permit;
-                let mut tx = service.database.begin_read().await?;
+                let limits = &service.config.limits;
+                let mut tx = service.database.begin_data().await?;
                 let result = async {
-                    let selection = prepare(
-                        &mut tx,
-                        publication.config.filter.as_ref().map(|f| f.get()),
-                        query.filter.as_ref().map(|f| f.get()),
-                        query.bbox,
-                        &publication.metadata,
-                        &service.config.limits,
-                    )
-                    .await?;
-                    features::page(
-                        &mut tx,
-                        &publication.config,
-                        &publication.metadata,
-                        &selection,
-                        &query,
-                        &service.config.limits,
-                    )
-                    .await
+                    let fixed = fixed(&publication.config, limits)?;
+                    let selection =
+                        prepare(&mut tx, fixed, filter, bbox, &publication.metadata).await?;
+                    run(&mut tx, &publication, &selection, limits).await
                 }
                 .await;
                 let cleanup = tx
@@ -178,54 +219,95 @@ impl Publications {
         id: &str,
         principal: &Principal,
         query: &Query,
+        filter: Option<&Predicate>,
     ) -> Result<crate::exports::geojson::Export, Error> {
-        query.validate(self.config.limits.max_limit, self.config.limits.max_offset)?;
-        if let Some(filter) = &query.filter {
-            crate::query::predicate::parse(filter.get(), &self.config.limits)?;
-        }
         let publication = self.catalog.get(id).await.map_err(|e| match e {
             Error::SchemaChanged => Error::DatasetNotFound,
             other => other,
         })?;
         policy::download(&publication.config, principal)?;
-        let permit = self.admission.acquire()?;
-        let (service, query) = (self.clone(), query.clone());
+        // Exports hold a sub-slot for their whole stream so items and tiles keep the rest.
+        let permits = vec![self.exports.acquire()?, self.admission.acquire()?];
+        let (service, query, filter) = (self.clone(), query.clone(), filter.cloned());
         self.admission
             .wait(async move {
                 crate::exports::geojson::Export::admitted(
                     &service.database,
                     &publication,
                     &query,
+                    filter,
                     &service.config.limits,
-                    Some(permit),
+                    permits,
                 )
                 .await
             })
             .await
     }
 
-    pub fn tilejson(&self, publication: &Publication) -> Value {
+    pub async fn tilejson(
+        &self,
+        publication: &Publication,
+        filter: Option<(&str, &Predicate)>,
+        properties: Option<&[String]>,
+    ) -> Result<Value, Error> {
         let (config, meta) = (&publication.config, &publication.metadata);
+        if let Some((_, user)) = filter {
+            let permit = self.admission.acquire()?;
+            let (service, publication, user) = (self.clone(), publication.clone(), user.clone());
+            self.admission
+                .wait(async move {
+                    let _permit = permit;
+                    let fixed = fixed(&publication.config, &service.config.limits)?;
+                    let mut tx = service.database.begin_read().await?;
+                    let result = prepare(&mut tx, fixed, Some(user), None, &publication.metadata)
+                        .await
+                        .map(drop);
+                    let cleanup = tx
+                        .rollback()
+                        .await
+                        .map_err(crate::postgis::connection::error);
+                    cleanup.and(result)
+                })
+                .await?;
+        }
+        if let Some(names) = properties {
+            let unique: std::collections::HashSet<_> = names.iter().collect();
+            let published = |n: &String| meta.attributes.iter().any(|a| a.name == *n);
+            if unique.len() != names.len() || !names.iter().all(published) {
+                return Err(Error::InvalidRequest);
+            }
+        }
         let fields: Map<String, Value> = meta
             .attributes
             .iter()
+            .filter(|a| properties.is_none_or(|names| names.contains(&a.name)))
             .map(|a| {
-                let kind = match a.data_type.as_str() {
-                    "int2" | "int4" | "int8" | "float4" | "float8" => "Number",
-                    "bool" => "Boolean",
-                    _ => "String",
-                };
+                let kind =
+                    crate::domain::property_type(&a.data_type).map_or("String", |t| t.tilejson);
                 (a.name.clone(), json!(kind))
             })
             .collect();
         let base = self.config.public_url.as_deref().unwrap_or_default();
-        let url = format!(
+        let mut url = format!(
             "{base}/api/v1/datasets/{}/tiles/{{z}}/{{x}}/{{y}}.mvt",
             config.id
         );
-        json!({"tilejson": "3.0.0", "name": config.title, "tiles": [url], "minzoom": 0,
-            "maxzoom": self.config.limits.tile_zoom,
-            "vector_layers": [{"id": config.id, "fields": fields}]})
+        let query: Vec<String> = [
+            ("filter", filter.map(|(text, _)| text.to_owned())),
+            ("properties", properties.map(|names| names.join(","))),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| Some(format!("{key}={}", encode(&value?))))
+        .collect();
+        if !query.is_empty() {
+            url.push('?');
+            url.push_str(&query.join("&"));
+        }
+        Ok(
+            json!({"tilejson": "3.0.0", "name": config.title, "tiles": [url], "minzoom": 0,
+                "maxzoom": self.config.limits.tile_zoom,
+                "vector_layers": [{"id": config.id, "fields": fields}]}),
+        )
     }
 
     pub fn limits(&self) -> &Limits {
@@ -236,10 +318,22 @@ impl Publications {
         self.catalog.get(id).await
     }
 
+    pub async fn find(&self, id: &str) -> Result<Result<Publication, Invalid>, Error> {
+        self.catalog.find(id).await
+    }
+
     pub async fn create(&self, body: &[u8]) -> Result<Publication, Error> {
+        let fields: Map<String, Value> = decode(body)?;
+        // The fixed filter keeps its own grammar; only a null filter itself is rejected here.
+        if fields.iter().any(|(key, value)| match key.as_str() {
+            "filter" => value.is_null(),
+            _ => has_null(value),
+        }) {
+            return Err(Error::InvalidRequest);
+        }
         let dataset: Dataset = decode(body)?;
-        self.check(&dataset).await?;
-        self.catalog.create(&dataset).await
+        let metadata = self.check(&dataset).await?;
+        self.catalog.create(&dataset, metadata).await
     }
 
     pub async fn update(&self, id: &str, body: &[u8], revision: i64) -> Result<Publication, Error> {
@@ -266,15 +360,16 @@ impl Publications {
         if let Some(filter) = filter {
             dataset.filter = (filter.get().trim() != "null").then_some(filter);
         }
-        self.check(&dataset).await?;
-        self.catalog.update(&dataset, revision).await
+        let metadata = self.check(&dataset).await?;
+        self.catalog.update(&dataset, metadata, revision).await
     }
 
     pub async fn delete(&self, id: &str, revision: i64) -> Result<(), Error> {
         self.catalog.delete(id, revision).await
     }
 
-    async fn check(&self, dataset: &Dataset) -> Result<(), Error> {
+    /// Validates `dataset` and returns its single inspection for the catalog write.
+    async fn check(&self, dataset: &Dataset) -> Result<Metadata, Error> {
         dataset.validate(&self.config.allowed_schemas)?;
         let meta = inspect(&self.database, &self.config, dataset)
             .await
@@ -282,10 +377,10 @@ impl Publications {
                 Error::DatasetNotFound => Error::InvalidRequest,
                 other => other,
             })?;
+        let fixed = fixed(dataset, &self.config.limits)?;
         let mut tx = self.database.begin_read().await?;
-        let fixed = dataset.filter.as_ref().map(|filter| filter.get());
-        prepare(&mut tx, fixed, None, None, &meta, &self.config.limits).await?;
-        Ok(())
+        prepare(&mut tx, fixed, None, None, &meta).await?;
+        Ok(meta)
     }
 }
 
@@ -302,13 +397,22 @@ pub fn summary(publication: &Publication) -> Value {
         .map(|a| json!({"name": a.name, "type": a.data_type, "nullable": a.nullable}))
         .collect();
     json!({"id": config.id, "title": config.title, "description": config.description,
-        "geometry_type": meta.geometry_type, "srid": meta.srid, "attributes": attributes,
+        "geometry_type": meta.geometry_type, "srid": meta.srid, "extent": meta.extent, "attributes": attributes,
         "formats": ["geojson", "mvt"]})
 }
 
 fn decode<T: DeserializeOwned>(body: &[u8]) -> Result<T, Error> {
     serde_json::from_slice::<Unique>(body).map_err(|_| Error::InvalidRequest)?;
     serde_json::from_slice(body).map_err(|_| Error::InvalidRequest)
+}
+
+fn has_null(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::Array(items) => items.iter().any(has_null),
+        Value::Object(fields) => fields.values().any(has_null),
+        _ => false,
+    }
 }
 
 fn merge(target: &mut Value, patch: Value) {

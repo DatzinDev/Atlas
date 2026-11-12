@@ -1,8 +1,10 @@
 use atlas::{
     config::Config,
-    domain::{Error, Principal},
+    config::Limits,
+    domain::{Error, Principal, Query},
     migrations::migrate,
     postgis::connection::Database,
+    query::predicate::parse,
     services::publications::{Publications, document, summary},
 };
 
@@ -89,8 +91,8 @@ async fn publications_validate_before_persisting_and_patch_with_revision() {
         ),
         (other("\"roads\"", "\"missing\""), Error::InvalidRequest),
         (
-            other("\"lanes\",\"value\":2", "\"id\",\"value\":2"),
-            Error::InvalidFilter,
+            other("\"lanes\",\"value\":2", "\"missing_column\",\"value\":2"),
+            Error::InvalidRequest,
         ),
         (
             other("\"value\":2", "\"value\":\"2\""),
@@ -151,6 +153,11 @@ async fn publications_validate_before_persisting_and_patch_with_revision() {
         (
             br#"{"filter":{"op":"eq","field":"secret","value":1}}"#,
             3,
+            Error::InvalidRequest,
+        ),
+        (
+            br#"{"filter":{"op":"eq","field":"lanes","value":"2"}}"#,
+            3,
             Error::InvalidFilter,
         ),
     ] {
@@ -170,8 +177,14 @@ async fn publications_validate_before_persisting_and_patch_with_revision() {
         .await
         .unwrap();
     let (page, more) = service.list(Some(1000), 0).await.unwrap();
+    assert!(
+        !page
+            .iter()
+            .any(|p| matches!(p, Err(invalid) if invalid.id.starts_with("svc_")))
+    );
     let ids: Vec<_> = page
         .iter()
+        .filter_map(|p| p.as_ref().ok())
         .map(|p| p.config.id.as_str())
         .filter(|id| id.starts_with("svc_"))
         .collect();
@@ -278,4 +291,100 @@ async fn publications_validate_before_persisting_and_patch_with_revision() {
     assert_eq!((visible(last), more), (vec!["svc_b600".to_string()], false));
     let (past, more) = service.visible(&anonymous, Some(5), 299).await.unwrap();
     assert!(past.is_empty() && !more);
+
+    // Data services take the user predicate already parsed and still AND it with the fixed one.
+    let mut tx = db.begin_catalog().await.unwrap();
+    for statement in [
+        "UPDATE publication_test.roads SET geom = ST_GeomFromText('LINESTRING(0 0,1 1)',4326)",
+        "INSERT INTO publication_test.roads VALUES (2,'b',1,ST_GeomFromText('LINESTRING(0 0,1 1)',4326)),(3,'c',3,ST_GeomFromText('LINESTRING(0 0,1 1)',4326))",
+    ] {
+        sqlx::query(statement).execute(&mut *tx).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+    service
+        .create(ROADS.replace("svc_roads", "svc_data").as_bytes())
+        .await
+        .unwrap();
+    let data = service.get("svc_data").await.unwrap();
+    let limits = Limits::default();
+    let ids = |body: &str| -> Vec<i64> {
+        let page: serde_json::Value = serde_json::from_str(body).unwrap();
+        page["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["id"].as_i64().unwrap())
+            .collect()
+    };
+    let named = |name: &str| {
+        parse(
+            &format!(r#"{{"op":"eq","field":"name","value":"{name}"}}"#),
+            &limits,
+        )
+        .unwrap()
+    };
+    let (c, b) = (named("c"), named("b"));
+    let page = service
+        .features(&data, &Query::default(), Some(&c))
+        .await
+        .unwrap();
+    assert_eq!(ids(&page.body), [3]);
+    // Row 2 matches the user filter but the fixed filter excludes it: no widening.
+    let page = service
+        .features(&data, &Query::default(), Some(&b))
+        .await
+        .unwrap();
+    assert!(ids(&page.body).is_empty());
+    assert!(
+        !service
+            .tile(&data, (0, 0, 0), Some(&c), None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        service
+            .tile(&data, (0, 0, 0), Some(&b), None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // POST and PATCH store the metadata inspected by their own check, never a stale copy.
+    let mut tx = db.begin_catalog().await.unwrap();
+    sqlx::query("ALTER TABLE publication_test.roads ALTER lanes TYPE int4")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let lanes = |p: &atlas::catalog::Publication| p.metadata.attributes[1].data_type.clone();
+    assert_eq!(lanes(&service.get("svc_data").await.unwrap()), "int2");
+    let refreshed = service
+        .update("svc_data", br#"{"title":"Refreshed"}"#, data.revision)
+        .await
+        .unwrap();
+    assert_eq!(lanes(&refreshed), "int4");
+    assert_eq!(lanes(&service.get("svc_data").await.unwrap()), "int4");
+    // A PATCH whose check fails leaves the stored row and its metadata untouched.
+    assert_eq!(
+        service
+            .update(
+                "svc_data",
+                br#"{"properties":["name","missing"]}"#,
+                refreshed.revision
+            )
+            .await
+            .err(),
+        Some(Error::InvalidRequest)
+    );
+    let kept = service.get("svc_data").await.unwrap();
+    assert_eq!(
+        (kept.revision, lanes(&kept)),
+        (refreshed.revision, "int4".into())
+    );
+    let fresh = service
+        .create(ROADS.replace("svc_roads", "svc_fresh").as_bytes())
+        .await
+        .unwrap();
+    assert_eq!(lanes(&fresh), "int4");
 }

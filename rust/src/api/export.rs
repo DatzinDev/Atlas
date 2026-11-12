@@ -1,4 +1,7 @@
-use super::{decode, features::parse, identifier};
+use super::{
+    features::{checked, selection},
+    identifier, params,
+};
 use crate::{
     domain::{Error, Principal},
     services::publications::Publications,
@@ -25,46 +28,38 @@ async fn export(
     RawQuery(raw): RawQuery,
 ) -> Result<Response, Error> {
     let id = identifier(&id)?;
-    let mut selection = Vec::new();
-    let mut format_seen = false;
-    for pair in raw
-        .as_deref()
-        .unwrap_or_default()
-        .split('&')
-        .filter(|p| !p.is_empty())
-    {
-        let (key, value) = pair.split_once('=').ok_or(Error::InvalidRequest)?;
-        match key {
-            "format" if !format_seen && decode(value)? == "geojson" => format_seen = true,
-            "filter" | "bbox" | "properties" => selection.push(pair),
-            _ => return Err(Error::InvalidRequest),
-        }
+    let [format, filter, bbox, properties] =
+        params(raw.as_deref(), ["format", "filter", "bbox", "properties"])?;
+    if format.is_some_and(|f| f != "geojson") {
+        return Err(Error::InvalidRequest);
     }
-    let query = parse(Some(&selection.join("&")))?;
-    let mut export = service.export(id, &principal, &query).await?;
+    let query = selection(filter, bbox, properties)?;
+    let filter = checked(&query, service.limits())?;
+    let mut export = service
+        .export(id, &principal, &query, filter.as_ref())
+        .await?;
     let deadline = export.deadline();
     let (sender, receiver) = tokio::sync::mpsc::channel(1);
+    // Task-locals do not cross `spawn`: capture the id of the request that opened the download.
+    let request_id = super::request_id();
     tokio::spawn(async move {
-        loop {
-            let chunk = export.next().await;
-            let finished = !matches!(chunk, Ok(Some(_)));
-            if let Err(error) = &chunk {
-                eprintln!(
-                    "{}",
-                    serde_json::json!({"event":"export_failed", "code":error})
-                );
-            }
-            match tokio::time::timeout_at(deadline, sender.send(chunk)).await {
-                Ok(Ok(())) if !finished => {}
-                Err(_) => {
-                    eprintln!(
-                        "{}",
-                        serde_json::json!({"event":"export_failed", "code":"query_timeout"})
-                    );
+        let mut failed = None;
+        // The single `stream_seconds` check: covers slow SQL and clients that stop reading.
+        let pump = async {
+            loop {
+                let chunk = export.next().await;
+                let finished = !matches!(chunk, Ok(Some(_)));
+                failed = chunk.as_ref().err().copied();
+                if sender.send(chunk).await.is_err() || finished {
                     break;
                 }
-                _ => break,
             }
+        };
+        let expired = tokio::time::timeout_at(deadline, pump).await.is_err();
+        // One line per failed stream: the chunk error wins over a later timeout.
+        if let Some(code) = failed.or(expired.then_some(Error::QueryTimeout)) {
+            super::log(serde_json::json!({"event": "export_failed",
+                "request_id": request_id, "code": code}));
         }
     });
     let stream = futures_util::stream::try_unfold(receiver, |mut receiver| async move {
