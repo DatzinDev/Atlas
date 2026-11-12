@@ -11,6 +11,7 @@ type Source = (Dataset, Metadata);
 struct Feature {
     id: Option<u64>,
     properties: BTreeMap<String, String>,
+    geometry: Vec<u64>,
 }
 
 fn varint(buf: &[u8], pos: &mut usize) -> u64 {
@@ -94,12 +95,39 @@ fn decode(tile: &[u8]) -> BTreeMap<String, (u64, Vec<Feature>)> {
                         .chunks(2)
                         .map(|t| (keys[t[0] as usize].clone(), values[t[1] as usize].clone()))
                         .collect(),
+                    geometry: parts
+                        .iter()
+                        .find(|f| f.0 == 4)
+                        .map_or(vec![], |f| packed(f.2)),
                 }
             })
             .collect();
         layers.insert(name, (extent, features));
     }
     layers
+}
+
+/// Absolute tile-space vertices of an MVT command stream (MoveTo/LineTo; ClosePath has none).
+fn vertices(geometry: &[u64]) -> Vec<(i64, i64)> {
+    let zigzag = |n: u64| (n >> 1) as i64 ^ -((n & 1) as i64);
+    let (mut out, mut cursor, mut i) = (Vec::new(), (0, 0), 0);
+    while i < geometry.len() {
+        let (command, count) = (geometry[i] & 7, (geometry[i] >> 3) as usize);
+        i += 1;
+        if command == 7 {
+            continue;
+        }
+        assert!(command == 1 || command == 2, "unexpected command {command}");
+        for _ in 0..count {
+            cursor = (
+                cursor.0 + zigzag(geometry[i]),
+                cursor.1 + zigzag(geometry[i + 1]),
+            );
+            out.push(cursor);
+            i += 2;
+        }
+    }
+    out
 }
 
 fn tile_of(lon: f64, lat: f64, z: u32) -> (u32, u32, u32) {
@@ -277,4 +305,107 @@ async fn native_mvt_against_real_postgis() {
             Err(Error::InvalidRequest)
         );
     }
+}
+
+#[tokio::test]
+async fn polar_vertices_are_clipped_to_the_mercator_domain() {
+    let mut config = Config::parse(
+        "",
+        Some(std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required")),
+        None,
+    )
+    .unwrap();
+    config.allowed_schemas = vec!["mvt_polar".into()];
+    let db = Database::open(&config).await.unwrap();
+    let mut tx = db.begin_catalog().await.unwrap();
+    for statement in [
+        "DROP SCHEMA IF EXISTS mvt_polar CASCADE",
+        "CREATE SCHEMA mvt_polar",
+        "CREATE TABLE mvt_polar.world(id integer PRIMARY KEY, name text, geom geometry(Geometry,4326))",
+        "INSERT INTO mvt_polar.world VALUES (1,'antarctica',ST_GeomFromText('POLYGON((-180 -90,180 -90,180 -60,-180 -60,-180 -90))',4326)), (2,'pole',ST_GeomFromText('POINT(0 90)',4326)), (3,'mixed',ST_GeomFromText('MULTIPOINT((10 10),(0 90))',4326))",
+        "CREATE TABLE mvt_polar.line(id integer PRIMARY KEY, name text, geom geometry(LineString,4326))",
+        "INSERT INTO mvt_polar.line VALUES (1,'meridian',ST_GeomFromText('LINESTRING(0 0,0 90)',4326))",
+        "CREATE TABLE mvt_polar.nad(id integer PRIMARY KEY, name text, geom geometry(Geometry,4269))",
+        "INSERT INTO mvt_polar.nad VALUES (1,'antarctica',ST_GeomFromText('POLYGON((-180 -90,180 -90,180 -60,-180 -60,-180 -90))',4269)), (2,'pole',ST_GeomFromText('POINT(0 90)',4269))",
+    ] {
+        sqlx::query(statement).execute(&mut *tx).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+    let mut sources = BTreeMap::new();
+    for table in ["world", "line", "nad"] {
+        let dataset: Dataset =
+            serde_json::from_value(serde_json::json!({"id": table, "title": table,
+            "source": {"schema": "mvt_polar", "table": table}, "properties": ["name"]}))
+            .unwrap();
+        let meta = inspect(&db, &config, &dataset).await.unwrap();
+        sources.insert(table, (dataset, meta));
+    }
+    let limits = Limits::default();
+    let ids = |tile: &[u8], layer: &str| -> Vec<u64> {
+        let mut ids: Vec<u64> = decode(tile)
+            .get(layer)
+            .map_or(vec![], |l| l.1.iter().filter_map(|f| f.id).collect());
+        ids.sort_unstable();
+        ids
+    };
+
+    // Regression: a vertex at latitude +-90 made ST_Transform fail and the tile return 503.
+    for (table, xyz) in [
+        ("world", (0, 0, 0)),
+        ("world", (1, 0, 1)),
+        ("nad", (0, 0, 0)),
+        ("nad", (1, 0, 1)),
+    ] {
+        let encoded = fetch(&db, &sources[table], xyz, None, None, &limits).await;
+        let found = ids(
+            &encoded.unwrap_or_else(|e| panic!("{table} {xyz:?}: {e:?}")),
+            table,
+        );
+        assert!(
+            found.contains(&1) && !found.contains(&2),
+            "{table} {xyz:?}: {found:?}"
+        );
+    }
+    // Only the representable part of a multi-geometry survives the clip.
+    let world = fetch(&db, &sources["world"], (0, 0, 0), None, None, &limits)
+        .await
+        .unwrap();
+    assert_eq!(ids(&world, "world"), [1, 3]);
+    let mixed = decode(&world)["world"]
+        .1
+        .iter()
+        .find(|f| f.id == Some(3))
+        .map(|f| vertices(&f.geometry))
+        .unwrap();
+    assert_eq!(mixed.len(), 1, "{mixed:?}");
+    // A point seen only beyond +-85.0511 is never encoded, not even as an error.
+    let north = fetch(&db, &sources["world"], (1, 0, 0), None, None, &limits)
+        .await
+        .unwrap();
+    assert!(!ids(&north, "world").contains(&2));
+
+    let (extent, buffer) = (i64::from(limits.tile_extent), i64::from(limits.tile_buffer));
+    for xyz in [(0, 0, 0), (1, 0, 0), (1, 1, 0)] {
+        let encoded = fetch(&db, &sources["line"], xyz, None, None, &limits)
+            .await
+            .unwrap_or_else(|e| panic!("{xyz:?}: {e:?}"));
+        let layers = decode(&encoded);
+        let line = &layers["line"].1;
+        assert_eq!(
+            line.iter().map(|f| f.id).collect::<Vec<_>>(),
+            [Some(1)],
+            "{xyz:?}"
+        );
+        let points = vertices(&line[0].geometry);
+        assert!(points.len() >= 2, "{xyz:?}: {points:?}");
+        assert!(
+            points
+                .iter()
+                .all(|&(x, y)| (-buffer..=extent + buffer).contains(&x)
+                    && (-buffer..=extent + buffer).contains(&y)),
+            "{xyz:?}: {points:?}"
+        );
+    }
+    let corner = fetch(&db, &sources["line"], (1, 0, 1), None, None, &limits).await;
+    assert!(corner.is_ok(), "{corner:?}");
 }

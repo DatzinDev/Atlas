@@ -55,6 +55,8 @@ async fn server() -> (SocketAddr, Database) {
         "CREATE SCHEMA tiles_test",
         "CREATE TABLE tiles_test.points(id integer PRIMARY KEY, name text, rank int4, secret text, geom geometry(Point,4326))",
         "INSERT INTO tiles_test.points VALUES (1,'a',1,'x',ST_SetSRID(ST_Point(10,10),4326)), (2,'b',2,'x',ST_SetSRID(ST_Point(10.1,10.1),4326))",
+        "CREATE TABLE tiles_test.polar(id integer PRIMARY KEY, name text, geom geometry(Geometry,4326))",
+        "INSERT INTO tiles_test.polar VALUES (1,'antarctica',ST_GeomFromText('POLYGON((-180 -90,180 -90,180 -60,-180 -60,-180 -90))',4326)), (2,'pole',ST_GeomFromText('POINT(0 90)',4326))",
         "CREATE TABLE tiles_test.doomed AS TABLE tiles_test.points",
         "ALTER TABLE tiles_test.doomed ADD PRIMARY KEY (id)",
         "DELETE FROM atlas_catalog.datasets WHERE config->'source'->>'schema' <> 'tiles_test' OR id LIKE 'tiles\\_%'",
@@ -77,6 +79,8 @@ async fn server() -> (SocketAddr, Database) {
         );
         service.create(body.as_bytes()).await.unwrap();
     }
+    let polar = r#"{"id":"tiles_polar","title":"P","source":{"schema":"tiles_test","table":"polar"},"properties":["name"],"access":{"public":true}}"#;
+    service.create(polar.as_bytes()).await.unwrap();
     let verifier = Verifier::new(
         include_bytes!("fixtures/jwt-test-public.pem"),
         "atlas-test",
@@ -111,6 +115,20 @@ async fn vector_tiles_over_real_http() {
     assert_eq!((emptied.0.as_str(), emptied.2.len()), ("200", 0));
     let empty = get(a, "/api/v1/datasets/tiles_public/tiles/4/0/0.mvt", "").await;
     assert_eq!((empty.0.as_str(), empty.2.len()), ("200", 0));
+    // Regression: a vertex at latitude +-90 used to answer 503 on every tile touching it.
+    for target in [
+        "/api/v1/datasets/tiles_polar/tiles/0/0/0.mvt",
+        "/api/v1/datasets/tiles_polar/tiles/1/0/1.mvt",
+    ] {
+        let (status, head, body) = get(a, target, "").await;
+        assert_eq!(status, "200", "{target}: {head}");
+        assert!(
+            head.contains("content-type: application/vnd.mapbox-vector-tile")
+                && body.windows(10).any(|w| w == b"antarctica")
+                && !body.windows(4).any(|w| w == b"pole"),
+            "{target}"
+        );
+    }
     let private = "/api/v1/datasets/tiles_private/tiles/4/8/7.mvt";
     assert_eq!(get(a, private, "").await.0, "404");
     assert_eq!(get(a, private, &viewer).await.0, "200");
