@@ -57,12 +57,20 @@ pub async fn tile(
     {
         let column = quote_identifier(&attribute.name);
         match attribute.data_type.as_str() {
-            "numeric" | "date" | "timestamp" | "timestamptz" => builder.push(format!("{column}::text AS {column}, ")),
+            "numeric" => builder.push(format!("{column}::text AS {column}, ")),
+            // Same ISO 8601 text as the GeoJSON properties (row_to_json).
+            "date" | "timestamp" | "timestamptz" => {
+                builder.push(format!("to_json({column}) #>> '{{}}' AS {column}, "))
+            }
             "float4" | "float8" => builder.push(format!("CASE WHEN {column}::text IN ('NaN','Infinity','-Infinity') THEN NULL ELSE {column} END AS {column}, ")),
             _ => builder.push(format!("{column}, ")),
         };
     }
-    builder.push(format!("{source} AS {geom}, CASE WHEN pg_typeof({key}) IN ('smallint'::regtype, 'integer'::regtype, 'bigint'::regtype) THEN CASE WHEN {key}::text::numeric BETWEEN 0 AND 9007199254740991 THEN {key}::text::bigint END END AS {id} FROM "));
+    if ["int2", "int4", "int8"].contains(&meta.id_type.as_str()) {
+        builder.push(format!("{source} AS {geom}, CASE WHEN {key} BETWEEN 0 AND 9007199254740991 THEN {key}::bigint END AS {id} FROM "));
+    } else {
+        builder.push(format!("{source} AS {geom}, NULL::bigint AS {id} FROM "));
+    }
     builder
         .push(quote_identifier(&dataset.source.schema))
         .push(".")
@@ -77,14 +85,25 @@ pub async fn tile(
         (bounds[3] + margin).min(HALF_WORLD),
     ];
     if z != 0 || meta.srid == 4326 || meta.srid == 3857 {
-        builder
-            .push(&source)
-            .push(" && ST_Transform(ST_MakeEnvelope(");
+        // Densify the envelope so its edges stay faithful in curved native projections (UTM).
+        let densify = meta.srid != 4326 && meta.srid != 3857;
+        builder.push(&source).push(" && ST_Transform(");
+        if densify {
+            builder.push("ST_Segmentize(");
+        }
+        builder.push("ST_MakeEnvelope(");
         for value in expanded {
             builder.push_bind(value).push(", ");
         }
+        builder.push("3857)");
+        if densify {
+            builder
+                .push(", ")
+                .push_bind((expanded[2] - expanded[0]) / 16.0)
+                .push(")");
+        }
         builder
-            .push("3857), ")
+            .push(", ")
             .push(meta.srid.to_string())
             .push(") AND ");
     }

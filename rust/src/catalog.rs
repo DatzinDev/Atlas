@@ -62,6 +62,7 @@ impl Catalog {
             .contains(&metadata.geometry_type.as_str())
             || !crate::domain::identifier(&metadata.geometry_column)
             || !crate::domain::identifier(&metadata.id_column)
+            || !crate::domain::ID_TYPES.contains(&metadata.id_type.as_str())
             || metadata
                 .attributes
                 .iter()

@@ -115,7 +115,7 @@ pub async fn inspect(
         .iter()
         .find(|a| a.name == id_column)
         .ok_or(Error::InvalidRequest)?;
-    if !["int2", "int4", "int8", "text", "varchar", "bpchar"].contains(&id.data_type.as_str()) {
+    if !crate::domain::ID_TYPES.contains(&id.data_type.as_str()) {
         return Err(Error::InvalidRequest);
     }
     if ["v", "m"].contains(&kind.as_str()) {
@@ -169,6 +169,7 @@ pub async fn inspect(
         geometry_type,
         srid,
         id_column,
+        id_type: id.data_type.clone(),
         attributes: published,
     })
 }

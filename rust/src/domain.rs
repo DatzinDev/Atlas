@@ -59,6 +59,7 @@ pub fn identifier(value: &str) -> bool {
 
 pub const MAX_ROLES: usize = 1000;
 pub const MAX_ROLE_LENGTH: usize = 128;
+pub const ID_TYPES: [&str; 6] = ["int2", "int4", "int8", "text", "varchar", "bpchar"];
 
 pub fn roles(values: &[String]) -> bool {
     values.len() <= MAX_ROLES
@@ -191,6 +192,7 @@ pub struct Metadata {
     pub geometry_type: String,
     pub srid: i32,
     pub id_column: String,
+    pub id_type: String,
     pub attributes: Vec<Attribute>,
 }
 

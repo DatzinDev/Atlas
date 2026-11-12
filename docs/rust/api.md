@@ -18,6 +18,14 @@ configurado; no se confía en cabeceras forwarded arbitrarias.
 En MVT, salvo SRID nativo 3857, la geometría se recorta en EPSG:4326 (`ST_ClipByBox2D`) contra
 la envolvente del tile expandida por el buffer y transformada en PostGIS antes de pasar a 3857;
 lo que queda fuera de ±85.0511° no se codifica y un vértice en ±90 nunca hace fallar el tile.
+Si el SRID nativo no es 3857 ni 4326, la envolvente expandida se densifica con
+`ST_Segmentize(env, ancho/16)` antes de transformarla al SRID nativo para seleccionar candidatos.
+Los tags MVT de date/timestamp/timestamptz usan el mismo texto ISO 8601 que GeoJSON; numeric
+va como texto y NaN/±Infinity como NULL. El id MVT se decide por el tipo de id_column inspeccionado
+(guardado en metadata como id_type): enteros en [0, 2^53−1] se codifican; texto, negativos o
+mayores van sin id. Metadata almacenada sin id_type válido se trata como esquema cambiado.
+La migración rellena id_type desde pg_catalog sin tocar revision ni ETag; las filas que no
+resuelve quedan sin id_type y se leen como schema_changed.
 
 El catálogo público describe propiedades publicadas; jamás devuelve source, filter fijo,
 roles, SQL o credenciales. El administrativo sí devuelve configuración sin credenciales.
