@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
   title: Atlas Rust REST API
-  version: 0.1.0-draft
-  description: Contrato del MVP, todavía no implementado. Véanse spec.md y api.md.
+  version: 0.1.0
+  description: Contrato del MVP, probado contra el servidor en rust/tests/openapi.rs. Véanse spec.md y api.md.
 servers: [{url: /api/v1}]
 security: [{}, {bearer: []}]
 paths:
@@ -99,8 +99,8 @@ components:
     bearer: {type: http, scheme: bearer, bearerFormat: JWT}
   parameters:
     Id: {name: id, in: path, required: true, schema: {type: string, pattern: '^[a-z0-9_-]+$', maxLength: 128}}
-    Limit: {name: limit, in: query, schema: {type: integer, minimum: 1}, description: Defaults y máximos según spec.md; un exceso es 400.}
-    Offset: {name: offset, in: query, schema: {type: integer, minimum: 0, maximum: 100000, default: 0}}
+    Limit: {name: limit, in: query, schema: {type: integer, minimum: 1}, description: 'Máximo configurable limits.max_limit (por defecto 10.000); default según spec.md; un exceso es 400.'}
+    Offset: {name: offset, in: query, schema: {type: integer, minimum: 0, default: 0}, description: 'Máximo configurable limits.max_offset (por defecto 100.000); un exceso es 400.'}
     Filter: {name: filter, in: query, content: {application/json: {schema: {$ref: '#/components/schemas/Predicate'}}}}
     Bbox: {name: bbox, in: query, style: form, explode: false, schema: {$ref: '#/components/schemas/Bbox'}}
     Properties: {name: properties, in: query, style: form, explode: false, schema: {type: array, minItems: 1, uniqueItems: true, items: {type: string}}}
@@ -169,8 +169,8 @@ components:
         bbox: {$ref: '#/components/schemas/Bbox'}
         properties: {type: array, minItems: 1, uniqueItems: true, items: {type: string}}
         sort: {type: array, minItems: 1, items: {$ref: '#/components/schemas/SortField'}}
-        limit: {type: integer, minimum: 1, maximum: 10000, default: 1000}
-        offset: {type: integer, minimum: 0, maximum: 100000, default: 0}
+        limit: {type: integer, minimum: 1, default: 1000, description: 'Máximo configurable limits.max_limit (por defecto 10.000).'}
+        offset: {type: integer, minimum: 0, default: 0, description: 'Máximo configurable limits.max_offset (por defecto 100.000).'}
     SortField:
       type: object
       additionalProperties: false
@@ -230,16 +230,16 @@ components:
       properties:
         id: {type: string, pattern: '^[a-z0-9_-]+$', maxLength: 128}
         title: {type: string, minLength: 1}
-        description: {type: string}
+        description: {type: string, nullable: true}
         source: {$ref: '#/components/schemas/Source'}
         properties: {type: array, minItems: 1, uniqueItems: true, items: {type: string}}
-        filter: {allOf: [{$ref: '#/components/schemas/Predicate'}], description: 'Filtro fijo; puede usar columnas inspeccionadas no publicadas, que nunca se exponen.'}
+        filter: {allOf: [{$ref: '#/components/schemas/Predicate'}], nullable: true, description: 'Filtro fijo; puede usar columnas inspeccionadas no publicadas, que nunca se exponen.'}
         access: {$ref: '#/components/schemas/Access'}
         enabled: {type: boolean, default: true}
     Publication:
       type: object
       required: [id, config, metadata, revision]
-      properties: {id: {type: string}, config: {$ref: '#/components/schemas/PublicationPatch'}, metadata: {$ref: '#/components/schemas/Dataset'}, revision: {type: integer, format: int64, minimum: 1}}
+      properties: {id: {type: string}, config: {$ref: '#/components/schemas/PublicationCreate'}, metadata: {$ref: '#/components/schemas/Dataset'}, revision: {type: integer, format: int64, minimum: 1}}
     PublicationList:
       type: object
       required: [publications, hasMore]
