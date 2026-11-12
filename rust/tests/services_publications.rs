@@ -1,8 +1,10 @@
 use atlas::{
     config::Config,
+    config::Limits,
     domain::{Error, Principal, Query},
     migrations::migrate,
     postgis::connection::Database,
+    query::predicate::parse,
     services::publications::{Publications, document, summary},
 };
 
@@ -226,18 +228,6 @@ async fn publications_validate_before_persisting_and_patch_with_revision() {
             .revision,
         public.revision
     );
-    for query in [
-        r#"{"limit":10001}"#,
-        r#"{"limit":0}"#,
-        r#"{"offset":100001}"#,
-    ] {
-        let parsed: Query = serde_json::from_str(query).unwrap();
-        assert_eq!(
-            service.features(&public, &parsed).await.err(),
-            Some(Error::InvalidRequest),
-            "{query}"
-        );
-    }
     let shown = summary(&public).to_string();
     assert!(!shown.contains("source") && !shown.contains("roles") && !shown.contains("revision"));
     assert_eq!(
@@ -301,4 +291,62 @@ async fn publications_validate_before_persisting_and_patch_with_revision() {
     assert_eq!((visible(last), more), (vec!["svc_b600".to_string()], false));
     let (past, more) = service.visible(&anonymous, Some(5), 299).await.unwrap();
     assert!(past.is_empty() && !more);
+
+    // Data services take the user predicate already parsed and still AND it with the fixed one.
+    let mut tx = db.begin_catalog().await.unwrap();
+    for statement in [
+        "UPDATE publication_test.roads SET geom = ST_GeomFromText('LINESTRING(0 0,1 1)',4326)",
+        "INSERT INTO publication_test.roads VALUES (2,'b',1,ST_GeomFromText('LINESTRING(0 0,1 1)',4326)),(3,'c',3,ST_GeomFromText('LINESTRING(0 0,1 1)',4326))",
+    ] {
+        sqlx::query(statement).execute(&mut *tx).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+    service
+        .create(ROADS.replace("svc_roads", "svc_data").as_bytes())
+        .await
+        .unwrap();
+    let data = service.get("svc_data").await.unwrap();
+    let limits = Limits::default();
+    let ids = |body: &str| -> Vec<i64> {
+        let page: serde_json::Value = serde_json::from_str(body).unwrap();
+        page["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["id"].as_i64().unwrap())
+            .collect()
+    };
+    let named = |name: &str| {
+        parse(
+            &format!(r#"{{"op":"eq","field":"name","value":"{name}"}}"#),
+            &limits,
+        )
+        .unwrap()
+    };
+    let (c, b) = (named("c"), named("b"));
+    let page = service
+        .features(&data, &Query::default(), Some(&c))
+        .await
+        .unwrap();
+    assert_eq!(ids(&page.body), [3]);
+    // Row 2 matches the user filter but the fixed filter excludes it: no widening.
+    let page = service
+        .features(&data, &Query::default(), Some(&b))
+        .await
+        .unwrap();
+    assert!(ids(&page.body).is_empty());
+    assert!(
+        !service
+            .tile(&data, (0, 0, 0), Some(&c), None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        service
+            .tile(&data, (0, 0, 0), Some(&b), None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }

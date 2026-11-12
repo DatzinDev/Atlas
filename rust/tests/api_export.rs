@@ -120,6 +120,7 @@ async fn downloads_over_http() {
             "export_public",
             &atlas::domain::Principal::default(),
             &atlas::domain::Query::default(),
+            None,
         )
         .await
         .unwrap();

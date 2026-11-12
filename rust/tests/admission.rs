@@ -143,7 +143,9 @@ async fn postgis_cancellation_and_stalled_http_release_slots() {
     for _ in 0..2 {
         let (service, publication) = (service.clone(), publication.clone());
         callers.push(tokio::spawn(async move {
-            service.features(&publication, &Query::default()).await
+            service
+                .features(&publication, &Query::default(), None)
+                .await
         }));
     }
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -159,7 +161,7 @@ async fn postgis_cancellation_and_stalled_http_release_slots() {
     }
     assert_eq!(
         service
-            .features(&publication, &Query::default())
+            .features(&publication, &Query::default(), None)
             .await
             .err(),
         Some(Error::CapacityExceeded)
@@ -173,7 +175,12 @@ async fn postgis_cancellation_and_stalled_http_release_slots() {
     );
     assert_eq!(
         service
-            .export("admission_small", &Principal::default(), &Query::default())
+            .export(
+                "admission_small",
+                &Principal::default(),
+                &Query::default(),
+                None
+            )
             .await
             .err(),
         Some(Error::CapacityExceeded)
@@ -192,7 +199,12 @@ async fn postgis_cancellation_and_stalled_http_release_slots() {
         loop {
             while exports.len() < 2 {
                 match service
-                    .export("admission_small", &Principal::default(), &Query::default())
+                    .export(
+                        "admission_small",
+                        &Principal::default(),
+                        &Query::default(),
+                        None,
+                    )
                     .await
                 {
                     Ok(export) => exports.push(export),
@@ -210,7 +222,7 @@ async fn postgis_cancellation_and_stalled_http_release_slots() {
     .unwrap();
     assert_eq!(
         service
-            .features(&publication, &Query::default())
+            .features(&publication, &Query::default(), None)
             .await
             .err(),
         Some(Error::CapacityExceeded)
@@ -243,7 +255,12 @@ async fn postgis_cancellation_and_stalled_http_release_slots() {
         loop {
             while again.len() < 2 {
                 match service
-                    .export("admission_small", &Principal::default(), &Query::default())
+                    .export(
+                        "admission_small",
+                        &Principal::default(),
+                        &Query::default(),
+                        None,
+                    )
                     .await
                 {
                     Ok(export) => again.push(export),
@@ -299,7 +316,7 @@ async fn wait_for_features(
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             match service
-                .features(publication, &atlas::domain::Query::default())
+                .features(publication, &atlas::domain::Query::default(), None)
                 .await
             {
                 Ok(_) => break,
@@ -426,7 +443,12 @@ async fn stalled_exports_cannot_starve_items_and_tiles() {
     assert!(!refused.contains("application/geo+json"), "{refused}");
     assert_eq!(
         service
-            .export("fairness_small", &Principal::default(), &Query::default())
+            .export(
+                "fairness_small",
+                &Principal::default(),
+                &Query::default(),
+                None
+            )
             .await
             .err(),
         Some(Error::CapacityExceeded)
@@ -456,7 +478,9 @@ async fn stalled_exports_cannot_starve_items_and_tiles() {
     for _ in 0..2 {
         let (service, publication) = (service.clone(), publication.clone());
         callers.push(tokio::spawn(async move {
-            service.features(&publication, &Query::default()).await
+            service
+                .features(&publication, &Query::default(), None)
+                .await
         }));
     }
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -474,7 +498,7 @@ async fn stalled_exports_cannot_starve_items_and_tiles() {
     .unwrap();
     assert_eq!(
         service
-            .features(&publication, &Query::default())
+            .features(&publication, &Query::default(), None)
             .await
             .err(),
         Some(Error::CapacityExceeded)
@@ -497,7 +521,12 @@ async fn stalled_exports_cannot_starve_items_and_tiles() {
     let mut export = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             match service
-                .export("fairness_small", &Principal::default(), &Query::default())
+                .export(
+                    "fairness_small",
+                    &Principal::default(),
+                    &Query::default(),
+                    None,
+                )
                 .await
             {
                 Ok(export) => break export,
