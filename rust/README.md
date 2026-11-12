@@ -104,6 +104,7 @@ public_key_file = "/etc/atlas/jwt-public.pem"  # RSA 2048–8192 bits, SPKI o PK
 issuer = "https://identity.example.test"
 audience = "atlas"
 leeway_seconds = 30       # 0..=300
+roles_claim = "roles"     # ruta con puntos, p. ej. "realm_access.roles"
 
 [cors]
 allowed_origins = []      # vacío: sin CORS; ["*"] o hasta 100 "http(s)://host[:puerto]"
@@ -111,7 +112,7 @@ allowed_origins = []      # vacío: sin CORS; ["*"] o hasta 100 "http(s)://host[
 
 Salvo `pool_min`, `max_offset`, `tile_zoom` y `tile_buffer`, los límites deben ser mayores que 0.
 Sin `[auth]` no hay administración. Atlas no emite tokens: verifica RS256 (`sub`, `iss`, `aud`,
-`exp`, `roles` opcional) con la clave pública local, cargada una vez al arrancar.
+`exp` y el arreglo de `roles_claim`, opcional) con la clave pública local, cargada una vez al arrancar.
 
 ## Publicar una capa
 

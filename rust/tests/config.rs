@@ -126,6 +126,7 @@ fn jwt_trust_configuration_is_closed_and_local() {
     let config = Config::parse(text, None, None).unwrap();
     let auth = config.auth.unwrap();
     assert_eq!(auth.leeway_seconds, 30);
+    assert_eq!(auth.roles_claim, "roles");
     assert!(auth.verifier().is_ok());
     for leeway in [0, 300] {
         let config =
@@ -147,6 +148,8 @@ fn jwt_trust_configuration_is_closed_and_local() {
         "[auth]\npublic_key_file=''\nissuer='i'\naudience='a'",
         "[auth]\npublic_key_file='k'\nissuer=' '\naudience='a'",
         "[auth]\npublic_key_file='k'\nissuer='i'\naudience=''",
+        "[auth]\npublic_key_file='k'\nissuer='i'\naudience='a'\nroles_claim=''",
+        "[auth]\npublic_key_file='k'\nissuer='i'\naudience='a'\nroles_claim='a..b'",
     ] {
         assert!(Config::parse(invalid, None, None).is_err());
     }
