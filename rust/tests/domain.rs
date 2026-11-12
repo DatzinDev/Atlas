@@ -170,3 +170,81 @@ fn routing_errors_serialize_as_snake_case_codes() {
     assert_eq!(Error::NotFound.to_string(), "NotFound");
     assert_eq!(Error::MethodNotAllowed.to_string(), "MethodNotAllowed");
 }
+
+#[test]
+fn supported_types_have_one_source_of_truth() {
+    use atlas::domain::{
+        FilterClass as F, GEOMETRY_TYPES, ID_TYPES, MvtEncoding as M, PROPERTY_TYPES, property_type,
+    };
+    // Behavior before the refactor: predicates, MVT select list and TileJSON fields.
+    let expected = [
+        (
+            "int2",
+            F::Integer(i16::MIN.into(), i16::MAX.into()),
+            M::Native,
+            "Number",
+        ),
+        (
+            "int4",
+            F::Integer(i32::MIN.into(), i32::MAX.into()),
+            M::Native,
+            "Number",
+        ),
+        ("int8", F::Integer(i64::MIN, i64::MAX), M::Native, "Number"),
+        (
+            "float4",
+            F::Float(f32::MAX.into()),
+            M::FiniteFloat,
+            "Number",
+        ),
+        ("float8", F::Float(f64::MAX), M::FiniteFloat, "Number"),
+        ("numeric", F::Numeric, M::Text, "String"),
+        ("bool", F::Bool, M::Native, "Boolean"),
+        ("text", F::Text, M::Native, "String"),
+        ("varchar", F::Text, M::Native, "String"),
+        ("bpchar", F::Text, M::Native, "String"),
+        ("date", F::Date, M::IsoText, "String"),
+        (
+            "timestamp",
+            F::Timestamp { zoned: false },
+            M::IsoText,
+            "String",
+        ),
+        (
+            "timestamptz",
+            F::Timestamp { zoned: true },
+            M::IsoText,
+            "String",
+        ),
+    ];
+    assert_eq!(PROPERTY_TYPES.len(), expected.len());
+    for (name, filter, mvt, tilejson) in expected {
+        let found = property_type(name).unwrap_or_else(|| panic!("{name}"));
+        assert_eq!(found.name, name);
+        assert_eq!(found.filter, filter, "{name}");
+        assert_eq!(found.mvt, mvt, "{name}");
+        assert_eq!(found.tilejson, tilejson, "{name}");
+    }
+    // Lookup is exact: no aliases, no case folding, no non-scalar types.
+    for unknown in ["TIMESTAMPTZ", "integer", "jsonb", "geometry", "int4 "] {
+        assert!(property_type(unknown).is_none(), "{unknown:?}");
+    }
+    // Ids keep their previous set and are always publishable property types.
+    assert_eq!(
+        ID_TYPES,
+        ["int2", "int4", "int8", "text", "varchar", "bpchar"]
+    );
+    assert!(ID_TYPES.iter().all(|t| property_type(t).is_some()));
+    assert_eq!(
+        GEOMETRY_TYPES,
+        [
+            "POINT",
+            "MULTIPOINT",
+            "LINESTRING",
+            "MULTILINESTRING",
+            "POLYGON",
+            "MULTIPOLYGON",
+            "GEOMETRYCOLLECTION",
+        ]
+    );
+}
