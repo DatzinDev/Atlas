@@ -36,6 +36,33 @@ fn defaults_and_overrides_are_validated() {
 }
 
 #[test]
+fn allowed_schemas_reject_system_schemas() {
+    for schemas in [
+        "['pg_catalog']",
+        "['information_schema']",
+        "['pg_toast']",
+        "['pg_temp_1']",
+        "['pg_toast_temp_1']",
+        "['pg_']",
+        "['pg_custom']",
+        "['public','pg_catalog']",
+        "['datos','information_schema']",
+        "['public','atlas_catalog']",
+    ] {
+        let text = format!("allowed_schemas={schemas}");
+        assert!(Config::parse(&text, None, None).is_err(), "{text}");
+    }
+    for schemas in ["['public','datos']", "['pgdatos']", "['datos_pg_catalog']"] {
+        let text = format!("allowed_schemas={schemas}");
+        let config = Config::parse(&text, None, None).unwrap_or_else(|e| panic!("{text}: {e:?}"));
+        assert!(!config.allowed_schemas.is_empty());
+    }
+    let mut config = Config::parse("", None, None).unwrap();
+    config.allowed_schemas = vec!["public".into(), "pg_catalog".into()];
+    assert!(config.validate().is_err());
+}
+
+#[test]
 fn jwt_trust_configuration_is_closed_and_local() {
     let text = "[auth]\npublic_key_file='tests/fixtures/jwt-test-public.pem'\nissuer='atlas-test'\naudience='atlas'";
     let config = Config::parse(text, None, None).unwrap();

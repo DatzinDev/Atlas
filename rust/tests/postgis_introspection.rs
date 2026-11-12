@@ -252,3 +252,192 @@ async fn geometry_without_typmod_requires_single_type_and_srid() {
     tx.commit().await.unwrap();
     db.close().await;
 }
+
+fn dataset_for(schema: &str, table: &str, id: Option<&str>, properties: &[&str]) -> Dataset {
+    serde_json::from_value(serde_json::json!({
+        "id": "test",
+        "title": "Test",
+        "source": {"schema": schema, "table": table, "id_column": id},
+        "properties": properties,
+    }))
+    .unwrap()
+}
+
+async fn execute_all(db: &Database, statements: &[&str]) {
+    let mut tx = db.begin_catalog().await.unwrap();
+    for statement in statements {
+        sqlx::query(sqlx::AssertSqlSafe(statement.to_string()))
+            .execute(&mut *tx)
+            .await
+            .unwrap_or_else(|e| panic!("{statement}: {e}"));
+    }
+    tx.commit().await.unwrap();
+}
+
+#[tokio::test]
+async fn only_builtin_base_types_and_extension_geometry_are_accepted() {
+    let mut config = Config::parse(
+        "",
+        Some(std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required")),
+        None,
+    )
+    .unwrap();
+    config.allowed_schemas = vec!["introspection_types".into()];
+    let db = Database::open(&config).await.unwrap();
+    let point = "ST_SetSRID(ST_Point(0,0),4326)::geometry(Point,4326)";
+    execute_all(
+        &db,
+        &[
+            "DROP SCHEMA IF EXISTS introspection_types CASCADE",
+            "CREATE SCHEMA introspection_types",
+            "CREATE TYPE introspection_types.text AS ENUM ('a')",
+            "CREATE TYPE introspection_types.int4 AS ENUM ('1')",
+            "CREATE DOMAIN introspection_types.d AS pg_catalog.text",
+            "CREATE DOMAIN introspection_types.int8 AS pg_catalog.int8",
+            "CREATE DOMAIN introspection_types.geometry AS geometry",
+            "CREATE TABLE introspection_types.enum_property(id integer PRIMARY KEY, geom geometry(Point,4326), label introspection_types.text)",
+            "CREATE TABLE introspection_types.domain_property(id integer PRIMARY KEY, geom geometry(Point,4326), label introspection_types.d)",
+            "CREATE TABLE introspection_types.enum_int4_property(id integer PRIMARY KEY, geom geometry(Point,4326), n introspection_types.int4)",
+            "CREATE TABLE introspection_types.domain_id(id introspection_types.int8 PRIMARY KEY, geom geometry(Point,4326))",
+            "CREATE TABLE introspection_types.text_domain_id(id introspection_types.d PRIMARY KEY, geom geometry(Point,4326))",
+            &*format!("CREATE VIEW introspection_types.enum_id AS SELECT 'a'::introspection_types.text AS id, {point} AS geom"),
+            &*format!("CREATE VIEW introspection_types.builtin_text_id AS SELECT 'a'::pg_catalog.text AS id, {point} AS geom"),
+            "CREATE TABLE introspection_types.fake_geometry(id integer PRIMARY KEY, geom introspection_types.geometry)",
+            "INSERT INTO introspection_types.fake_geometry VALUES (1, ST_SetSRID(ST_Point(0,0),4326))",
+            "CREATE TABLE introspection_types.builtin(id bigint PRIMARY KEY, geom geometry(Point,4326), a int2, b int4, c float4, d float8, e numeric, f bool, g pg_catalog.text, h varchar(10), i char(2), j date, k timestamp, l timestamptz)",
+        ],
+    )
+    .await;
+    let schema = "introspection_types";
+
+    // Regression: types were matched by typname only, so a homonymous enum passed.
+    for (table, id, properties) in [
+        ("enum_property", None, &["label"][..]),
+        ("domain_property", None, &["label"][..]),
+        ("enum_int4_property", None, &["n"][..]),
+        ("domain_id", None, &[][..]),
+        ("text_domain_id", None, &[][..]),
+        ("enum_id", Some("id"), &[][..]),
+        ("fake_geometry", None, &["id"][..]),
+    ] {
+        let dataset = dataset_for(schema, table, id, properties);
+        assert_eq!(
+            inspect(&db, &config, &dataset).await.unwrap_err(),
+            Error::InvalidRequest,
+            "{table}"
+        );
+    }
+
+    let dataset = dataset_for(schema, "builtin_text_id", Some("id"), &["id"]);
+    let meta = inspect(&db, &config, &dataset).await.unwrap();
+    assert_eq!(meta.id_column, "id");
+    assert_eq!(meta.attributes[0].data_type, "text");
+
+    let columns = [
+        "id", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l",
+    ];
+    let dataset = dataset_for(schema, "builtin", None, &columns);
+    let meta = inspect(&db, &config, &dataset).await.unwrap();
+    assert_eq!(meta.geometry_column, "geom");
+    assert_eq!(meta.srid, 4326);
+    assert_eq!(
+        meta.attributes
+            .iter()
+            .map(|a| a.data_type.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "int8",
+            "int2",
+            "int4",
+            "float4",
+            "float8",
+            "numeric",
+            "bool",
+            "text",
+            "varchar",
+            "bpchar",
+            "date",
+            "timestamp",
+            "timestamptz",
+        ]
+    );
+
+    execute_all(&db, &["DROP SCHEMA introspection_types CASCADE"]).await;
+    db.close().await;
+}
+
+#[tokio::test]
+async fn publication_requires_select_on_every_published_column() {
+    let dsn = std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required");
+    let mut admin_config = Config::parse("", Some(dsn.clone()), None).unwrap();
+    admin_config.allowed_schemas = vec!["introspection_privileges".into()];
+    let admin = Database::open(&admin_config).await.unwrap();
+    let role = "atlas_introspection_reader";
+    let table = |name: &str| {
+        format!(
+            "CREATE TABLE introspection_privileges.{name}(id integer PRIMARY KEY, geom geometry(Point,4326), nombre text, secreto text)"
+        )
+    };
+    let statements = [
+        "DROP SCHEMA IF EXISTS introspection_privileges CASCADE".to_string(),
+        format!(
+            "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='{role}') THEN CREATE ROLE {role} NOLOGIN; END IF; END $$"
+        ),
+        format!("GRANT {role} TO CURRENT_USER"),
+        "CREATE SCHEMA introspection_privileges".into(),
+        format!("GRANT USAGE ON SCHEMA introspection_privileges TO {role}"),
+        table("no_select"),
+        table("granted"),
+        format!("GRANT SELECT (id, geom, nombre) ON introspection_privileges.granted TO {role}"),
+        table("no_geometry"),
+        format!("GRANT SELECT (id, nombre) ON introspection_privileges.no_geometry TO {role}"),
+        table("no_id"),
+        format!("GRANT SELECT (geom, nombre) ON introspection_privileges.no_id TO {role}"),
+    ];
+    execute_all(
+        &admin,
+        &statements.iter().map(String::as_str).collect::<Vec<_>>(),
+    )
+    .await;
+
+    let separator = if dsn.contains('?') { '&' } else { '?' };
+    let reader_dsn = format!("{dsn}{separator}options=-c%20role%3D{role}");
+    let mut config = Config::parse("", Some(reader_dsn), None).unwrap();
+    config.allowed_schemas = vec!["introspection_privileges".into()];
+    let reader = Database::open(&config).await.unwrap();
+    let schema = "introspection_privileges";
+    for (table, properties) in [
+        ("no_select", &["nombre"][..]),
+        ("granted", &["nombre", "secreto"][..]),
+        ("granted", &["secreto"][..]),
+        ("no_geometry", &["nombre"][..]),
+        ("no_id", &["nombre"][..]),
+    ] {
+        let dataset = dataset_for(schema, table, None, properties);
+        assert_eq!(
+            inspect(&reader, &config, &dataset).await.unwrap_err(),
+            Error::InvalidRequest,
+            "{table} {properties:?}"
+        );
+    }
+    for properties in [&["nombre"][..], &["id", "nombre"][..]] {
+        let dataset = dataset_for(schema, "granted", None, properties);
+        let meta = inspect(&reader, &config, &dataset)
+            .await
+            .unwrap_or_else(|e| panic!("{properties:?}: {e:?}"));
+        assert_eq!(meta.id_column, "id");
+        assert_eq!(meta.geometry_column, "geom");
+        assert_eq!(meta.attributes.len(), properties.len());
+    }
+    reader.close().await;
+
+    execute_all(
+        &admin,
+        &[
+            "DROP SCHEMA introspection_privileges CASCADE",
+            &*format!("DROP ROLE IF EXISTS {role}"),
+        ],
+    )
+    .await;
+    admin.close().await;
+}
