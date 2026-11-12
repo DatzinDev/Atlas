@@ -100,12 +100,15 @@ que aún lo traiga ya no autoriza desde la siguiente petición, porque no hay ca
 un stream ya autorizado sigue hasta terminar. Si el emisor deja de otorgar el rol, el token
 emitido lo conserva hasta exp; esa ventana la fija el emisor.
 
-Una publicación guardada con roles fuera de esa regla, o con una lista que no es un arreglo de
-strings, deja de leerse: su detalle administrativo responde 409 schema_changed, igual que cada
-página del listado administrativo que la incluya; PATCH también (lee antes de escribir) y DELETE
-se queda sin ETag. En las rutas públicas no hay 409: la publicación desaparece del catálogo y su
-detalle es 404. Antes de desplegar, detectarlas con un SELECT de solo lectura, que solo requiere
-SELECT sobre atlas_catalog.datasets (no el rol DDL):
+Una publicación guardada que ya no decodifica o no valida (roles fuera de esa regla, una lista
+que no es un arreglo de strings, un esquema retirado de allowed_schemas) deja de leerse, pero no
+bloquea el listado administrativo: ocupa su lugar como `{"id", "revision", "error":
+"schema_changed"}`, sin config ni metadata, y la página sigue en 200 con el mismo orden y hasMore.
+Su detalle administrativo responde 409 schema_changed con `ETag: "<revision>"`; PATCH sigue en 409
+(lee antes de escribir) y DELETE con ese ETag en If-Match la retira (204). En las rutas públicas no
+hay 409: la publicación desaparece del catálogo y su detalle es 404. Antes de desplegar, detectar
+las de roles inválidos con un SELECT de solo lectura, que solo requiere SELECT sobre
+atlas_catalog.datasets (no el rol DDL):
 
 ```sql
 SELECT id, revision FROM atlas_catalog.datasets
@@ -129,8 +132,8 @@ WHERE EXISTS (
 y repararlas con SQL, con permiso de escritura sobre la tabla, corrigiendo la lista y subiendo la
 revisión
 (`UPDATE ... SET config = jsonb_set(config, '{access,view_roles}', '[...]'), revision = revision + 1,
-updated_at = now() WHERE id = ... AND revision = ...`), o recrearlas: DELETE con la revision leída
-de la tabla en If-Match y después POST.
+updated_at = now() WHERE id = ... AND revision = ...`), o recrearlas: DELETE con la revision del listado
+o del ETag del detalle en If-Match y después POST.
 
 Los ejemplos no incluyen tokens reales. Usar cabecera Authorization, nunca query string.
 

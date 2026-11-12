@@ -243,4 +243,10 @@ components:
     PublicationList:
       type: object
       required: [publications, hasMore]
-      properties: {publications: {type: array, items: {$ref: '#/components/schemas/Publication'}}, hasMore: {type: boolean}}
+      properties: {publications: {type: array, items: {oneOf: [{$ref: '#/components/schemas/Publication'}, {$ref: '#/components/schemas/InvalidPublication'}]}}, hasMore: {type: boolean}}
+    InvalidPublication:
+      type: object
+      description: Publicación guardada que ya no valida; solo admite DELETE con su revision
+      required: [id, revision, error]
+      additionalProperties: false
+      properties: {id: {type: string}, revision: {type: integer, format: int64, minimum: 1}, error: {type: string, enum: [schema_changed]}}

@@ -1,4 +1,4 @@
-use super::{identifier, json_body, no_query, paging, respond};
+use super::{failure, identifier, json_body, no_query, paging, respond};
 use crate::{
     auth::policy::admin,
     domain::{Error, Principal},
@@ -8,7 +8,7 @@ use axum::{
     Extension, Router,
     body::Bytes,
     extract::{DefaultBodyLimit, Path, RawQuery, State, rejection::BytesRejection},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::Response,
     routing::get,
 };
@@ -38,7 +38,15 @@ async fn list(
     admin(&principal)?;
     let (limit, offset) = paging(query.as_deref())?;
     let (page, more) = state.service.list(limit, offset).await?;
-    let publications: Vec<_> = page.iter().map(document).collect();
+    let publications: Vec<_> = page
+        .iter()
+        .map(|entry| match entry {
+            Ok(publication) => document(publication),
+            Err(invalid) => {
+                json!({"id": invalid.id, "revision": invalid.revision, "error": "schema_changed"})
+            }
+        })
+        .collect();
     let body = json!({"publications": publications, "hasMore": more});
     Ok(respond(StatusCode::OK, Some(body), None))
 }
@@ -70,12 +78,21 @@ async fn read(
 ) -> Result<Response, Error> {
     admin(&principal)?;
     no_query(query.as_deref())?;
-    let found = state.service.get(identifier(&id)?).await?;
-    Ok(respond(
-        StatusCode::OK,
-        Some(document(&found)),
-        Some(found.revision),
-    ))
+    match state.service.find(identifier(&id)?).await? {
+        Ok(found) => Ok(respond(
+            StatusCode::OK,
+            Some(document(&found)),
+            Some(found.revision),
+        )),
+        // The ETag lets DELETE retire a row that no longer validates.
+        Err(invalid) => {
+            let mut response = failure(Error::SchemaChanged);
+            if let Ok(etag) = HeaderValue::from_str(&format!("\"{}\"", invalid.revision)) {
+                response.headers_mut().insert(header::ETAG, etag);
+            }
+            Ok(response)
+        }
+    }
 }
 
 async fn update(

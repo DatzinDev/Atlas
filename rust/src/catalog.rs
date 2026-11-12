@@ -17,6 +17,13 @@ pub struct Publication {
     pub revision: i64,
 }
 
+/// A stored row that no longer decodes or validates; it can still be deleted by revision.
+#[derive(Clone, Debug)]
+pub struct Invalid {
+    pub id: String,
+    pub revision: i64,
+}
+
 #[derive(Clone)]
 pub struct Catalog {
     database: Database,
@@ -115,7 +122,21 @@ impl Catalog {
         })
     }
 
+    fn entry(&self, row: PgRow) -> Result<Result<Publication, Invalid>, Error> {
+        let id: String = row.try_get("id").map_err(error)?;
+        let revision: i64 = row.try_get("revision").map_err(error)?;
+        match self.decode(row) {
+            Ok(publication) => Ok(Ok(publication)),
+            Err(Error::SchemaChanged) => Ok(Err(Invalid { id, revision })),
+            Err(other) => Err(other),
+        }
+    }
+
     pub async fn get(&self, id: &str) -> Result<Publication, Error> {
+        self.find(id).await?.map_err(|_| Error::SchemaChanged)
+    }
+
+    pub async fn find(&self, id: &str) -> Result<Result<Publication, Invalid>, Error> {
         let mut tx = self.database.begin_read().await?;
         let row = sqlx::query(
             "SELECT id, config, metadata, revision FROM atlas_catalog.datasets WHERE id=$1",
@@ -125,14 +146,18 @@ impl Catalog {
         .await
         .map_err(error)?
         .ok_or(Error::DatasetNotFound)?;
-        let record = self.decode(row)?;
+        let record = self.entry(row)?;
         tx.rollback().await.map_err(error)?;
         Ok(record)
     }
 
-    pub async fn list(&self, limit: u32, offset: u32) -> Result<Vec<Publication>, Error> {
+    pub async fn list(
+        &self,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<Result<Publication, Invalid>>, Error> {
         let rows = self.rows(limit, offset).await?;
-        rows.into_iter().map(|row| self.decode(row)).collect()
+        rows.into_iter().map(|row| self.entry(row)).collect()
     }
 
     pub async fn servable(

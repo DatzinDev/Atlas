@@ -1,6 +1,6 @@
 use crate::{
     auth::policy,
-    catalog::{Catalog, Publication},
+    catalog::{Catalog, Invalid, Publication},
     config::{Config, Limits},
     domain::{Dataset, Error, Principal, Query},
     postgis::{
@@ -59,7 +59,7 @@ impl Publications {
         &self,
         limit: Option<u32>,
         offset: u32,
-    ) -> Result<(Vec<Publication>, bool), Error> {
+    ) -> Result<(Vec<Result<Publication, Invalid>>, bool), Error> {
         let limits = &self.config.limits;
         let limit = limit.unwrap_or(limits.catalog_default);
         if limit == 0 || limit > limits.catalog_max || offset > limits.max_offset {
@@ -304,6 +304,10 @@ impl Publications {
 
     pub async fn get(&self, id: &str) -> Result<Publication, Error> {
         self.catalog.get(id).await
+    }
+
+    pub async fn find(&self, id: &str) -> Result<Result<Publication, Invalid>, Error> {
+        self.catalog.find(id).await
     }
 
     pub async fn create(&self, body: &[u8]) -> Result<Publication, Error> {
