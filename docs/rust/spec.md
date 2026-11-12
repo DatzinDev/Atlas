@@ -44,6 +44,10 @@ rango, booleanos estrictos, números finitos, texto y fechas ISO compatibles. No
 libre ni expresiones SQL. Bigint y numeric se conservan sin convertirlos a f64; documentar
 su serialización JSON como en Python, sin prometer precisión en clientes JavaScript.
 Tipos no soportados no se exponen silenciosamente: se rechazan al publicar o se excluyen explícitamente.
+`domain.rs` es la única lista de tipos admitidos: `PROPERTY_TYPES` (int2, int4, int8, float4,
+float8, numeric, bool, text, varchar, bpchar, date, timestamp, timestamptz), `ID_TYPES` y
+`GEOMETRY_TYPES`. Cada tipo de propiedad fija su clase de filtro, su codificación MVT y su tipo
+de campo TileJSON; introspección, catálogo, predicados, MVT y TileJSON la consultan.
 
 MVP: tablas con PK simple y vistas con id_column declarado único/no nulo. Registrar verifica
 esa condición; el publicador debe mantenerla tras cambios de datos. Consultas paginan con el

@@ -30,8 +30,8 @@ pub async fn inspect(
         .bind(&source.schema).bind(&source.table).fetch_optional(&mut *tx).await.map_err(error)?.ok_or(Error::DatasetNotFound)?;
     let oid: i64 = relation.try_get("oid").map_err(error)?;
     let kind: String = relation.try_get("kind").map_err(error)?;
-    let rows = sqlx::query("SELECT a.attname AS name, t.typname AS data_type, NOT a.attnotnull AS nullable, CASE WHEN t.typname='geometry' THEN postgis_typmod_type(a.atttypmod) END AS geometry_type, CASE WHEN t.typname='geometry' THEN postgis_typmod_srid(a.atttypmod) END AS srid, EXISTS(SELECT 1 FROM pg_catalog.pg_index i WHERE i.indrelid=a.attrelid AND i.indisprimary AND i.indnkeyatts=1 AND a.attnum=i.indkey[0]) AS primary_key FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid=a.atttypid WHERE a.attrelid=$1::bigint::oid AND a.attnum>0 AND NOT a.attisdropped AND (a.atttypid=ANY('{pg_catalog.int2,pg_catalog.int4,pg_catalog.int8,pg_catalog.float4,pg_catalog.float8,pg_catalog.numeric,pg_catalog.bool,pg_catalog.text,pg_catalog.varchar,pg_catalog.bpchar,pg_catalog.date,pg_catalog.timestamp,pg_catalog.timestamptz}'::regtype[]::oid[]) OR (t.typname='geometry' AND t.typnamespace=(SELECT e.extnamespace FROM pg_catalog.pg_extension e WHERE e.extname='postgis'))) ORDER BY a.attnum")
-        .bind(oid).fetch_all(&mut *tx).await.map_err(error)?;
+    let rows = sqlx::query("SELECT a.attname AS name, t.typname AS data_type, NOT a.attnotnull AS nullable, CASE WHEN t.typname='geometry' THEN postgis_typmod_type(a.atttypmod) END AS geometry_type, CASE WHEN t.typname='geometry' THEN postgis_typmod_srid(a.atttypmod) END AS srid, EXISTS(SELECT 1 FROM pg_catalog.pg_index i WHERE i.indrelid=a.attrelid AND i.indisprimary AND i.indnkeyatts=1 AND a.attnum=i.indkey[0]) AS primary_key FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid=a.atttypid WHERE a.attrelid=$1::bigint::oid AND a.attnum>0 AND NOT a.attisdropped AND (t.typnamespace='pg_catalog'::regnamespace AND t.typname::text=ANY($2::text[]) OR (t.typname='geometry' AND t.typnamespace=(SELECT e.extnamespace FROM pg_catalog.pg_extension e WHERE e.extname='postgis'))) ORDER BY a.attnum")
+        .bind(oid).bind(crate::domain::PROPERTY_TYPES.iter().map(|t| t.name).collect::<Vec<_>>()).fetch_all(&mut *tx).await.map_err(error)?;
     let mut attributes = Vec::new();
     let (mut geometries, mut primary_key) = (Vec::new(), None);
     for row in rows {
@@ -116,9 +116,8 @@ pub async fn inspect(
                     } else {
                         (b, a)
                     };
-                    if !["POINT", "LINESTRING", "POLYGON"].contains(&single.as_str())
-                        || *multi != format!("MULTI{single}")
-                    {
+                    // GEOMETRY_TYPES below limits `multi`, and so `single`.
+                    if *multi != format!("MULTI{single}") {
                         return Err(Error::InvalidRequest);
                     }
                     multi.clone()
@@ -128,18 +127,7 @@ pub async fn inspect(
         }
     }
     geometry_type.make_ascii_uppercase();
-    if srid <= 0
-        || ![
-            "POINT",
-            "MULTIPOINT",
-            "LINESTRING",
-            "MULTILINESTRING",
-            "POLYGON",
-            "MULTIPOLYGON",
-            "GEOMETRYCOLLECTION",
-        ]
-        .contains(&geometry_type.as_str())
-    {
+    if srid <= 0 || !crate::domain::GEOMETRY_TYPES.contains(&geometry_type.as_str()) {
         return Err(Error::InvalidRequest);
     }
     let known_crs: bool =

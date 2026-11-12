@@ -1,7 +1,7 @@
 use super::{introspection::quote_identifier, predicates::query_error, selection::Selection};
 use crate::{
     config::Limits,
-    domain::{Dataset, Error, Metadata},
+    domain::{Dataset, Error, FilterClass, Metadata, MvtEncoding, property_type},
 };
 use sqlx::{Postgres, QueryBuilder, Transaction};
 
@@ -56,17 +56,20 @@ pub async fn tile(
         .filter(|a| names.contains(&a.name.as_str()))
     {
         let column = quote_identifier(&attribute.name);
-        match attribute.data_type.as_str() {
-            "numeric" => builder.push(format!("{column}::text AS {column}, ")),
+        match property_type(&attribute.data_type).map(|t| t.mvt) {
+            Some(MvtEncoding::Text) => builder.push(format!("{column}::text AS {column}, ")),
             // Same ISO 8601 text as the GeoJSON properties (row_to_json).
-            "date" | "timestamp" | "timestamptz" => {
+            Some(MvtEncoding::IsoText) => {
                 builder.push(format!("to_json({column}) #>> '{{}}' AS {column}, "))
             }
-            "float4" | "float8" => builder.push(format!("CASE WHEN {column}::text IN ('NaN','Infinity','-Infinity') THEN NULL ELSE {column} END AS {column}, ")),
+            Some(MvtEncoding::FiniteFloat) => builder.push(format!("CASE WHEN {column}::text IN ('NaN','Infinity','-Infinity') THEN NULL ELSE {column} END AS {column}, ")),
             _ => builder.push(format!("{column}, ")),
         };
     }
-    if ["int2", "int4", "int8"].contains(&meta.id_type.as_str()) {
+    if matches!(
+        property_type(&meta.id_type).map(|t| t.filter),
+        Some(FilterClass::Integer(..))
+    ) {
         builder.push(format!("{source} AS {geom}, CASE WHEN {key} BETWEEN 0 AND 9007199254740991 THEN {key}::bigint END AS {id} FROM "));
     } else {
         builder.push(format!("{source} AS {geom}, NULL::bigint AS {id} FROM "));

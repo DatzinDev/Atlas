@@ -79,16 +79,7 @@ impl Catalog {
         if id != config.id
             || revision <= 0
             || metadata.srid <= 0
-            || ![
-                "POINT",
-                "MULTIPOINT",
-                "LINESTRING",
-                "MULTILINESTRING",
-                "POLYGON",
-                "MULTIPOLYGON",
-                "GEOMETRYCOLLECTION",
-            ]
-            .contains(&metadata.geometry_type.as_str())
+            || !crate::domain::GEOMETRY_TYPES.contains(&metadata.geometry_type.as_str())
             || !crate::domain::identifier(&metadata.geometry_column)
             || !crate::domain::identifier(&metadata.id_column)
             || !crate::domain::ID_TYPES.contains(&metadata.id_type.as_str())
@@ -104,22 +95,7 @@ impl Catalog {
                 .any(|a| !crate::domain::identifier(&a.name) || config.properties.contains(&a.name))
             || columns().any(|a| {
                 a.name == metadata.geometry_column
-                    || ![
-                        "int2",
-                        "int4",
-                        "int8",
-                        "float4",
-                        "float8",
-                        "numeric",
-                        "bool",
-                        "text",
-                        "varchar",
-                        "bpchar",
-                        "date",
-                        "timestamp",
-                        "timestamptz",
-                    ]
-                    .contains(&a.data_type.as_str())
+                    || crate::domain::property_type(&a.data_type).is_none()
             })
             || metadata.extent.is_some_and(|[minx, miny, maxx, maxy]| {
                 // RangeInclusive::contains also rejects NaN and infinities.

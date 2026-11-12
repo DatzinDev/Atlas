@@ -15,7 +15,7 @@ API Axum ── identidad JWT ── servicios de publicación/consulta/tiles/ex
 
 ## Fronteras
 
-- domain: Dataset/Query/Predicate/AccessPolicy y límites; no conoce HTTP ni SQLx.
+- domain: Dataset/Query/Predicate/AccessPolicy, límites y tipos PostgreSQL admitidos; no conoce HTTP ni SQLx.
 - postgis: pool, introspección, compilación de predicados, lectura por cursor y MVT.
 - catalog: persistencia en atlas_catalog y revisión de publicación; no es un ORM de datos fuente.
 - services: autorizar y combinar restricciones antes de I/O; comparten Query, no paginación.

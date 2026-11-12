@@ -282,11 +282,8 @@ impl Publications {
             .iter()
             .filter(|a| properties.is_none_or(|names| names.contains(&a.name)))
             .map(|a| {
-                let kind = match a.data_type.as_str() {
-                    "int2" | "int4" | "int8" | "float4" | "float8" => "Number",
-                    "bool" => "Boolean",
-                    _ => "String",
-                };
+                let kind =
+                    crate::domain::property_type(&a.data_type).map_or("String", |t| t.tilejson);
                 (a.name.clone(), json!(kind))
             })
             .collect();

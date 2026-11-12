@@ -68,6 +68,108 @@ pub fn bbox(b: [f64; 4]) -> bool {
 pub const MAX_ROLES: usize = 1000;
 pub const MAX_ROLE_LENGTH: usize = 128;
 pub const ID_TYPES: [&str; 6] = ["int2", "int4", "int8", "text", "varchar", "bpchar"];
+pub const GEOMETRY_TYPES: [&str; 7] = [
+    "POINT",
+    "MULTIPOINT",
+    "LINESTRING",
+    "MULTILINESTRING",
+    "POLYGON",
+    "MULTIPOLYGON",
+    "GEOMETRYCOLLECTION",
+];
+
+/// How a filter literal is validated before it is bound.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FilterClass {
+    Text,
+    Date,
+    Timestamp { zoned: bool },
+    Integer(i64, i64),
+    Float(f64),
+    Numeric,
+    Bool,
+}
+
+/// How a property is selected into an MVT tag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MvtEncoding {
+    Native,
+    Text,
+    IsoText,
+    FiniteFloat,
+}
+
+#[derive(Debug)]
+pub struct PropertyType {
+    pub name: &'static str,
+    pub filter: FilterClass,
+    pub mvt: MvtEncoding,
+    pub tilejson: &'static str,
+}
+
+const fn property(
+    name: &'static str,
+    filter: FilterClass,
+    mvt: MvtEncoding,
+    tilejson: &'static str,
+) -> PropertyType {
+    PropertyType {
+        name,
+        filter,
+        mvt,
+        tilejson,
+    }
+}
+
+/// The only list of publishable PostgreSQL property types (pg_catalog typname).
+pub static PROPERTY_TYPES: [PropertyType; 13] = {
+    use FilterClass as F;
+    use MvtEncoding as M;
+    [
+        property(
+            "int2",
+            F::Integer(i16::MIN as i64, i16::MAX as i64),
+            M::Native,
+            "Number",
+        ),
+        property(
+            "int4",
+            F::Integer(i32::MIN as i64, i32::MAX as i64),
+            M::Native,
+            "Number",
+        ),
+        property("int8", F::Integer(i64::MIN, i64::MAX), M::Native, "Number"),
+        property(
+            "float4",
+            F::Float(f32::MAX as f64),
+            M::FiniteFloat,
+            "Number",
+        ),
+        property("float8", F::Float(f64::MAX), M::FiniteFloat, "Number"),
+        property("numeric", F::Numeric, M::Text, "String"),
+        property("bool", F::Bool, M::Native, "Boolean"),
+        property("text", F::Text, M::Native, "String"),
+        property("varchar", F::Text, M::Native, "String"),
+        property("bpchar", F::Text, M::Native, "String"),
+        property("date", F::Date, M::IsoText, "String"),
+        property(
+            "timestamp",
+            F::Timestamp { zoned: false },
+            M::IsoText,
+            "String",
+        ),
+        property(
+            "timestamptz",
+            F::Timestamp { zoned: true },
+            M::IsoText,
+            "String",
+        ),
+    ]
+};
+
+pub fn property_type(name: &str) -> Option<&'static PropertyType> {
+    PROPERTY_TYPES.iter().find(|t| t.name == name)
+}
 
 pub fn roles(values: &[String]) -> bool {
     values.len() <= MAX_ROLES

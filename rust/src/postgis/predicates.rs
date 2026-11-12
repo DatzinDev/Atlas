@@ -1,20 +1,9 @@
 use super::{connection::error, introspection::quote_identifier};
 use crate::{
-    domain::{Error, Metadata},
+    domain::{Error, FilterClass as Kind, Metadata},
     query::predicate::{Comparison, Predicate, Scalar},
 };
 use sqlx::{Postgres, QueryBuilder};
-
-#[derive(Clone, Copy, PartialEq)]
-enum Kind {
-    Text,
-    Date,
-    Timestamp { zoned: bool },
-    Integer(i64, i64),
-    Float(f64),
-    Numeric,
-    Bool,
-}
 
 pub(crate) fn compile_using<F>(
     builder: &mut QueryBuilder<Postgres>,
@@ -112,20 +101,9 @@ fn column<'m>(field: &str, meta: &'m Metadata) -> Result<(String, Kind, &'m str)
         .iter()
         .find(|a| a.name == field)
         .ok_or(Error::InvalidFilter)?;
-    let kind = match attribute.data_type.as_str() {
-        "text" | "varchar" | "bpchar" => Kind::Text,
-        "date" => Kind::Date,
-        "timestamp" => Kind::Timestamp { zoned: false },
-        "timestamptz" => Kind::Timestamp { zoned: true },
-        "int2" => Kind::Integer(i16::MIN.into(), i16::MAX.into()),
-        "int4" => Kind::Integer(i32::MIN.into(), i32::MAX.into()),
-        "int8" => Kind::Integer(i64::MIN, i64::MAX),
-        "float4" => Kind::Float(f32::MAX.into()),
-        "float8" => Kind::Float(f64::MAX),
-        "numeric" => Kind::Numeric,
-        "bool" => Kind::Bool,
-        _ => return Err(Error::InvalidFilter),
-    };
+    let kind = crate::domain::property_type(&attribute.data_type)
+        .ok_or(Error::InvalidFilter)?
+        .filter;
     Ok((quote_identifier(field), kind, &attribute.data_type))
 }
 
