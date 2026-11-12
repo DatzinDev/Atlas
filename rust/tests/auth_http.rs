@@ -165,8 +165,8 @@ fn headers(values: &[&str]) -> HeaderMap {
     headers
 }
 
-#[test]
-fn header_failures_report_their_reason() {
+#[tokio::test]
+async fn header_failures_report_their_reason() {
     for (values, expected) in [
         (vec!["Basic x"], "unsupported_scheme"),
         (vec!["Bearer x", "Bearer x"], "multiple_headers"),
@@ -174,7 +174,7 @@ fn header_failures_report_their_reason() {
         (vec!["Bearer"], "malformed_header"),
     ] {
         assert_eq!(
-            principal(&headers(&values), None).err(),
+            principal(&headers(&values), None).await.err(),
             Some(expected),
             "{values:?}"
         );

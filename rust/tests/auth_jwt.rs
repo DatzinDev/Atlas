@@ -77,13 +77,13 @@ fn claims() -> Value {
         "nbf":get_current_timestamp()-60, "roles":["reader"]})
 }
 
-fn configured(leeway: Option<i64>) -> Verifier {
+async fn configured(leeway: Option<i64>) -> Verifier {
     let mut text = "[auth]\npublic_key_file='tests/fixtures/jwt-test-public.pem'\nissuer='atlas-test'\naudience='atlas'".to_string();
     if let Some(leeway) = leeway {
         text.push_str(&format!("\nleeway_seconds={leeway}"));
     }
     let config = Config::parse(&text, None, None).unwrap();
-    config.auth.unwrap().verifier().unwrap()
+    config.auth.unwrap().verifier().await.unwrap()
 }
 
 fn token(claims: &Value) -> String {
@@ -96,18 +96,19 @@ fn token(claims: &Value) -> String {
 }
 
 /// The rejection reason; the error type is the stable `&'static str` of the contract.
-fn reason(verifier: &Verifier, token: &str) -> &'static str {
+async fn reason(verifier: &Verifier, token: &str) -> &'static str {
     verifier
         .verify(token)
+        .await
         .err()
         .unwrap_or_else(|| panic!("accepted {token}"))
 }
 
 // R12
-#[test]
-fn valid_identity_and_local_trust_only() {
+#[tokio::test]
+async fn valid_identity_and_local_trust_only() {
     let verifier = Verifier::new(PUBLIC, "atlas-test", "atlas").unwrap();
-    let principal = verifier.verify(&token(&claims())).unwrap();
+    let principal = verifier.verify(&token(&claims())).await.unwrap();
     assert_eq!(principal.sub.as_deref(), Some("alice"));
     assert_eq!(principal.roles, ["reader"]);
     let mut c = claims();
@@ -115,7 +116,7 @@ fn valid_identity_and_local_trust_only() {
     c.as_object_mut().unwrap().remove("roles");
     c.as_object_mut().unwrap().remove("nbf");
     c["external_claim"] = json!(true);
-    assert!(verifier.verify(&token(&c)).unwrap().roles.is_empty());
+    assert!(verifier.verify(&token(&c)).await.unwrap().roles.is_empty());
     let mut header = Header::new(Algorithm::RS256);
     header.jku = Some("https://untrusted.invalid/jwks".into());
     header.kid = Some("ignored-key".into());
@@ -125,7 +126,7 @@ fn valid_identity_and_local_trust_only() {
         &EncodingKey::from_rsa_pem(PRIVATE).unwrap(),
     )
     .unwrap();
-    assert!(verifier.verify(&signed).is_ok());
+    assert!(verifier.verify(&signed).await.is_ok());
     for (pem, issuer, audience) in [
         (b"invalid".as_slice(), "issuer", "aud"),
         (PRIVATE, "issuer", "aud"),
@@ -137,13 +138,17 @@ fn valid_identity_and_local_trust_only() {
 }
 
 // R12
-#[test]
-fn invalid_claims_fail_closed() {
-    let verifier = configured(Some(0));
+#[tokio::test]
+async fn invalid_claims_fail_closed() {
+    let verifier = configured(Some(0)).await;
     for field in ["sub", "iss", "aud", "exp"] {
         let mut c = claims();
         c.as_object_mut().unwrap().remove(field);
-        assert_eq!(reason(&verifier, &token(&c)), "invalid_claims", "{field}");
+        assert_eq!(
+            reason(&verifier, &token(&c)).await,
+            "invalid_claims",
+            "{field}"
+        );
     }
     for (field, value) in [
         ("sub", json!(" ")),
@@ -170,12 +175,12 @@ fn invalid_claims_fail_closed() {
     ] {
         let mut c = claims();
         c[field] = value;
-        reason(&verifier, &token(&c));
+        reason(&verifier, &token(&c)).await;
     }
 }
 
-#[test]
-fn each_rejection_reports_its_reason() {
+#[tokio::test]
+async fn each_rejection_reports_its_reason() {
     let verifier = Verifier::new(PUBLIC, "atlas-test", "atlas").unwrap();
     let now = get_current_timestamp();
     for (field, value, expected) in [
@@ -186,24 +191,27 @@ fn each_rejection_reports_its_reason() {
     ] {
         let mut c = claims();
         c[field] = value;
-        assert_eq!(reason(&verifier, &token(&c)), expected, "{c}");
+        assert_eq!(reason(&verifier, &token(&c)).await, expected, "{c}");
     }
     let mut c = claims();
     c.as_object_mut().unwrap().remove("sub");
-    assert_eq!(reason(&verifier, &token(&c)), "invalid_claims");
+    assert_eq!(reason(&verifier, &token(&c)).await, "invalid_claims");
 
     let signed = token(&claims());
     let index = signed.rfind('.').unwrap() + 1;
     let mut broken = signed.into_bytes();
     broken[index] = if broken[index] == b'A' { b'B' } else { b'A' };
     let broken = String::from_utf8(broken).unwrap();
-    assert_eq!(reason(&verifier, &broken), "invalid_signature");
+    assert_eq!(reason(&verifier, &broken).await, "invalid_signature");
 
-    assert_eq!(reason(&verifier, &"x".repeat(20 * 1024)), "token_too_large");
+    assert_eq!(
+        reason(&verifier, &"x".repeat(20 * 1024)).await,
+        "token_too_large"
+    );
 }
 
-#[test]
-fn signatures_algorithms_and_malformed_input() {
+#[tokio::test]
+async fn signatures_algorithms_and_malformed_input() {
     let verifier = Verifier::new(PUBLIC, "atlas-test", "atlas").unwrap();
     let signed = token(&claims());
     let mut broken = signed.clone().into_bytes();
@@ -223,7 +231,7 @@ fn signatures_algorithms_and_malformed_input() {
         String::from_utf8(broken).unwrap(),
         "x".repeat(16385),
     ] {
-        reason(&verifier, &invalid);
+        reason(&verifier, &invalid).await;
     }
     let mut header = Header::new(Algorithm::RS512);
     header.kid = Some("RS256".into());
@@ -233,7 +241,7 @@ fn signatures_algorithms_and_malformed_input() {
         &EncodingKey::from_rsa_pem(PRIVATE).unwrap(),
     )
     .unwrap();
-    assert_eq!(reason(&verifier, &wrong), "invalid_algorithm");
+    assert_eq!(reason(&verifier, &wrong).await, "invalid_algorithm");
     for field in ["sub", "iss", "aud", "exp", "nbf", "roles"] {
         let c = claims();
         let raw = format!("{{\"{field}\":{},{}", c[field], &c.to_string()[1..]);
@@ -244,12 +252,12 @@ fn signatures_algorithms_and_malformed_input() {
             &EncodingKey::from_rsa_pem(PRIVATE).unwrap(),
         )
         .unwrap();
-        reason(&verifier, &duplicate);
+        reason(&verifier, &duplicate).await;
     }
 }
 
-#[test]
-fn public_key_strength_is_checked_on_load() {
+#[tokio::test]
+async fn public_key_strength_is_checked_on_load() {
     for pem in [PUBLIC, PUBLIC_4096, PKCS1_2048.as_bytes()] {
         assert!(Verifier::new(pem, "atlas-test", "atlas").is_ok());
     }
@@ -276,17 +284,17 @@ fn public_key_strength_is_checked_on_load() {
 }
 
 // R12
-#[test]
-fn roles_claim_maps_a_nested_array_and_rejects_ambiguity() {
+#[tokio::test]
+async fn roles_claim_maps_a_nested_array_and_rejects_ambiguity() {
     let verifier = Verifier::new(PUBLIC, "atlas-test", "atlas")
         .unwrap()
         .with_roles_claim("realm_access.roles")
         .unwrap();
     let mut c = claims();
     c["realm_access"] = json!({"roles": ["editor"]});
-    assert_eq!(verifier.verify(&token(&c)).unwrap().roles, ["editor"]);
+    assert_eq!(verifier.verify(&token(&c)).await.unwrap().roles, ["editor"]);
     c["realm_access"] = json!("editor");
-    assert_eq!(reason(&verifier, &token(&c)), "invalid_claims");
+    assert_eq!(reason(&verifier, &token(&c)).await, "invalid_claims");
     let nested = "\"realm_access\":{\"roles\":[\"x\"],\"roles\":[\"editor\"]}";
     let raw = format!("{{{nested},{}", &claims().to_string()[1..]);
     let raw = serde_json::value::RawValue::from_string(raw).unwrap();
@@ -296,29 +304,29 @@ fn roles_claim_maps_a_nested_array_and_rejects_ambiguity() {
         &EncodingKey::from_rsa_pem(PRIVATE).unwrap(),
     )
     .unwrap();
-    assert_eq!(reason(&verifier, &duplicate), "invalid_claims");
+    assert_eq!(reason(&verifier, &duplicate).await, "invalid_claims");
 }
 
-#[test]
-fn leeway_applies_to_exp_and_nbf() {
+#[tokio::test]
+async fn leeway_applies_to_exp_and_nbf() {
     let now = get_current_timestamp();
     let with = |field: &str, value: u64| {
         let mut c = claims();
         c[field] = json!(value);
         token(&c)
     };
-    let default = configured(None);
-    let strict = configured(Some(0));
-    let wide = configured(Some(300));
-    assert!(default.verify(&with("exp", now - 20)).is_ok());
-    assert!(default.verify(&with("nbf", now + 20)).is_ok());
-    assert!(default.verify(&with("exp", now - 60)).is_err());
-    assert!(default.verify(&with("nbf", now + 60)).is_err());
-    assert!(strict.verify(&with("exp", now - 20)).is_err());
-    assert!(strict.verify(&with("nbf", now + 20)).is_err());
-    assert!(strict.verify(&token(&claims())).is_ok());
-    assert!(wide.verify(&with("exp", now - 280)).is_ok());
-    assert!(wide.verify(&with("nbf", now + 280)).is_ok());
-    assert!(wide.verify(&with("exp", now - 330)).is_err());
-    assert!(wide.verify(&with("nbf", now + 330)).is_err());
+    let default = configured(None).await;
+    let strict = configured(Some(0)).await;
+    let wide = configured(Some(300)).await;
+    assert!(default.verify(&with("exp", now - 20)).await.is_ok());
+    assert!(default.verify(&with("nbf", now + 20)).await.is_ok());
+    assert!(default.verify(&with("exp", now - 60)).await.is_err());
+    assert!(default.verify(&with("nbf", now + 60)).await.is_err());
+    assert!(strict.verify(&with("exp", now - 20)).await.is_err());
+    assert!(strict.verify(&with("nbf", now + 20)).await.is_err());
+    assert!(strict.verify(&token(&claims())).await.is_ok());
+    assert!(wide.verify(&with("exp", now - 280)).await.is_ok());
+    assert!(wide.verify(&with("nbf", now + 280)).await.is_ok());
+    assert!(wide.verify(&with("exp", now - 330)).await.is_err());
+    assert!(wide.verify(&with("nbf", now + 330)).await.is_err());
 }

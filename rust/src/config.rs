@@ -39,7 +39,7 @@ impl Auth {
         Ok(())
     }
 
-    pub fn verifier(&self) -> Result<crate::auth::jwt::Verifier, Error> {
+    pub async fn verifier(&self) -> Result<crate::auth::jwt::Verifier, Error> {
         self.validate()?;
         let pem = std::fs::read(&self.public_key_file).map_err(|_| Error::InvalidRequest)?;
         crate::auth::jwt::Verifier::new(&pem, &self.issuer, &self.audience)?
