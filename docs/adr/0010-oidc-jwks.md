@@ -23,15 +23,20 @@ las raíces webpki ya están en el árbol.
 Contrato del verificador, en `rust/src/auth/oidc.rs`:
 
 - `[auth]` admite exactamente uno de `public_key_file` (modo actual, sin cambios) o
-  `jwks_url`. Con `jwks_url` también son obligatorios `issuer`, `audience` y `roles_claim`.
+  `jwks_url`. `issuer`, `audience` y `leeway_seconds` valen igual en ambos modos.
 - `jwks_url` es HTTPS; HTTP solo se acepta hacia loopback para pruebas. Sin discovery
   (`.well-known/openid-configuration`): el operador da la URL. Nada del token (`iss`, `jku`,
   `x5u`, `kid`) elige URL ni clave de confianza; `kid` solo busca dentro del JWKS ya cargado.
   Un token sin `kid` es 401 y una JWK sin `kid` se ignora.
 - Algoritmo permitido: RS256. Se ignoran las JWK que no sean RSA de firma (`use` `sig` o
-  ausente, `alg` RS256 o ausente). Validación temporal igual que el modo PEM.
-- `roles_claim` es una ruta con puntos (`roles`, `realm_access.roles`); el valor debe ser un
-  arreglo de strings. Ausente equivale a lista vacía; otro tipo es 401.
+  ausente, `alg` RS256 o ausente) y las débiles con la misma regla que el PEM: módulo de
+  2048 a 8192 bits y exponente impar ≥ 3, validados sobre `n` y `e` de la JWK.
+- Validación temporal igual que el modo PEM, incluido `leeway_seconds` (30 s por defecto,
+  0–300).
+- `roles_claim` pasa a `[auth]` para ambos modos, opcional y con `roles` por defecto, así que
+  el modo PEM no cambia de comportamiento. Es una ruta con puntos (`roles`,
+  `realm_access.roles`); el valor debe ser un arreglo de strings. Ausente equivale a lista
+  vacía; otro tipo es 401.
 - Caché en memoria por proceso, solo de claves públicas: carga al arrancar, renovación al
   ver un `kid` desconocido con una sola descarga en curso y como máximo una por minuto, y
   renovación por antigüedad tras 1 h. Estos plazos son fijos, no configurables.
@@ -41,6 +46,14 @@ Contrato del verificador, en `rust/src/auth/oidc.rs`:
   posible es 401. El arranque falla si la primera carga no da al menos una clave válida.
 - La caché no guarda tokens, claims ni respuestas; los datos privados siguen con
   `Cache-Control: no-store`. Logs sin tokens ni cuerpos del JWKS.
+- Motivos estables de 401 que se suman a los del modo PEM: `missing_kid` (token sin `kid`),
+  `unknown_kid` (el JWKS vigente no lo tiene), `jwks_unavailable` (`kid` desconocido y la
+  última descarga falló) y `jwks_expired` (claves con más de 24 h). Cada descarga fallida
+  registra `jwks_refresh_failed` con un motivo (`request`, `status`, `body`, `timeout`,
+  `invalid`, `no_keys`), sin URL ni cuerpo.
+- `/ready` no cambia: refleja la base de datos y no el proveedor. Con las claves vencidas
+  los datos públicos se siguen sirviendo a anónimos; sacar la instancia del balanceador
+  cortaría también ese acceso. El operador vigila `jwks_refresh_failed` y `jwks_expired`.
 
 ## Alternativas
 
@@ -54,8 +67,9 @@ Contrato del verificador, en `rust/src/auth/oidc.rs`:
 
 ## Consecuencias
 
-El modo PEM se conserva para despliegues sin proveedor. `verify` pasa a ser asíncrono en
+El modo PEM se conserva para despliegues sin proveedor; solo gana `roles_claim` con el
+valor por defecto que ya usaba. `verify` pasa a ser asíncrono en
 modo JWKS y el middleware lo espera; el resto del pipeline no cambia. Las pruebas levantan un
 JWKS controlado en loopback para cubrir rotación, `kid` desconocido, caída, timeout, otro
-issuer o algoritmo y expiración. La entrega va en un stack de PRs: este ADR, el verificador y
+issuer o algoritmo, clave débil, leeway y expiración. La entrega va en un stack de PRs: este ADR, el verificador y
 su caché, y la integración con configuración, middleware y documentación del contrato.
