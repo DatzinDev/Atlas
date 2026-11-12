@@ -116,10 +116,12 @@ async fn persistent_publications_compare_and_swap_and_source_survives() {
         catalog.get(&dataset.id).await,
         Err(Error::SchemaChanged)
     ));
-    assert!(matches!(
-        catalog.list(100, 0).await,
-        Err(Error::SchemaChanged)
-    ));
+    // An invalid row no longer blocks the administrative page: it is listed in place.
+    assert!(
+        catalog.list(100, 0).await.unwrap().iter().any(
+            |p| matches!(p, Err(invalid) if invalid.id == dataset.id && invalid.revision == 2)
+        )
+    );
     assert!(
         catalog
             .servable(|_| true, 0, 100)
@@ -128,9 +130,11 @@ async fn persistent_publications_compare_and_swap_and_source_survives() {
             .iter()
             .all(|p| p.config.id != dataset.id)
     );
-    let mut tx = db.begin_catalog().await.unwrap();
-    sqlx::query("UPDATE atlas_catalog.datasets SET config=jsonb_set(config,'{access,view_roles}','[]') WHERE id='persist_test'").execute(&mut *tx).await.unwrap();
-    tx.commit().await.unwrap();
+    // The invalid row is still deletable with its stored revision.
+    assert_eq!(
+        catalog.delete(&dataset.id, 1).await,
+        Err(Error::RevisionMismatch)
+    );
     catalog.delete(&dataset.id, 2).await.unwrap();
     assert!(matches!(
         catalog.get(&dataset.id).await,

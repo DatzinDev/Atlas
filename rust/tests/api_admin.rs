@@ -1,5 +1,5 @@
 use atlas::{
-    api::admin::router,
+    api::{admin::router, datasets},
     auth::{http::authenticate, jwt::Verifier},
     config::Config,
     migrations::migrate,
@@ -55,19 +55,13 @@ async fn expect(
     expect_raw(address, (method, target, &headers, body), status, needle).await
 }
 
-/// Like `expect`, but sends exactly the given headers.
-async fn expect_raw(
-    address: SocketAddr,
-    request: (&str, &str, &str, &str),
-    status: &str,
-    needle: &str,
-) -> String {
+async fn send(address: SocketAddr, request: (&str, &str, &str, &str)) -> String {
     let (method, target, headers, body) = request;
     let raw = format!(
         "{method} {target} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n{headers}\r\n{body}",
         body.len()
     );
-    let response = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         let mut stream = TcpStream::connect(address).unwrap();
         stream.write_all(raw.as_bytes()).unwrap();
         let mut response = String::new();
@@ -75,7 +69,35 @@ async fn expect_raw(
         response
     })
     .await
-    .unwrap();
+    .unwrap()
+}
+
+/// GETs `target` and returns the JSON body after asserting a 200.
+async fn listed(address: SocketAddr, target: &str, headers: &str) -> serde_json::Value {
+    let response = send(address, ("GET", target, headers, "")).await;
+    assert!(response.starts_with("HTTP/1.1 200"), "{target}: {response}");
+    let (_, body) = response.split_once("\r\n\r\n").unwrap();
+    serde_json::from_str(body).unwrap()
+}
+
+fn ids(page: &serde_json::Value, key: &str) -> Vec<String> {
+    page[key]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// Like `expect`, but sends exactly the given headers.
+async fn expect_raw(
+    address: SocketAddr,
+    request: (&str, &str, &str, &str),
+    status: &str,
+    needle: &str,
+) -> String {
+    let (method, target, _, _) = request;
+    let response = send(address, request).await;
     let context = format!("{method} {target}: {response}");
     assert!(
         response.starts_with(&format!("HTTP/1.1 {status}")),
@@ -106,14 +128,19 @@ async fn declared(address: SocketAddr, method: &str, target: &str, headers: &str
     .unwrap()
 }
 
-async fn server() -> (SocketAddr, Database) {
+fn settings(schema: &str) -> Config {
     let mut config = Config::parse(
         "",
         Some(std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required")),
         None,
     )
     .unwrap();
-    config.allowed_schemas = vec!["admin_test".into()];
+    config.allowed_schemas = vec![schema.into()];
+    config
+}
+
+async fn server() -> (SocketAddr, Database) {
+    let config = settings("admin_test");
     migrate(&config).await.unwrap();
     let db = Database::open(&config).await.unwrap();
     let mut tx = db.begin_catalog().await.unwrap();
@@ -126,21 +153,28 @@ async fn server() -> (SocketAddr, Database) {
         sqlx::query(statement).execute(&mut *tx).await.unwrap();
     }
     tx.commit().await.unwrap();
+    (serve(config, db.clone()).await, db)
+}
+
+/// Serves the admin and public routers; a second call over the same database is a restart.
+async fn serve(config: Config, db: Database) -> SocketAddr {
     let verifier = Verifier::new(
         include_bytes!("fixtures/jwt-test-public.pem"),
         "atlas-test",
         "atlas",
     )
     .unwrap();
-    let service = Publications::new(db.clone(), config).unwrap();
-    let app = router(service.clone(), 1024).layer(axum::middleware::from_fn_with_state(
-        Arc::new(Some(verifier)),
-        authenticate,
-    ));
+    let service = Publications::new(db, config).unwrap();
+    let app = router(service.clone(), 1024)
+        .merge(datasets::router(service))
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::new(Some(verifier)),
+            authenticate,
+        ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    (address, db)
+    address
 }
 
 #[tokio::test]
@@ -466,4 +500,107 @@ async fn admin_routes_over_real_http() {
         "no-store",
     )
     .await;
+
+    // Rows that no longer validate are listed in place instead of blocking the page.
+    let edit = |statement: &'static str| {
+        let db = db.clone();
+        async move {
+            let mut tx = db.begin_catalog().await.unwrap();
+            sqlx::query(statement).execute(&mut *tx).await.unwrap();
+            tx.commit().await.unwrap();
+        }
+    };
+    let public = |id: &str| {
+        BODY.replace("api_roads", id)
+            .replace("\"properties\"", r#""access":{"public":true},"properties""#)
+    };
+    for id in ["api_a", "api_c"] {
+        expect(a, ("POST", LIST, &admin, &public(id)), "201", "etag: \"1\"").await;
+    }
+    edit(r#"INSERT INTO atlas_catalog.datasets(id,config,metadata) SELECT 'api_b', jsonb_set(jsonb_set(config,'{id}','"api_b"'),'{source,schema}','"retirado"'), metadata FROM atlas_catalog.datasets WHERE id='api_a'"#).await;
+    let marked = |id: &str, revision: i64| serde_json::json!({"id": id, "revision": revision, "error": "schema_changed"});
+    let page = listed(a, LIST, &admin).await;
+    assert_eq!(ids(&page, "publications"), ["api_a", "api_b", "api_c"]);
+    assert_eq!(page["hasMore"], false);
+    let entries = page["publications"].as_array().unwrap();
+    assert_eq!(entries[1], marked("api_b", 1));
+    for entry in [&entries[0], &entries[2]] {
+        assert!(entry["config"].is_object() && entry["metadata"].is_object());
+        assert!(entry.get("error").is_none(), "{entry}");
+    }
+    // Order and hasMore are unchanged around the invalid row.
+    let middle = listed(a, &paged("limit=1&offset=1"), &admin).await;
+    assert_eq!(
+        middle["publications"],
+        serde_json::json!([marked("api_b", 1)])
+    );
+    assert_eq!(middle["hasMore"], true);
+    // Public routes never expose it.
+    let shown = listed(a, "/api/v1/datasets", &viewer).await;
+    assert_eq!(ids(&shown, "datasets"), ["api_a", "api_c"]);
+    expect(
+        a,
+        ("GET", "/api/v1/datasets/api_a", &viewer, ""),
+        "200",
+        "api_a",
+    )
+    .await;
+    for headers in [&viewer, &admin] {
+        expect(
+            a,
+            ("GET", "/api/v1/datasets/api_b", headers, ""),
+            "404",
+            "dataset_not_found",
+        )
+        .await;
+    }
+    // Its detail is a conflict that still reveals the revision DELETE needs.
+    let broken = "/api/v1/admin/datasets/api_b";
+    expect(a, ("GET", broken, &admin, ""), "409", "schema_changed").await;
+    expect(
+        a,
+        ("PATCH", broken, &revision("\"1\""), title),
+        "409",
+        "schema_changed",
+    )
+    .await;
+    expect(
+        a,
+        ("DELETE", broken, &revision("\"2\""), ""),
+        "412",
+        "revision_mismatch",
+    )
+    .await;
+    expect(a, ("GET", broken, &admin, ""), "409", "etag: \"1\"").await;
+    expect(
+        a,
+        ("DELETE", broken, &revision("\"1\""), ""),
+        "204",
+        "no-store",
+    )
+    .await;
+    expect(a, ("GET", broken, &admin, ""), "404", "dataset_not_found").await;
+    // Restarting without the source schema marks its rows; they are removed over the API.
+    let b = serve(settings("admin_spare"), db.clone()).await;
+    let page = listed(b, LIST, &admin).await;
+    assert_eq!(
+        page["publications"],
+        serde_json::json!([marked("api_a", 1), marked("api_c", 1)])
+    );
+    assert_eq!(page["hasMore"], false);
+    let shown = listed(b, "/api/v1/datasets", &viewer).await;
+    assert_eq!(shown["datasets"], serde_json::json!([]));
+    let target = format!("{LIST}/api_a");
+    expect(b, ("GET", &target, &admin, ""), "409", "etag: \"1\"").await;
+    expect(
+        b,
+        ("DELETE", &target, &revision("\"1\""), ""),
+        "204",
+        "no-store",
+    )
+    .await;
+    assert_eq!(
+        ids(&listed(b, LIST, &admin).await, "publications"),
+        ["api_c"]
+    );
 }

@@ -170,8 +170,14 @@ async fn publications_validate_before_persisting_and_patch_with_revision() {
         .await
         .unwrap();
     let (page, more) = service.list(Some(1000), 0).await.unwrap();
+    assert!(
+        !page
+            .iter()
+            .any(|p| matches!(p, Err(invalid) if invalid.id.starts_with("svc_")))
+    );
     let ids: Vec<_> = page
         .iter()
+        .filter_map(|p| p.as_ref().ok())
         .map(|p| p.config.id.as_str())
         .filter(|id| id.starts_with("svc_"))
         .collect();
