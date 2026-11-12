@@ -36,6 +36,55 @@ fn closed_models_and_private_defaults() {
 }
 
 #[test]
+fn access_roles_are_bounded() {
+    let base = r#"{"id":"roads","title":"Roads","source":{"schema":"public","table":"roads"},"properties":["id"]}"#;
+    let allowed = ["public".to_owned()];
+    let many = |n: usize| (0..n).map(|i| format!("user:{i}")).collect::<Vec<_>>();
+    for list in 0..3 {
+        let check = |roles: Vec<String>| {
+            let mut dataset: Dataset = serde_json::from_str(base).unwrap();
+            let access = &mut dataset.access;
+            *[
+                &mut access.view_roles,
+                &mut access.query_roles,
+                &mut access.download_roles,
+            ][list] = roles;
+            dataset.validate(&allowed)
+        };
+        for valid in [
+            many(1000),
+            vec![
+                "share:roads".into(),
+                "/geo/editors".into(),
+                "a@b.example".into(),
+            ],
+            vec!["x".repeat(128)],
+            vec!["é".repeat(128)],
+            vec!["\u{1F600}".repeat(128)],
+        ] {
+            assert_eq!(check(valid), Ok(()));
+        }
+        for invalid in [
+            many(1001),
+            vec![String::new()],
+            vec![" viewer".into()],
+            vec!["view er".into()],
+            vec!["view\ter".into()],
+            vec!["view\u{A0}er".into()],
+            vec!["\u{FEFF}viewer".into()],
+            vec!["viewer\u{1}".into()],
+            vec!["x".repeat(129)],
+            vec!["é".repeat(129)],
+            vec!["\u{1F600}".repeat(129)],
+            vec!["view\u{85}er".into()],
+            vec!["view\u{2028}er".into()],
+        ] {
+            assert_eq!(check(invalid), Err(Error::InvalidRequest));
+        }
+    }
+}
+
+#[test]
 fn query_validation_preserves_numeric_filter() {
     for json in [
         r#"{"limit":0}"#,

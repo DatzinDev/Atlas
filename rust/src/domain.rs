@@ -57,6 +57,19 @@ pub fn identifier(value: &str) -> bool {
     !value.is_empty() && value.len() <= 63 && !value.contains('\0')
 }
 
+pub const MAX_ROLES: usize = 1000;
+pub const MAX_ROLE_LENGTH: usize = 128;
+
+pub fn roles(values: &[String]) -> bool {
+    values.len() <= MAX_ROLES
+        && values.iter().all(|r| {
+            (1..=MAX_ROLE_LENGTH).contains(&r.chars().count())
+                && !r
+                    .chars()
+                    .any(|c| c.is_whitespace() || c.is_control() || c == '\u{FEFF}')
+        })
+}
+
 pub fn names(values: &[String]) -> bool {
     let unique: std::collections::HashSet<_> = values.iter().collect();
     !values.is_empty() && unique.len() == values.len() && values.iter().all(|v| identifier(v))
@@ -118,8 +131,7 @@ impl Dataset {
                 &self.access.download_roles,
             ]
             .into_iter()
-            .flatten()
-            .any(|r| r.trim().is_empty())
+            .any(|list| !roles(list))
         {
             return Err(Error::InvalidRequest);
         }

@@ -25,6 +25,9 @@ de vista única/no nula verificada. Source solo referencia la BD configurada.
 ETag es la revision entre comillas en detalle administrativo/POST/PATCH. If-Match es obligatorio
 para PATCH/DELETE; ausente o malformado es 400, revisión distinta 412. DELETE devuelve 204.
 No usar ETag de datos: la revisión del catálogo no identifica cambios externos en PostGIS.
+POST con un id existente es siempre 409 publication_conflict, aunque la configuración sea
+idéntica; un reintento hace GET y compara. DELETE y luego POST con el mismo id crea una
+publicación nueva con revision 1: un ETag anterior no la identifica.
 
 ## Autorización y errores
 
@@ -32,6 +35,45 @@ Bearer JWT RS256 emitido externamente, sub/iss/aud/exp obligatorios y roles arra
 Sin token: Principal anónimo. Si hay token, siempre verificarlo antes de aplicar acceso público.
 Solo atlas-admin usa /admin; no equivale a autorización de query/download.
 Catálogo filtra por view; detalle/items/tiles exigen view+query; export view+download.
+view_roles, query_roles y download_roles admiten hasta 1.000 roles cada una; cada rol tiene
+de 1 a 128 caracteres sin espacios (incluido U+FEFF) ni caracteres de control. Fuera de eso
+es 400 invalid_request al publicar o con PATCH. Si se quita el rol de la publicación, el token
+que aún lo traiga ya no autoriza desde la siguiente petición, porque no hay caché de catálogo;
+un stream ya autorizado sigue hasta terminar. Si el emisor deja de otorgar el rol, el token
+emitido lo conserva hasta exp; esa ventana la fija el emisor.
+
+Una publicación guardada con roles fuera de esa regla, o con una lista que no es un arreglo de
+strings, deja de leerse: su detalle administrativo responde 409 schema_changed, igual que cada
+página del listado administrativo que la incluya; PATCH también (lee antes de escribir) y DELETE
+se queda sin ETag. En las rutas públicas no hay 409: la publicación desaparece del catálogo y su
+detalle es 404. Antes de desplegar, detectarlas con un SELECT de solo lectura, que solo requiere
+SELECT sobre atlas_catalog.datasets (no el rol DDL):
+
+```sql
+SELECT id, revision FROM atlas_catalog.datasets
+WHERE EXISTS (
+  SELECT FROM unnest(ARRAY['view_roles','query_roles','download_roles']) AS k,
+    LATERAL (SELECT config->'access'->k AS v) AS l
+  WHERE CASE
+    WHEN v IS NULL THEN false
+    WHEN jsonb_typeof(v) <> 'array' THEN true
+    WHEN jsonb_array_length(v) > 1000 THEN true
+    ELSE EXISTS (
+      SELECT FROM jsonb_array_elements(v) AS e
+      WHERE CASE
+        WHEN jsonb_typeof(e) <> 'string' THEN true
+        ELSE char_length(e #>> '{}') NOT BETWEEN 1 AND 128
+          OR e #>> '{}' ~ '[\u0001-\u0020\u007f-\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]'
+      END)
+  END);
+```
+
+y repararlas con SQL, con permiso de escritura sobre la tabla, corrigiendo la lista y subiendo la
+revisión
+(`UPDATE ... SET config = jsonb_set(config, '{access,view_roles}', '[...]'), revision = revision + 1,
+updated_at = now() WHERE id = ... AND revision = ...`), o recrearlas: DELETE con la revision leída
+de la tabla en If-Match y después POST.
+
 Los ejemplos no incluyen tokens reales. Usar cabecera Authorization, nunca query string.
 
 Error uniforme `{code,message,request_id}`; sin SQL, valores filtrados, paths ni credenciales.
