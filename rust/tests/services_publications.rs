@@ -349,4 +349,42 @@ async fn publications_validate_before_persisting_and_patch_with_revision() {
             .unwrap()
             .is_empty()
     );
+
+    // POST and PATCH store the metadata inspected by their own check, never a stale copy.
+    let mut tx = db.begin_catalog().await.unwrap();
+    sqlx::query("ALTER TABLE publication_test.roads ALTER lanes TYPE int4")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let lanes = |p: &atlas::catalog::Publication| p.metadata.attributes[1].data_type.clone();
+    assert_eq!(lanes(&service.get("svc_data").await.unwrap()), "int2");
+    let refreshed = service
+        .update("svc_data", br#"{"title":"Refreshed"}"#, data.revision)
+        .await
+        .unwrap();
+    assert_eq!(lanes(&refreshed), "int4");
+    assert_eq!(lanes(&service.get("svc_data").await.unwrap()), "int4");
+    // A PATCH whose check fails leaves the stored row and its metadata untouched.
+    assert_eq!(
+        service
+            .update(
+                "svc_data",
+                br#"{"properties":["name","missing"]}"#,
+                refreshed.revision
+            )
+            .await
+            .err(),
+        Some(Error::InvalidRequest)
+    );
+    let kept = service.get("svc_data").await.unwrap();
+    assert_eq!(
+        (kept.revision, lanes(&kept)),
+        (refreshed.revision, "int4".into())
+    );
+    let fresh = service
+        .create(ROADS.replace("svc_roads", "svc_fresh").as_bytes())
+        .await
+        .unwrap();
+    assert_eq!(lanes(&fresh), "int4");
 }

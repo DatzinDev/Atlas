@@ -3,7 +3,7 @@ use atlas::{
     config::Config,
     domain::{Dataset, Error},
     migrations::migrate,
-    postgis::connection::Database,
+    postgis::{connection::Database, introspection::inspect},
 };
 
 #[tokio::test]
@@ -53,9 +53,12 @@ async fn persistent_publications_compare_and_swap_and_source_survives() {
     let mut dataset: Dataset = serde_json::from_str(r#"{"id":"persist_test","title":"Persistent","source":{"schema":"catalog_test","table":"source"},"properties":["id"]}"#).unwrap();
     let catalog = Catalog::new(db.clone(), config.clone()).unwrap();
     catalog.ready().await.unwrap();
-    assert_eq!(catalog.create(&dataset).await.unwrap().revision, 1);
+    // The catalog stores the metadata its caller already inspected.
+    let meta = inspect(&db, &config, &dataset).await.unwrap();
+    let created = catalog.create(&dataset, meta.clone()).await.unwrap();
+    assert_eq!(created.revision, 1);
     assert!(matches!(
-        catalog.create(&dataset).await,
+        catalog.create(&dataset, meta.clone()).await,
         Err(Error::PublicationConflict)
     ));
     db.close().await;
@@ -66,14 +69,17 @@ async fn persistent_publications_compare_and_swap_and_source_survives() {
         "Persistent"
     );
     dataset.title = "Updated".into();
-    let (first, second) = tokio::join!(catalog.update(&dataset, 1), catalog.update(&dataset, 1));
+    let (first, second) = tokio::join!(
+        catalog.update(&dataset, meta.clone(), 1),
+        catalog.update(&dataset, meta.clone(), 1)
+    );
     assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
     assert!(
         matches!(first, Err(Error::RevisionMismatch))
             || matches!(second, Err(Error::RevisionMismatch))
     );
     assert!(matches!(
-        catalog.update(&dataset, 1).await,
+        catalog.update(&dataset, meta.clone(), 1).await,
         Err(Error::RevisionMismatch)
     ));
     assert_eq!(
@@ -142,8 +148,17 @@ async fn persistent_publications_compare_and_swap_and_source_survives() {
         Err(Error::DatasetNotFound)
     ));
     dataset.id = "invalid_test".into();
+    // Given metadata is persisted as is, never re-inspected: a sentinel extent survives.
+    let mut stale = meta.clone();
+    stale.extent = Some([1.0, 2.0, 3.0, 4.0]);
+    catalog.create(&dataset, stale.clone()).await.unwrap();
+    let stored = catalog.get(&dataset.id).await.unwrap();
+    assert_eq!(stored.metadata.extent, stale.extent);
+    catalog.delete(&dataset.id, 1).await.unwrap();
     dataset.properties = vec!["missing".into()];
-    assert!(catalog.create(&dataset).await.is_err());
+    assert!(inspect(&db, &config, &dataset).await.is_err());
+    // Metadata that does not describe the dataset is refused and nothing is persisted.
+    assert!(catalog.create(&dataset, meta).await.is_err());
     assert!(matches!(
         catalog.get(&dataset.id).await,
         Err(Error::DatasetNotFound)
@@ -151,7 +166,8 @@ async fn persistent_publications_compare_and_swap_and_source_survives() {
 
     // The fixed filter's unpublished columns are stored apart and checked on read.
     let hidden: Dataset = serde_json::from_str(r#"{"id":"hidden_test","title":"Hidden","source":{"schema":"catalog_test","table":"source"},"properties":["id"],"filter":{"op":"eq","field":"tenant_id","value":7}}"#).unwrap();
-    catalog.create(&hidden).await.unwrap();
+    let hidden_meta = inspect(&db, &config, &hidden).await.unwrap();
+    catalog.create(&hidden, hidden_meta).await.unwrap();
     let read = catalog.get("hidden_test").await.unwrap().metadata;
     assert_eq!(read.attributes[0].name, "id");
     assert_eq!(read.filter_attributes.len(), 1);
