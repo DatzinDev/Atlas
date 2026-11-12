@@ -70,7 +70,7 @@ async fn server() -> (SocketAddr, Publications) {
     for statement in [
         "DROP SCHEMA IF EXISTS discovery_test CASCADE",
         "CREATE SCHEMA discovery_test",
-        "CREATE TABLE discovery_test.places(id integer PRIMARY KEY, name text, geom geometry(Point,4326))",
+        "CREATE TABLE discovery_test.places(id integer PRIMARY KEY, name text, geom geometry(Point,4326)) WITH (autovacuum_enabled=false)",
         "DELETE FROM atlas_catalog.datasets WHERE config->'source'->>'schema' <> 'discovery_test' OR id LIKE 'disc\\_%'",
     ] {
         sqlx::query(statement).execute(&mut *tx).await.unwrap();
@@ -171,4 +171,65 @@ async fn discovery_lists_only_authorized_datasets_over_real_http() {
     let public = br#"{"access":{"public":true}}"#;
     service.update("disc_b_view", public, 1).await.unwrap();
     assert_eq!(page(a, "", "").await.0, "disc_a_public,disc_b_view");
+
+    // An empty typed table publishes `"extent": null`, present in detail and list.
+    let (_, detail) = get(a, &format!("{LIST}/disc_a_public"), "").await;
+    assert_eq!(
+        detail.get("extent"),
+        Some(&serde_json::Value::Null),
+        "{detail}"
+    );
+    let (_, list) = get(a, LIST, "").await;
+    assert_eq!(list["datasets"][0]["extent"], serde_json::Value::Null);
+    let tilejson = service
+        .tilejson(&service.get("disc_a_public").await.unwrap(), None, None)
+        .await
+        .unwrap();
+
+    // New rows do not move the published snapshot; a PATCH refreshes it.
+    let mut config = Config::parse(
+        "",
+        Some(std::env::var("ATLAS_TEST_DATABASE_URL").unwrap()),
+        None,
+    )
+    .unwrap();
+    config.allowed_schemas = vec!["discovery_test".into()];
+    let db = Database::open(&config).await.unwrap();
+    let mut tx = db.begin_catalog().await.unwrap();
+    sqlx::query("INSERT INTO discovery_test.places VALUES (1,'a',ST_SetSRID(ST_Point(-100,19),4326)), (2,'b',ST_SetSRID(ST_Point(-98,21),4326))")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    db.close().await;
+    let (_, detail) = get(a, &format!("{LIST}/disc_a_public"), "").await;
+    assert_eq!(detail["extent"], serde_json::Value::Null);
+    service
+        .update("disc_a_public", br#"{"title":"Located"}"#, 1)
+        .await
+        .unwrap();
+    let expected = serde_json::json!([-100.0, 19.0, -98.0, 21.0]);
+    let (status, detail) = get(a, &format!("{LIST}/disc_a_public"), "").await;
+    assert_eq!(status, "200");
+    assert_eq!(detail["extent"], expected, "{detail}");
+    let (_, list) = get(a, LIST, "").await;
+    let located = list["datasets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["id"] == "disc_a_public")
+        .unwrap();
+    assert_eq!(located["extent"], expected);
+    let (_, detail) = get(a, &format!("{LIST}/disc_c_query"), &viewer).await;
+    assert_eq!(detail["extent"], serde_json::Value::Null);
+
+    // TileJSON is unchanged: no extent or bounds leak into it.
+    let refreshed = service
+        .tilejson(&service.get("disc_a_public").await.unwrap(), None, None)
+        .await
+        .unwrap();
+    let mut tilejson = tilejson;
+    tilejson["name"] = serde_json::json!("Located");
+    assert_eq!(tilejson, refreshed);
+    assert!(refreshed.get("bounds").is_none() && refreshed.get("extent").is_none());
 }

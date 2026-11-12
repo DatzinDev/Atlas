@@ -21,7 +21,7 @@ async fn persistent_publications_compare_and_swap_and_source_survives() {
     for statement in [
         "DROP SCHEMA IF EXISTS catalog_test CASCADE",
         "CREATE SCHEMA catalog_test",
-        "CREATE TABLE catalog_test.source(id bigint PRIMARY KEY, geom geometry(Point,4326), tenant_id int4)",
+        "CREATE TABLE catalog_test.source(id bigint PRIMARY KEY, geom geometry(Point,4326), tenant_id int4) WITH (autovacuum_enabled=false)",
         "INSERT INTO catalog_test.source VALUES (1,ST_SetSRID(ST_Point(0,0),4326))",
         "DELETE FROM atlas_catalog.datasets WHERE id IN ('persist_test','invalid_test','hidden_test')",
         "DO $$ BEGIN IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname='atlas_service_block') THEN CREATE ROLE atlas_service_block NOLOGIN; END IF; END $$",
@@ -169,6 +169,42 @@ async fn persistent_publications_compare_and_swap_and_source_survives() {
     .await;
     let legacy = catalog.get("hidden_test").await.unwrap().metadata;
     assert!(legacy.filter_attributes.is_empty());
+    // The extent is stored with the publication: one point, no statistics, so exact.
+    assert_eq!(legacy.extent, Some([0.0, 0.0, 0.0, 0.0]));
+    // Rows written before the extent existed decode as `null`.
+    edit(format!(
+        "UPDATE atlas_catalog.datasets SET metadata = metadata - 'extent' {row}"
+    ))
+    .await;
+    assert_eq!(
+        catalog.get("hidden_test").await.unwrap().metadata.extent,
+        None
+    );
+    for (stored, expected) in [
+        ("null", None),
+        ("[-180,-90,180,90]", Some([-180.0, -90.0, 180.0, 90.0])),
+        ("[5,5,5,5]", Some([5.0, 5.0, 5.0, 5.0])),
+    ] {
+        edit(format!("UPDATE atlas_catalog.datasets SET metadata = jsonb_set(metadata, '{{extent}}', '{stored}') {row}")).await;
+        let read = catalog.get("hidden_test").await;
+        assert_eq!(read.unwrap().metadata.extent, expected, "{stored}");
+    }
+    // Non-finite, unordered, out-of-range or malformed extents mean the schema changed.
+    for stored in [
+        "[1,0,0,0]",
+        "[-180.5,0,0,0]",
+        "[0,0,1e400,1]",
+        "[0,0,0]",
+        r#"["0",0,0,0]"#,
+    ] {
+        edit(format!("UPDATE atlas_catalog.datasets SET metadata = jsonb_set(metadata, '{{extent}}', '{stored}') {row}")).await;
+        let result = catalog.get("hidden_test").await;
+        assert!(matches!(result, Err(Error::SchemaChanged)), "{stored}");
+    }
+    edit(format!(
+        "UPDATE atlas_catalog.datasets SET metadata = jsonb_set(metadata, '{{extent}}', 'null') {row}"
+    ))
+    .await;
     // A published property, the geometry, an invalid name and an unsupported type.
     for (name, data_type) in [
         ("id", "int8"),

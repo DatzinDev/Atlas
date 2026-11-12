@@ -475,3 +475,135 @@ async fn publication_requires_select_on_every_published_column() {
     .await;
     admin.close().await;
 }
+
+/// Asserts a 4326 extent inside the world range that covers `inner` with at most `slack` degrees.
+fn assert_covers(extent: Option<[f64; 4]>, inner: [f64; 4], slack: f64, label: &str) {
+    let [minx, miny, maxx, maxy] = extent.unwrap_or_else(|| panic!("{label}: no extent"));
+    assert!(
+        (-180.0..=180.0).contains(&minx)
+            && (-180.0..=180.0).contains(&maxx)
+            && (-90.0..=90.0).contains(&miny)
+            && (-90.0..=90.0).contains(&maxy)
+            && minx <= maxx
+            && miny <= maxy,
+        "{label}: {extent:?}"
+    );
+    assert!(
+        minx <= inner[0] && miny <= inner[1] && maxx >= inner[2] && maxy >= inner[3],
+        "{label}: {extent:?} does not cover {inner:?}"
+    );
+    assert!(
+        minx >= inner[0] - slack
+            && miny >= inner[1] - slack
+            && maxx <= inner[2] + slack
+            && maxy <= inner[3] + slack,
+        "{label}: {extent:?} is too loose around {inner:?}"
+    );
+}
+
+#[tokio::test]
+async fn extent_is_a_clamped_epsg4326_snapshot_of_the_published_geometry() {
+    let mut config = Config::parse(
+        "[limits]\nquery_seconds=1",
+        Some(std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required")),
+        None,
+    )
+    .unwrap();
+    let schema = "introspection_extent";
+    config.allowed_schemas = vec![schema.into()];
+    let db = Database::open(&config).await.unwrap();
+    // Autovacuum is disabled so "no statistics" stays true until an explicit ANALYZE.
+    let off = "WITH (autovacuum_enabled=false)";
+    let points = "(1, ST_SetSRID(ST_Point(-100,19),4326)), (2, ST_SetSRID(ST_Point(-98,21),4326))";
+    let utm = |x: i32, y: i32| format!("ST_Transform(ST_SetSRID(ST_Point({x},{y}),4326),32614)");
+    let statements = [
+        "DROP SCHEMA IF EXISTS introspection_extent CASCADE".to_string(),
+        "CREATE SCHEMA introspection_extent".into(),
+        format!("CREATE TABLE introspection_extent.analyzed(id integer PRIMARY KEY, geom geometry(Point,4326)) {off}"),
+        format!("INSERT INTO introspection_extent.analyzed VALUES {points}"),
+        "ANALYZE introspection_extent.analyzed".into(),
+        "CREATE VIEW introspection_extent.over_analyzed AS SELECT id, geom FROM introspection_extent.analyzed".into(),
+        format!("CREATE TABLE introspection_extent.no_stats(id integer PRIMARY KEY, geom geometry(Point,4326)) {off}"),
+        format!("INSERT INTO introspection_extent.no_stats VALUES {points}"),
+        format!("CREATE MATERIALIZED VIEW introspection_extent.materialized {off} AS SELECT id, geom FROM introspection_extent.no_stats"),
+        format!("CREATE TABLE introspection_extent.utm(id integer PRIMARY KEY, geom geometry(Point,32614)) {off}"),
+        format!("INSERT INTO introspection_extent.utm VALUES (1, {}), (2, {})", utm(-100, 19), utm(-98, 21)),
+        format!("CREATE TABLE introspection_extent.out_of_range(id integer PRIMARY KEY, geom geometry(Point,4326)) {off}"),
+        "INSERT INTO introspection_extent.out_of_range VALUES (1, ST_SetSRID(ST_Point(-190,-95),4326)), (2, ST_SetSRID(ST_Point(190,95),4326))".into(),
+        // ST_EstimatedExtent takes names as text: quoting them as identifiers would break here.
+        format!("CREATE TABLE introspection_extent.\"odd\"\"name\"(id integer PRIMARY KEY, \"ge\"\"om\" geometry(Point,4326)) {off}"),
+        format!("INSERT INTO introspection_extent.\"odd\"\"name\" VALUES {points}"),
+        "ANALYZE introspection_extent.\"odd\"\"name\"".into(),
+        format!("CREATE TABLE introspection_extent.empty(id integer PRIMARY KEY, geom geometry(Point,4326)) {off}"),
+        "CREATE VIEW introspection_extent.empty_view AS SELECT id, geom FROM introspection_extent.empty".into(),
+        // STABLE lets the planner skip the unused geometry, so only the extent waits on it.
+        "CREATE FUNCTION introspection_extent.slow_point() RETURNS geometry LANGUAGE sql STABLE AS $$ SELECT pg_sleep(5); SELECT ST_SetSRID(ST_Point(0,0),4326) $$".into(),
+        "CREATE VIEW introspection_extent.slow AS SELECT 1 AS id, introspection_extent.slow_point()::geometry(Point,4326) AS geom".into(),
+    ];
+    execute_all(
+        &db,
+        &statements.iter().map(String::as_str).collect::<Vec<_>>(),
+    )
+    .await;
+    let (shared_db, shared_config) = (&db, &config);
+    let extent = move |table: &'static str, id: Option<&'static str>| async move {
+        inspect(
+            shared_db,
+            shared_config,
+            &dataset_for(schema, table, id, &["id"]),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{table}: {e:?}"))
+        .extent
+    };
+    let expected = [-100.0, 19.0, -98.0, 21.0];
+
+    // Estimated extent after ANALYZE: may be looser, but must cover the data.
+    assert_covers(extent("analyzed", None).await, expected, 1.0, "analyzed");
+    assert_covers(
+        inspect(
+            &db,
+            &config,
+            &dataset_for(schema, "odd\"name", None, &["id"]),
+        )
+        .await
+        .unwrap()
+        .extent,
+        expected,
+        1.0,
+        "odd\"name",
+    );
+    // Views use ST_Extent; tables without statistics fall back to it: both exact.
+    assert_eq!(extent("over_analyzed", Some("id")).await, Some(expected));
+    assert_eq!(extent("no_stats", None).await, Some(expected));
+    assert_eq!(extent("materialized", Some("id")).await, Some(expected));
+    // Projected data is transformed to 4326 by PostGIS.
+    let eps = 1e-6;
+    assert_covers(
+        extent("utm", None).await,
+        [-100.0 + eps, 19.0 + eps, -98.0 - eps, 21.0 - eps],
+        0.5,
+        "utm",
+    );
+    assert_eq!(
+        extent("out_of_range", None).await,
+        Some([-180.0, -90.0, 180.0, 90.0])
+    );
+    // No rows means no extent, not an error.
+    assert_eq!(extent("empty", None).await, None);
+    assert_eq!(extent("empty_view", Some("id")).await, None);
+    // The extent runs under statement_timeout.
+    assert_eq!(
+        inspect(
+            &db,
+            &config,
+            &dataset_for(schema, "slow", Some("id"), &["id"])
+        )
+        .await
+        .unwrap_err(),
+        Error::QueryTimeout
+    );
+
+    execute_all(&db, &["DROP SCHEMA introspection_extent CASCADE"]).await;
+    db.close().await;
+}
