@@ -1,4 +1,4 @@
-use super::{decode, identifier, no_query};
+use super::{decode, identifier, json_body, no_query};
 use crate::{
     domain::{Direction, Error, Principal, Query, SortField},
     services::publications::Publications,
@@ -7,7 +7,7 @@ use axum::{
     Extension, Router,
     body::Bytes,
     extract::{DefaultBodyLimit, Path, RawQuery, State, rejection::BytesRejection},
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -38,10 +38,12 @@ async fn query(
     Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
     RawQuery(raw): RawQuery,
+    headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, Error> {
     let id = identifier(&id)?;
     no_query(raw.as_deref())?;
+    json_body(&headers, false)?;
     let body = body.map_err(|rejection| match rejection.status() {
         StatusCode::PAYLOAD_TOO_LARGE => Error::QueryTooLarge,
         _ => Error::InvalidRequest,

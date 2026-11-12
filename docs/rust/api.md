@@ -18,6 +18,11 @@ invalid_filter. En datasets EPSG:3857 bbox y polígonos se recortan a latitud
 nativo no es 4326 se densifican cada 1° antes de transformar; una selección transformada
 inválida, vacía o sin área es 400, nunca un 200 casi vacío. Parámetros desconocidos o repetidos
 y claves JSON duplicadas son 400, no se ignoran. No aceptar ATLAS_FILTER, CQL o SQL del cliente.
+POST query y POST admin exigen una sola cabecera Content-Type `application/json` (sin distinguir
+mayúsculas; solo admite el parámetro `charset=utf-8`); PATCH admite además
+`application/merge-patch+json`. Otro valor, ausente o repetido es 400 invalid_request; en admin
+se evalúa tras la autorización (403 primero) y en query antes del cuerpo y del catálogo.
+`null` en cualquier campo de Query o del POST de publicación es 400 invalid_request.
 POST query no crea recursos ni persiste consultas. GET/POST producen la misma selección.
 Una página items/query cuyo cuerpo superaría `limits.page_bytes` es 413 query_too_large,
 sin truncar ni cambiar numberReturned/hasMore.

@@ -7,7 +7,7 @@ pub mod tiles;
 use crate::domain::Error;
 use axum::{
     extract::Request,
-    http::{HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -147,6 +147,24 @@ pub(crate) fn no_query(query: Option<&str>) -> Result<(), Error> {
         Some(query) if !query.is_empty() => Err(Error::InvalidRequest),
         _ => Ok(()),
     }
+}
+
+// Exactly one Content-Type: application/json (or merge-patch+json when allowed), charset utf-8 only.
+pub(crate) fn json_body(headers: &HeaderMap, merge_patch: bool) -> Result<(), Error> {
+    let mut values = headers.get_all(header::CONTENT_TYPE).iter();
+    let (Some(value), None) = (values.next(), values.next()) else {
+        return Err(Error::InvalidRequest);
+    };
+    let value = value
+        .to_str()
+        .map_err(|_| Error::InvalidRequest)?
+        .to_ascii_lowercase();
+    let mut parts = value.split(';').map(str::trim);
+    let media = parts.next().unwrap_or_default();
+    let valid = (media == "application/json"
+        || (merge_patch && media == "application/merge-patch+json"))
+        && parts.all(|p| p == "charset=utf-8");
+    valid.then_some(()).ok_or(Error::InvalidRequest)
 }
 
 pub(crate) fn paging(query: Option<&str>) -> Result<(Option<u32>, u32), Error> {

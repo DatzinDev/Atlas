@@ -74,7 +74,7 @@ paths:
       operationId: updatePublication
       security: [{bearer: []}]
       parameters: [{$ref: '#/components/parameters/IfMatch'}]
-      requestBody: {required: true, content: {application/merge-patch+json: {schema: {$ref: '#/components/schemas/PublicationPatch'}}}}
+      requestBody: {required: true, content: {application/merge-patch+json: {schema: {$ref: '#/components/schemas/PublicationPatch'}}, application/json: {schema: {$ref: '#/components/schemas/PublicationPatch'}}}}
       responses: {'200': {description: Publicación revalidada, headers: {ETag: {schema: {type: string}}}, content: {application/json: {schema: {$ref: '#/components/schemas/Publication'}}}}, default: {$ref: '#/components/responses/Error'}}
     delete:
       operationId: deletePublication
@@ -229,10 +229,10 @@ components:
       properties:
         id: {type: string, pattern: '^[a-z0-9_-]+$', maxLength: 128}
         title: {type: string, minLength: 1}
-        description: {type: string, nullable: true}
+        description: {type: string}
         source: {$ref: '#/components/schemas/Source'}
         properties: {type: array, minItems: 1, uniqueItems: true, items: {type: string}}
-        filter: {allOf: [{$ref: '#/components/schemas/Predicate'}], nullable: true}
+        filter: {$ref: '#/components/schemas/Predicate'}
         access: {$ref: '#/components/schemas/Access'}
         enabled: {type: boolean, default: true}
     Publication:

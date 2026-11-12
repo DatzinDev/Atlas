@@ -1,4 +1,4 @@
-use super::{identifier, no_query, paging, respond};
+use super::{identifier, json_body, no_query, paging, respond};
 use crate::{
     auth::policy::admin,
     domain::{Error, Principal},
@@ -47,10 +47,12 @@ async fn create(
     State(state): State<Admin>,
     Extension(principal): Extension<Principal>,
     RawQuery(query): RawQuery,
+    headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, Error> {
     admin(&principal)?;
     no_query(query.as_deref())?;
+    json_body(&headers, false)?;
     let body = body.map_err(rejected)?;
     let created = state.service.create(&body).await?;
     Ok(respond(
@@ -86,6 +88,7 @@ async fn update(
 ) -> Result<Response, Error> {
     admin(&principal)?;
     no_query(query.as_deref())?;
+    json_body(&headers, true)?;
     let body = body.map_err(rejected)?;
     let revision = if_match(&headers)?;
     let updated = state

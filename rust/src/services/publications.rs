@@ -243,6 +243,14 @@ impl Publications {
     }
 
     pub async fn create(&self, body: &[u8]) -> Result<Publication, Error> {
+        let fields: Map<String, Value> = decode(body)?;
+        // The fixed filter keeps its own grammar; only a null filter itself is rejected here.
+        if fields.iter().any(|(key, value)| match key.as_str() {
+            "filter" => value.is_null(),
+            _ => has_null(value),
+        }) {
+            return Err(Error::InvalidRequest);
+        }
         let dataset: Dataset = decode(body)?;
         self.check(&dataset).await?;
         self.catalog.create(&dataset).await
@@ -315,6 +323,15 @@ pub fn summary(publication: &Publication) -> Value {
 fn decode<T: DeserializeOwned>(body: &[u8]) -> Result<T, Error> {
     serde_json::from_slice::<Unique>(body).map_err(|_| Error::InvalidRequest)?;
     serde_json::from_slice(body).map_err(|_| Error::InvalidRequest)
+}
+
+fn has_null(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::Array(items) => items.iter().any(has_null),
+        Value::Object(fields) => fields.values().any(has_null),
+        _ => false,
+    }
 }
 
 fn merge(target: &mut Value, patch: Value) {

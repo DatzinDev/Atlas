@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::value::RawValue;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -151,13 +151,31 @@ impl Dataset {
 #[derive(Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Query {
+    #[serde(default, deserialize_with = "filter")]
     pub filter: Option<Box<RawValue>>,
+    #[serde(default, deserialize_with = "present")]
     pub bbox: Option<[f64; 4]>,
+    #[serde(default, deserialize_with = "present")]
     pub properties: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "present")]
     pub sort: Option<Vec<SortField>>,
+    #[serde(default, deserialize_with = "present")]
     pub limit: Option<u32>,
     #[serde(default)]
     pub offset: u32,
+}
+
+// An absent field is None; an explicit JSON null is rejected.
+fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error> {
+    T::deserialize(d).map(Some)
+}
+
+fn filter<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Box<RawValue>>, D::Error> {
+    let raw = Box::<RawValue>::deserialize(d)?;
+    if raw.get().trim() == "null" {
+        return Err(de::Error::custom("null filter"));
+    }
+    Ok(Some(raw))
 }
 
 #[derive(Clone, Deserialize)]
