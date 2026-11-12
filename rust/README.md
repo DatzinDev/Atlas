@@ -313,9 +313,11 @@ capa con el id del dataset como `source-layer` y solo los campos publicados (`St
 `postgis::features::page` recibe la `Selection` preparada en la misma transacción de lectura y
 arma cada Feature en PostgreSQL con `json_build_object`: `id` siempre presente, geometría con
 `ST_AsGeoJSON` en EPSG:4326 y solo las propiedades publicadas pedidas (por defecto todas). Las
-filas llegan como texto JSON y se conservan como `RawValue`, así que bigint y numeric no pasan por
-f64. El orden pedido se valida contra atributos publicados (o el id) y el id desempata. Pide
-`limit + 1` para `more`, sin COUNT; offset no es un snapshot entre peticiones.
+filas llegan como texto JSON en streaming y se copian tal cual a un único `String` con la
+FeatureCollection completa, así que bigint y numeric no pasan por f64. El orden pedido se valida contra atributos publicados (o el id) y el id desempata. Pide
+`limit + 1` para `more`, sin COUNT; offset no es un snapshot entre peticiones. Si el cuerpo
+completo superaría `limits.page_bytes` (32 MiB por defecto, 1 B–1 GiB) deja de leer filas y
+devuelve 413 `query_too_large` sin bytes parciales; nunca recorta la página.
 
 ## Consultas GeoJSON (#224)
 

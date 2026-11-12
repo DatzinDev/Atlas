@@ -1,7 +1,6 @@
 use super::{decode, identifier, no_query};
 use crate::{
     domain::{Direction, Error, Principal, Query, SortField},
-    postgis::features::Page,
     services::publications::Publications,
 };
 use axum::{
@@ -63,18 +62,12 @@ async fn select(
         crate::query::predicate::parse(filter.get(), limits)?;
     }
     let publication = service.detail(id, principal).await?;
-    let Page { features, more } = service.features(&publication, selection).await?;
-    let list: Vec<&str> = features.iter().map(|f| f.get()).collect();
-    let body = format!(
-        r#"{{"type":"FeatureCollection","features":[{}],"numberReturned":{},"hasMore":{more}}}"#,
-        list.join(","),
-        list.len()
-    );
+    let page = service.features(&publication, selection).await?;
     let headers = [
         (header::CONTENT_TYPE, "application/geo+json"),
         (header::CACHE_CONTROL, "no-store"),
     ];
-    Ok((headers, body).into_response())
+    Ok((headers, page.body).into_response())
 }
 
 pub(crate) fn parse(raw: Option<&str>) -> Result<Query, Error> {

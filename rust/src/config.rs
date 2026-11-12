@@ -70,6 +70,7 @@ pub struct Limits {
     pub export_bytes: u32,
     pub query_body_bytes: u32,
     pub admin_body_bytes: u32,
+    pub page_bytes: u32,
 }
 
 impl Default for Limits {
@@ -102,6 +103,7 @@ impl Default for Limits {
             export_bytes: 256 * 1024 * 1024,
             query_body_bytes: 128 * 1024,
             admin_body_bytes: 256 * 1024,
+            page_bytes: 32 * 1024 * 1024,
         }
     }
 }
@@ -131,6 +133,7 @@ impl Limits {
             self.export_bytes,
             self.query_body_bytes,
             self.admin_body_bytes,
+            self.page_bytes,
         ];
         if positive.contains(&0)
             || self.default_limit > self.max_limit
@@ -144,6 +147,7 @@ impl Limits {
             || self.query_seconds > i32::MAX as u32 / 1000
             || self.filter_depth > 128
             || !(1..=3600).contains(&self.shutdown_seconds)
+            || self.page_bytes > 1 << 30
         {
             return Err(Error::InvalidRequest);
         }

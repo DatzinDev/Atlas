@@ -79,6 +79,7 @@ No se aceptan claves, issuer o rutas de JWKS suministradas por el token.
 | MVT candidatos / bytes / zoom máximo | 100.000 / 8 MiB / 22 |
 | MVT extent / buffer | 4.096 / 64 |
 | Exportación features / bytes emitidos | 1.000.000 / 256 MiB |
+| Página items/query: bytes del cuerpo (`page_bytes`, 1 B–1 GiB) | 32 MiB |
 | Body Query / administración | 128 KiB / 256 KiB |
 
 Todas las consultas de datos usan transacciones de solo lectura; la cuenta de servicio solo

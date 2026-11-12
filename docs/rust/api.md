@@ -19,6 +19,8 @@ nativo no es 4326 se densifican cada 1° antes de transformar; una selección tr
 inválida, vacía o sin área es 400, nunca un 200 casi vacío. Parámetros desconocidos o repetidos
 y claves JSON duplicadas son 400, no se ignoran. No aceptar ATLAS_FILTER, CQL o SQL del cliente.
 POST query no crea recursos ni persiste consultas. GET/POST producen la misma selección.
+Una página items/query cuyo cuerpo superaría `limits.page_bytes` es 413 query_too_large,
+sin truncar ni cambiar numberReturned/hasMore.
 Todas las respuestas de datos dinámicas tienen Cache-Control: no-store; no hay caché MVT inicial.
 GeoJSON EPSG:4326; tiles XYZ/MVT EPSG:3857. TileJSON 3.0 incluye URL, source-layer,
 minzoom/maxzoom, bounds y attribution disponibles. Las URLs respetan el prefijo del despliegue

@@ -369,10 +369,11 @@ async fn native_mvt_against_real_postgis() {
         .await
         .unwrap();
     drop(tx);
-    let feature = geojson
-        .features
+    let geojson: serde_json::Value = serde_json::from_str(&geojson.body).unwrap();
+    let feature = geojson["features"]
+        .as_array()
+        .unwrap()
         .iter()
-        .map(|raw| serde_json::from_str::<serde_json::Value>(raw.get()).unwrap())
         .find(|f| f["id"] == 2)
         .unwrap();
     let layers = decode(&encoded);
