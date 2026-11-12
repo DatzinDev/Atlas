@@ -43,22 +43,23 @@ async fn export(
     // Task-locals do not cross `spawn`: capture the id of the request that opened the download.
     let request_id = super::request_id();
     tokio::spawn(async move {
-        loop {
-            let chunk = export.next().await;
-            let finished = !matches!(chunk, Ok(Some(_)));
-            let mut failed = chunk.as_ref().err().copied();
-            let sent = tokio::time::timeout_at(deadline, sender.send(chunk)).await;
-            if sent.is_err() {
-                failed = failed.or(Some(Error::QueryTimeout));
+        let mut failed = None;
+        // The single `stream_seconds` check: covers slow SQL and clients that stop reading.
+        let pump = async {
+            loop {
+                let chunk = export.next().await;
+                let finished = !matches!(chunk, Ok(Some(_)));
+                failed = chunk.as_ref().err().copied();
+                if sender.send(chunk).await.is_err() || finished {
+                    break;
+                }
             }
-            // One line per failed stream: the chunk error wins over a later send timeout.
-            if let Some(code) = failed {
-                super::log(serde_json::json!({"event": "export_failed",
-                    "request_id": request_id, "code": code}));
-            }
-            if finished || !matches!(sent, Ok(Ok(()))) {
-                break;
-            }
+        };
+        let expired = tokio::time::timeout_at(deadline, pump).await.is_err();
+        // One line per failed stream: the chunk error wins over a later timeout.
+        if let Some(code) = failed.or(expired.then_some(Error::QueryTimeout)) {
+            super::log(serde_json::json!({"event": "export_failed",
+                "request_id": request_id, "code": code}));
         }
     });
     let stream = futures_util::stream::try_unfold(receiver, |mut receiver| async move {

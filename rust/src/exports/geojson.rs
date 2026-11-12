@@ -35,17 +35,8 @@ pub struct Export {
 }
 
 impl Export {
+    /// Only `Publications::export` opens exports, holding its admission `permits`.
     /// `user` is `query.filter` already parsed by the caller.
-    pub async fn open(
-        db: &Database,
-        publication: &Publication,
-        query: &Query,
-        user: Option<Predicate>,
-        limits: &Limits,
-    ) -> Result<Self, Error> {
-        Self::admitted(db, publication, query, user, limits, Vec::new()).await
-    }
-
     pub(crate) async fn admitted(
         db: &Database,
         publication: &Publication,
@@ -157,17 +148,8 @@ impl Export {
         self.deadline
     }
 
+    /// No deadline here: `api/export.rs` wraps its whole pump loop in one `timeout_at(deadline())`.
     pub async fn next(&mut self) -> Result<Option<String>, Error> {
-        let deadline = self.deadline;
-        timeout_at(deadline, self.chunk())
-            .await
-            .map_err(|_| Error::QueryTimeout)?
-    }
-
-    async fn chunk(&mut self) -> Result<Option<String>, Error> {
-        if Instant::now() >= self.deadline {
-            return Err(Error::QueryTimeout);
-        }
         let chunk = if !self.started {
             self.started = true;
             HEADER.to_owned()

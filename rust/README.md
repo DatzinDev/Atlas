@@ -348,8 +348,9 @@ parámetros desconocidos o repetidos son 400.
 `exports::geojson::Export` cuenta hasta `export_features + 1` y declara un cursor en
 la misma transacción READ ONLY REPEATABLE READ. Reutiliza selección y codificación
 GeoJSON, lee lotes de 128 y no aplica `default_limit`. Cada chunk consume el presupuesto
-de bytes y el deadline total; un error tardío impide completar la colección. Finalizar o
+de bytes; un error tardío impide completar la colección. Finalizar o
 abandonar el cursor revierte la transacción antes de devolver su conexión al pool.
+Solo `Publications::export` lo abre (`admitted` es `pub(crate)`), siempre con sus cupos.
 La ruta y los permisos de descarga se incorporan en #303.
 
 ## Descarga GeoJSON (#227)
@@ -373,7 +374,9 @@ de POST/PATCH y `/ready`, que esperan como máximo `acquire_seconds` y luego res
 El deadline de respuesta no cancela el worker SQL: conserva el cupo hasta rollback real;
 el timeout PostgreSQL acota el drenaje. Features y tiles comparten un único helper de
 admisión, transacción y rollback. Export transfiere el cupo al cursor y un productor
-con canal acotado aplica `stream_seconds` incluso si el cliente deja de leer. El pool se
+con canal acotado aplica `stream_seconds` en un único punto del stream, que cubre SQL lento y
+clientes que dejan de leer: corta sin `]}`, registra `export_failed` y libera el cupo. La
+apertura (conteo y `DECLARE`) consume a propósito el mismo deadline antes de responder. El pool se
 cierra después del drenaje del servidor, acotado por `shutdown_seconds`; no se interpreta el rechazo como throughput.
 Cada export retiene además un cupo de `export_operations` (2 por defecto, entre 1 y
 `data_operations`) durante todo el stream y la cancelación; sin cupo libre responde 503
