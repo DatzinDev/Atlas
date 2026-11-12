@@ -172,14 +172,32 @@ pub async fn inspect(
         return Err(Error::InvalidRequest);
     }
     if ["v", "m"].contains(&kind.as_str()) {
+        // A plain valid unique index on id_column of a materialized view proves uniqueness.
+        let unique = kind == "m"
+            && sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_index i JOIN pg_catalog.pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=i.indkey[0] WHERE i.indrelid=$1::bigint::oid AND i.indisunique AND i.indisvalid AND i.indpred IS NULL AND i.indexprs IS NULL AND i.indnkeyatts=1 AND a.attname::text=$2)")
+                .bind(oid)
+                .bind(&id_column)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(error)?;
         let id = quote_identifier(&id_column);
-        let mut query = sqlx::QueryBuilder::new("SELECT count(*)=count(");
-        query
-            .push(&id)
-            .push(") AND count(*)=count(DISTINCT ")
-            .push(&id)
-            .push(") FROM ")
-            .push(&relation_name);
+        let mut query = sqlx::QueryBuilder::new("SELECT ");
+        if unique {
+            query
+                .push("NOT EXISTS(SELECT 1 FROM ")
+                .push(&relation_name)
+                .push(" WHERE ")
+                .push(&id)
+                .push(" IS NULL)");
+        } else {
+            query
+                .push("count(*)=count(")
+                .push(&id)
+                .push(") AND count(*)=count(DISTINCT ")
+                .push(&id)
+                .push(") FROM ")
+                .push(&relation_name);
+        }
         if !query
             .build_query_scalar::<bool>()
             .fetch_one(&mut *tx)
