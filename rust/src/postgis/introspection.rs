@@ -209,6 +209,46 @@ pub async fn inspect(
                 .ok_or(Error::InvalidRequest)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    // Densify the box before ST_Transform so curved edges of projected CRSs stay inside.
+    let mut query = sqlx::QueryBuilder::new(
+        "SELECT least(greatest(ST_XMin(e),-180),180)::float8 AS minx, least(greatest(ST_YMin(e),-90),90)::float8 AS miny, least(greatest(ST_XMax(e),-180),180)::float8 AS maxx, least(greatest(ST_YMax(e),-90),90)::float8 AS maxy FROM (SELECT ST_Transform(ST_Segmentize(ST_SetSRID(b::geometry, ",
+    );
+    query.push_bind(srid).push(
+        "), greatest(ST_XMax(b)-ST_XMin(b), ST_YMax(b)-ST_YMin(b), 1e-9)/32), 4326) AS e FROM (SELECT coalesce(",
+    );
+    // ponytail: ST_EstimatedExtent rejects relation names containing '"', so ST_Extent is used for those.
+    if kind == "v" || source.schema.contains('"') || source.table.contains('"') {
+        query.push("NULL::box2d");
+    } else {
+        query
+            .push("ST_EstimatedExtent(")
+            .push_bind(&source.schema)
+            .push(", ")
+            .push_bind(&source.table)
+            .push(", ")
+            .push_bind(geometry_column.clone())
+            .push(")");
+    }
+    query
+        .push(", (SELECT ST_Extent(")
+        .push(quote_identifier(&geometry_column))
+        .push(") FROM ")
+        .push(&relation_name)
+        .push(")) AS b) s WHERE b IS NOT NULL) t");
+    let extent: Option<[f64; 4]> = match query
+        .build()
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(error)?
+    {
+        Some(row) => Some([
+            row.try_get("minx").map_err(error)?,
+            row.try_get("miny").map_err(error)?,
+            row.try_get("maxx").map_err(error)?,
+            row.try_get("maxy").map_err(error)?,
+        ]),
+        None => None,
+    };
     tx.rollback().await.map_err(error)?;
     Ok(Metadata {
         geometry_column,
@@ -218,6 +258,7 @@ pub async fn inspect(
         id_type: id.data_type.clone(),
         attributes: published,
         filter_attributes,
+        extent,
     })
 }
 

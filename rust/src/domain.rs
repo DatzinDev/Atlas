@@ -221,6 +221,9 @@ pub struct Metadata {
     /// Unpublished columns referenced only by the fixed filter; never exposed.
     #[serde(default)]
     pub filter_attributes: Vec<Attribute>,
+    /// EPSG:4326 `[minx, miny, maxx, maxy]` captured at publish time; `None` without rows.
+    #[serde(default)]
+    pub extent: Option<[f64; 4]>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

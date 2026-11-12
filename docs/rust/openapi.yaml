@@ -191,8 +191,8 @@ components:
     Dataset:
       type: object
       additionalProperties: false
-      required: [id, title, geometry_type, srid, attributes, formats]
-      properties: {id: {type: string}, title: {type: string}, description: {type: string, nullable: true}, geometry_type: {type: string}, srid: {type: integer}, extent: {$ref: '#/components/schemas/Bbox'}, attributes: {type: array, items: {$ref: '#/components/schemas/Attribute'}}, formats: {type: array, items: {type: string, enum: [geojson, mvt]}}}
+      required: [id, title, geometry_type, srid, extent, attributes, formats]
+      properties: {id: {type: string}, title: {type: string}, description: {type: string, nullable: true}, geometry_type: {type: string}, srid: {type: integer}, extent: {allOf: [{$ref: '#/components/schemas/Bbox'}], nullable: true, description: 'Extensión EPSG:4326 calculada al publicar (POST/PATCH; se refresca con PATCH); null sin filas.'}, attributes: {type: array, items: {$ref: '#/components/schemas/Attribute'}}, formats: {type: array, items: {type: string, enum: [geojson, mvt]}}}
     Attribute:
       type: object
       required: [name, type, nullable]

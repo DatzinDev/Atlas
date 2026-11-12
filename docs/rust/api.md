@@ -73,6 +73,13 @@ Tipo y SRID salen del typmod; si falta alguno, se infiere recorriendo todas las 
 spatial_ref_sys, solo 2D (Z/M es 400) y un único tipo o exactamente X+MultiX (POINT, LINESTRING,
 POLYGON), publicado como MultiX; otra mezcla es 400. Una relación sin filas no nulas y sin typmod
 es 400: declarar la columna como geometry(Tipo,SRID).
+El detalle y el listado público (y metadata admin) incluyen extent [minx,miny,maxx,maxy] en
+EPSG:4326 o null si no hay filas. Se calcula en POST/PATCH en la misma inspección: tablas y vistas
+materializadas usan ST_EstimatedExtent (si no hay estadísticas, ST_Extent); vistas, ST_Extent.
+Se reproyecta con ST_Transform en PostGIS y se acota a [-180,-90,180,90], sujeto a
+statement_timeout (exceso 504 query_timeout). Es una foto del momento de publicar: no sigue los
+cambios de datos y se refresca con PATCH. Un extent guardado no finito, invertido o fuera de rango
+es 409 schema_changed; filas antiguas sin el campo devuelven null.
 ETag es la revision entre comillas en detalle administrativo/POST/PATCH. If-Match es obligatorio
 para PATCH/DELETE; ausente o malformado es 400, revisión distinta 412. DELETE devuelve 204.
 No usar ETag de datos: la revisión del catálogo no identifica cambios externos en PostGIS.

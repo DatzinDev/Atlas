@@ -380,7 +380,7 @@ pub fn summary(publication: &Publication) -> Value {
         .map(|a| json!({"name": a.name, "type": a.data_type, "nullable": a.nullable}))
         .collect();
     json!({"id": config.id, "title": config.title, "description": config.description,
-        "geometry_type": meta.geometry_type, "srid": meta.srid, "attributes": attributes,
+        "geometry_type": meta.geometry_type, "srid": meta.srid, "extent": meta.extent, "attributes": attributes,
         "formats": ["geojson", "mvt"]})
 }
 

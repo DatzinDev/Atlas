@@ -98,6 +98,13 @@ impl Catalog {
                     ]
                     .contains(&a.data_type.as_str())
             })
+            || metadata.extent.is_some_and(|[minx, miny, maxx, maxy]| {
+                // RangeInclusive::contains also rejects NaN and infinities.
+                minx > maxx
+                    || miny > maxy
+                    || ![minx, maxx].iter().all(|x| (-180.0..=180.0).contains(x))
+                    || ![miny, maxy].iter().all(|y| (-90.0..=90.0).contains(y))
+            })
         {
             return Err(Error::SchemaChanged);
         }
