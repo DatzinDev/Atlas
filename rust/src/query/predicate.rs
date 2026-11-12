@@ -206,7 +206,8 @@ fn scalar(raw: &RawValue) -> Result<Scalar, Error> {
     match serde_json::from_str(raw.get()).map_err(invalid)? {
         Value::String(s) => Ok(Scalar::Text(s)),
         Value::Bool(b) => Ok(Scalar::Bool(b)),
-        Value::Number(n) if n.as_f64().is_some_and(f64::is_finite) => Ok(Scalar::Number(n)),
+        // Range checks belong to the column type: numeric accepts any JSON number exactly.
+        Value::Number(n) => Ok(Scalar::Number(n)),
         _ => Err(Error::InvalidFilter),
     }
 }

@@ -23,6 +23,11 @@ mayúsculas; solo admite el parámetro `charset=utf-8`); PATCH admite además
 `application/merge-patch+json`. Otro valor, ausente o repetido es 400 invalid_request; en admin
 se evalúa tras la autorización (403 primero) y en query antes del cuerpo y del catálogo.
 `null` en cualquier campo de Query o del POST de publicación es 400 invalid_request.
+Valores de filtro por tipo de columna: numeric acepta cualquier número JSON y compara exacto;
+float4/float8 e int2/int4/int8 fuera de rango son 400 invalid_filter. date solo `YYYY-MM-DD`
+(fecha inexistente es 400); timestamp ISO sin `Z` ni offset; timestamptz con o sin offset,
+sin offset en UTC (sesión fijada por SQLx). Un string solo lo acota `filter_bytes` (65.536 por
+defecto); no hay límite propio por string.
 POST query no crea recursos ni persiste consultas. GET/POST producen la misma selección.
 Una página items/query cuyo cuerpo superaría `limits.page_bytes` es 413 query_too_large,
 sin truncar ni cambiar numberReturned/hasMore.

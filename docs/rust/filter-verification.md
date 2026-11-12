@@ -3,7 +3,9 @@
 ## Contrato implementado
 
 Parser cerrado con límites antes de descender, escalares sin coerción, precisión
-bigint/numeric preservada, Polygon/MultiPolygon XY y claves duplicadas rechazadas.
+bigint/numeric preservada (numeric admite `1e400` o `1e-400` sin pasar por f64),
+Polygon/MultiPolygon XY y claves duplicadas rechazadas. date exige `YYYY-MM-DD`,
+timestamp rechaza `Z`/offset y timestamptz sin offset se lee en UTC.
 SQLx enlaza valores; identificadores provienen de atributos publicados e introspección.
 La entrada común `selection::prepare` combina siempre filtro fijo AND usuario AND bbox.
 Su resultado se añade al WHERE mediante `Selection::append`, en la misma transacción
@@ -36,7 +38,8 @@ No se necesitan dependencias nuevas ni modificar el runtime Python.
   anidamiento ofensivo; tipos, operadores, claves duplicadas/desconocidas y geometrías.
 - Regresión: un objeto con `$serde_json::private::Number` nunca se acepta como escalar,
   ni en comparación ni en IN, aunque Serde tenga arbitrary_precision activado.
-- Atributos: bigint máximo y numeric de 23 dígitos, NULL/NOT, fechas, booleanos,
+- Atributos: bigint máximo, numeric de 31 dígitos y `1e400`, float/int fuera de rango,
+  date/timestamp/timestamptz estrictos, string de 60 KiB, NULL/NOT, booleanos,
   LIKE/ILIKE, nombres con comillas, columnas ocultas y entradas ofensivas rechazadas.
 - Espacio: topología inválida, huecos, borde incluido en intersects y excluido en within,
   reproyección 4326 a 3857, CRS desconocido y selección fuera del dominio geográfico.
