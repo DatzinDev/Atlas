@@ -167,6 +167,10 @@ Content-Type: application/json y Cache-Control: no-store. Export sin cupo de exp
 cualquier Authorization se ignora. Toda respuesta, incluidas MVT y exportaciones en streaming,
 lleva X-Content-Type-Options: nosniff. No convertir resultados truncados en 200. Errores tardíos de stream
 interrumpen el cuerpo y se registran; no pueden sustituir headers ya enviados.
+Export lee cada lote del cursor fila a fila y descuenta `export_bytes` por feature: al superarlo
+deja de leer, corta el cuerpo con query_too_large sin `]}` ni chunk final y libera el cupo; en
+memoria nunca hay más que el presupuesto restante más una fila. Una feature cuya codificación
+supera `export_bytes` no sale de PostGIS (el cursor la devuelve NULL) y produce el mismo corte.
 
 CORS (`tower_http::cors::CorsLayer`) está deshabilitado por defecto: sin `[cors]` no hay
 cabeceras `access-control-*` y `OPTIONS` devuelve 405 method_not_allowed. Con

@@ -7,6 +7,7 @@ use crate::{
         selection::prepare,
     },
 };
+use futures_util::TryStreamExt;
 use sqlx::{Execute, Postgres, QueryBuilder, Transaction};
 use std::{collections::VecDeque, time::Duration};
 use tokio::{
@@ -14,6 +15,7 @@ use tokio::{
     time::{Instant, timeout_at},
 };
 
+const HEADER: &str = r#"{"type":"FeatureCollection","features":["#;
 const END: &str = "]}";
 
 pub struct Export {
@@ -25,6 +27,7 @@ pub struct Export {
     first: bool,
     started: bool,
     done: bool,
+    overflow: bool,
 }
 
 impl Export {
@@ -59,6 +62,7 @@ impl Export {
             first: true,
             started: false,
             done: false,
+            overflow: false,
         };
         let deadline = export.deadline;
         timeout_at(deadline, async {
@@ -96,12 +100,20 @@ impl Export {
             // QueryBuilder keeps bind values separate even inside DECLARE.
             let mut cursor =
                 QueryBuilder::<Postgres>::new("DECLARE atlas_export NO SCROLL CURSOR FOR ");
-            let sql = select.sql().as_str().to_owned();
+            // Oversized features come back as NULL so they never cross the wire.
+            let inner = select.sql().as_str().to_owned();
+            select.push_bind(i64::from(limits.export_bytes));
+            let bound = select.sql().as_str()[inner.len()..].to_owned();
             let arguments = select
                 .build()
                 .take_arguments()
                 .map_err(|_| Error::InternalError)?;
-            cursor.push(sql);
+            cursor
+                .push("SELECT CASE WHEN octet_length(f) <= ")
+                .push(bound)
+                .push(" THEN f END FROM (")
+                .push(inner)
+                .push(") atlas_rows(f)");
             sqlx::query_with(cursor.sql(), arguments.ok_or(Error::InternalError)?)
                 .execute(&mut **tx)
                 .await
@@ -116,12 +128,29 @@ impl Export {
 
     async fn fetch(&mut self) -> Result<(), Error> {
         let tx = self.tx.as_mut().ok_or(Error::InternalError)?;
-        let rows: Vec<String> = sqlx::query_scalar("FETCH FORWARD 128 FROM atlas_export")
-            .fetch_all(&mut **tx)
-            .await
-            .map_err(query_error)?;
-        self.done = rows.len() < 128;
-        self.pending.extend(rows);
+        // Called with `pending` empty: buffer rows one by one only while they fit the budget.
+        let mut budget = self
+            .remaining
+            .saturating_sub(if self.started { 0 } else { HEADER.len() });
+        let mut rows =
+            sqlx::query_scalar::<_, Option<String>>("FETCH FORWARD 128 FROM atlas_export")
+                .fetch(&mut **tx);
+        let mut fetched = 0;
+        while let Some(row) = rows.try_next().await.map_err(query_error)? {
+            fetched += 1;
+            let cost = usize::from(!(self.first && self.pending.is_empty()));
+            match row.filter(|row| row.len() + cost <= budget) {
+                Some(row) => {
+                    budget -= row.len() + cost;
+                    self.pending.push_back(row);
+                }
+                None => {
+                    self.overflow = true;
+                    break;
+                }
+            }
+        }
+        self.done = self.overflow || fetched < 128;
         Ok(())
     }
 
@@ -142,7 +171,7 @@ impl Export {
         }
         let chunk = if !self.started {
             self.started = true;
-            r#"{"type":"FeatureCollection","features":["#.to_owned()
+            HEADER.to_owned()
         } else {
             if self.pending.is_empty() && !self.done {
                 self.fetch().await?;
@@ -151,6 +180,8 @@ impl Export {
                 let comma = if self.first { "" } else { "," };
                 self.first = false;
                 format!("{comma}{row}")
+            } else if self.overflow {
+                return Err(Error::QueryTooLarge);
             } else if let Some(tx) = self.tx.take() {
                 let permits = std::mem::take(&mut self.permits);
                 tokio::spawn(async move {
