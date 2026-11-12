@@ -1,4 +1,4 @@
-use atlas::{auth::jwt::Verifier, domain::Error};
+use atlas::auth::jwt::Verifier;
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode, get_current_timestamp};
 use serde_json::{Value, json};
 
@@ -17,6 +17,14 @@ fn token(claims: &Value) -> String {
         &EncodingKey::from_rsa_pem(PRIVATE).unwrap(),
     )
     .unwrap()
+}
+
+/// The rejection reason; the error type is the stable `&'static str` of the contract.
+fn reason(verifier: &Verifier, token: &str) -> &'static str {
+    verifier
+        .verify(token)
+        .err()
+        .unwrap_or_else(|| panic!("accepted {token}"))
 }
 
 #[test]
@@ -57,10 +65,7 @@ fn invalid_claims_fail_closed() {
     for field in ["sub", "iss", "aud", "exp"] {
         let mut c = claims();
         c.as_object_mut().unwrap().remove(field);
-        assert!(matches!(
-            verifier.verify(&token(&c)),
-            Err(Error::InvalidToken)
-        ));
+        assert_eq!(reason(&verifier, &token(&c)), "invalid_claims", "{field}");
     }
     for (field, value) in [
         ("sub", json!(" ")),
@@ -87,11 +92,36 @@ fn invalid_claims_fail_closed() {
     ] {
         let mut c = claims();
         c[field] = value;
-        assert!(
-            matches!(verifier.verify(&token(&c)), Err(Error::InvalidToken)),
-            "{field}: {c}"
-        );
+        reason(&verifier, &token(&c));
     }
+}
+
+#[test]
+fn each_rejection_reports_its_reason() {
+    let verifier = Verifier::new(PUBLIC, "atlas-test", "atlas").unwrap();
+    let now = get_current_timestamp();
+    for (field, value, expected) in [
+        ("exp", json!(now - 3600), "expired"),
+        ("nbf", json!(now + 3600), "not_yet_valid"),
+        ("iss", json!("other-issuer"), "invalid_issuer"),
+        ("aud", json!("other"), "invalid_audience"),
+    ] {
+        let mut c = claims();
+        c[field] = value;
+        assert_eq!(reason(&verifier, &token(&c)), expected, "{c}");
+    }
+    let mut c = claims();
+    c.as_object_mut().unwrap().remove("sub");
+    assert_eq!(reason(&verifier, &token(&c)), "invalid_claims");
+
+    let signed = token(&claims());
+    let index = signed.rfind('.').unwrap() + 1;
+    let mut broken = signed.into_bytes();
+    broken[index] = if broken[index] == b'A' { b'B' } else { b'A' };
+    let broken = String::from_utf8(broken).unwrap();
+    assert_eq!(reason(&verifier, &broken), "invalid_signature");
+
+    assert_eq!(reason(&verifier, &"x".repeat(20 * 1024)), "token_too_large");
 }
 
 #[test]
@@ -115,10 +145,7 @@ fn signatures_algorithms_and_malformed_input() {
         String::from_utf8(broken).unwrap(),
         "x".repeat(16385),
     ] {
-        assert!(matches!(
-            verifier.verify(&invalid),
-            Err(Error::InvalidToken)
-        ));
+        reason(&verifier, &invalid);
     }
     let mut header = Header::new(Algorithm::RS512);
     header.kid = Some("RS256".into());
@@ -128,7 +155,7 @@ fn signatures_algorithms_and_malformed_input() {
         &EncodingKey::from_rsa_pem(PRIVATE).unwrap(),
     )
     .unwrap();
-    assert!(verifier.verify(&wrong).is_err());
+    assert_eq!(reason(&verifier, &wrong), "invalid_algorithm");
     for field in ["sub", "iss", "aud", "exp", "nbf", "roles"] {
         let c = claims();
         let raw = format!("{{\"{field}\":{},{}", c[field], &c.to_string()[1..]);
@@ -139,6 +166,6 @@ fn signatures_algorithms_and_malformed_input() {
             &EncodingKey::from_rsa_pem(PRIVATE).unwrap(),
         )
         .unwrap();
-        assert!(verifier.verify(&duplicate).is_err(), "duplicate {field}");
+        reason(&verifier, &duplicate);
     }
 }

@@ -1,8 +1,16 @@
 use atlas::{
-    auth::{http::authenticate, jwt::Verifier},
+    auth::{
+        http::{authenticate, principal},
+        jwt::Verifier,
+    },
     domain::Principal,
 };
-use axum::{Extension, Router, middleware, routing::get};
+use axum::{
+    Extension, Router,
+    http::{HeaderMap, HeaderValue},
+    middleware,
+    routing::get,
+};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode, get_current_timestamp};
 use std::{
     io::{Read, Write},
@@ -145,6 +153,30 @@ fn real_http_authenticates_before_handlers() {
         }
         stop.send(()).unwrap();
         server.join().unwrap();
+    }
+}
+
+fn headers(values: &[&str]) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    for value in values {
+        headers.append("authorization", HeaderValue::from_str(value).unwrap());
+    }
+    headers
+}
+
+#[test]
+fn header_failures_report_their_reason() {
+    for (values, expected) in [
+        (vec!["Basic x"], "unsupported_scheme"),
+        (vec!["Bearer x", "Bearer x"], "multiple_headers"),
+        (vec!["Bearer x"], "auth_disabled"),
+        (vec!["Bearer"], "malformed_header"),
+    ] {
+        assert_eq!(
+            principal(&headers(&values), None).err(),
+            Some(expected),
+            "{values:?}"
+        );
     }
 }
 

@@ -11,6 +11,9 @@ use std::{
 
 struct Server(Child);
 
+/// Every stderr line `start` has read so far, from all servers; lets a test wait for a late event.
+static LOGGED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 impl Drop for Server {
     fn drop(&mut self) {
         let _ = self.0.kill();
@@ -181,14 +184,19 @@ fn call(address: &str, request: &str) -> (u16, String, Vec<u8>) {
     (status, head, response[split + 4..].to_vec())
 }
 
-fn bearer(roles: &[&str]) -> String {
-    let claims = serde_json::json!({"sub": "alice", "iss": "atlas-test", "aud": "atlas",
-        "exp": jsonwebtoken::get_current_timestamp() + 3600, "roles": roles});
+fn signed(claims: &serde_json::Value) -> String {
     let key =
         jsonwebtoken::EncodingKey::from_rsa_pem(include_bytes!("fixtures/jwt-test-private.pem"))
             .unwrap();
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
-    let token = jsonwebtoken::encode(&header, &claims, &key).unwrap();
+    jsonwebtoken::encode(&header, claims, &key).unwrap()
+}
+
+fn bearer(roles: &[&str]) -> String {
+    let token = signed(
+        &serde_json::json!({"sub": "alice", "iss": "atlas-test", "aud": "atlas",
+        "exp": jsonwebtoken::get_current_timestamp() + 3600, "roles": roles}),
+    );
     format!("Authorization: Bearer {token}\r\n")
 }
 
@@ -245,7 +253,10 @@ fn start(command: &mut Command) -> (Server, String, thread::JoinHandle<Vec<Strin
     let logs = thread::spawn(move || {
         let mut lines = BufReader::new(stderr).lines();
         sender.send(lines.next().unwrap().unwrap()).unwrap();
-        lines.map(Result::unwrap).collect()
+        lines
+            .map(Result::unwrap)
+            .inspect(|line| LOGGED.lock().unwrap().push(line.clone()))
+            .collect()
     });
     let listening = receiver.recv_timeout(Duration::from_secs(10)).unwrap();
     let address = listening
@@ -389,6 +400,19 @@ fn http_fallback_public_probes_and_nosniff() {
         assert!(response.1.contains("www-authenticate: bearer"));
     }
 
+    // The 401 hides the reason; only the `auth_failed` log carries it.
+    let expired = signed(
+        &serde_json::json!({"sub": "alice", "iss": "atlas-test", "aud": "atlas",
+        "exp": jsonwebtoken::get_current_timestamp() - 3600, "roles": ["atlas-admin"]}),
+    );
+    let response = request(
+        "GET",
+        "/api/v1/datasets",
+        &format!("Authorization: Bearer {expired}\r\n"),
+    );
+    assert_error(&response, 401, "invalid_token");
+    let expired_id = request_id(&response.1).to_owned();
+
     let big = " ".repeat(256 * 1024 + 1);
     let oversized = send(&format!(
         "POST /api/v1/admin/datasets HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{admin}\r\n{big}",
@@ -442,8 +466,80 @@ fn http_fallback_public_probes_and_nosniff() {
             .then(|| serde_json::from_slice::<serde_json::Value>(body).unwrap()["code"].clone());
         assert_eq!(event.get("code"), code.as_ref(), "{event}");
     }
+
+    let failure = stderr
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|event| {
+            event["event"] == "auth_failed" && event["request_id"] == expired_id.as_str()
+        });
+    assert_eq!(failure.unwrap()["reason"], "expired", "{stderr}");
+    // Successful exports log no failure.
+    assert!(!stderr.contains("export_failed"), "{stderr}");
+
     let token = admin.trim_end().rsplit(' ').next().unwrap();
-    for secret in ["secreto", "secret-token", token] {
+    for secret in ["secreto", "secret-token", token, expired.as_str()] {
         assert!(!stderr.contains(secret), "{secret} leaked");
     }
+
+    // An export cut by `export_bytes` logs one `export_failed` bound to its request id.
+    std::fs::write(
+        &path,
+        "allowed_schemas = ['main_http']\n[limits]\nexport_bytes = 50\n",
+    )
+    .unwrap();
+    let (server, address, logs) = start(
+        Command::new(env!("CARGO_BIN_EXE_atlas"))
+            .args(["serve", "--config"])
+            .arg(&path)
+            .env("ATLAS_DATABASE_URL", &dsn),
+    );
+    let _ = std::fs::remove_file(&path);
+    let mut stream = TcpStream::connect(&address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    write!(
+        stream,
+        "GET /api/v1/datasets/main_http/export HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    // The stream is aborted mid-body, so a reset after the partial body is expected.
+    let mut response = Vec::new();
+    let _ = stream.read_to_end(&mut response);
+    drop(stream);
+    // The export task logs after handing over the failing chunk: wait for it before killing.
+    let id = request_id(&String::from_utf8_lossy(&response).to_lowercase()).to_owned();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline
+        && !LOGGED
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line.contains("export_failed") && line.contains(&id))
+    {
+        thread::sleep(Duration::from_millis(20));
+    }
+    drop(server);
+    let stderr = logs.join().unwrap().join("\n");
+    let events: Vec<serde_json::Value> = stderr
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .collect();
+    let exported: Vec<_> = events
+        .iter()
+        .filter(|e| e["event"] == "request" && e["path"] == "/api/v1/datasets/main_http/export")
+        .collect();
+    assert_eq!(exported.len(), 1, "{stderr}");
+    assert_eq!(exported[0]["status"], 200, "{stderr}");
+    let failed: Vec<_> = events
+        .iter()
+        .filter(|e| e["event"] == "export_failed")
+        .collect();
+    assert_eq!(failed.len(), 1, "one export_failed per stream: {stderr}");
+    assert_eq!(failed[0]["code"], "query_too_large", "{stderr}");
+    assert_eq!(
+        failed[0]["request_id"], exported[0]["request_id"],
+        "{stderr}"
+    );
 }
