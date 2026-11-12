@@ -144,6 +144,9 @@ async fn serve(config: Config) -> Result<(), &'static str> {
         Some(layer) => router.layer(layer),
         None => router,
     };
+    if config.public_url.is_none() {
+        eprintln!("{{\"event\":\"public_url_missing\"}}");
+    }
     eprintln!("{{\"event\":\"listening\",\"address\":\"{bound}\"}}");
     let (started, signalled) = tokio::sync::oneshot::channel();
     let server = axum::serve(listener, router)

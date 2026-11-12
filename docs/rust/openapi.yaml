@@ -42,6 +42,7 @@ paths:
     parameters: [{$ref: '#/components/parameters/Id'}]
     get:
       operationId: getTileJson
+      parameters: [{$ref: '#/components/parameters/Filter'}, {$ref: '#/components/parameters/Properties'}]
       responses: {'200': {description: TileJSON autorizado, content: {application/json: {schema: {$ref: '#/components/schemas/TileJson'}}}}, default: {$ref: '#/components/responses/Error'}}
   /datasets/{id}/export:
     parameters: [{$ref: '#/components/parameters/Id'}]

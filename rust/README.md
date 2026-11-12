@@ -308,9 +308,12 @@ filtro del usuario) y responde `application/vnd.mapbox-vector-tile` con `no-stor
 200 con cuerpo vacío.
 `GET /api/v1/datasets/{id}/tilejson.json` (TileJSON 3.0.0, mismas reglas de acceso) describe la
 capa con el id del dataset como `source-layer` y solo los campos publicados (`String`, `Number`,
-`Boolean`). La URL de teselas sale de `public_url` en TOML, que admite prefijo de despliegue
-(`https://host/prefijo`, sin barra final, query ni fragmento); sin ella es relativa. Las cabeceras
-`Forwarded`/`X-Forwarded-*` se ignoran.
+`Boolean`). Acepta `filter` y `properties` con el mismo parseo, validación y códigos que la ruta de
+tiles; la plantilla los repite como `?filter=…&properties=…` (en ese orden, codificando todo salvo
+los no reservados de RFC 3986) y `fields` se limita a las propiedades pedidas. La URL de teselas sale
+de `public_url` en TOML, que admite prefijo de despliegue (`https://host/prefijo`, sin barra final,
+query ni fragmento); sin ella es la ruta absoluta `/api/v1/...` y `serve` registra una vez al
+arrancar `{"event":"public_url_missing"}`. Las cabeceras `Forwarded`/`X-Forwarded-*` se ignoran.
 ## Páginas de features (#223)
 
 `postgis::features::page` recibe la `Selection` preparada en la misma transacción de lectura y

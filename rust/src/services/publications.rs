@@ -17,6 +17,18 @@ use serde::{
 };
 use serde_json::{Map, Value, json};
 
+/// Percent-encodes every byte except RFC 3986 unreserved characters.
+fn encode(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                char::from(b).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
 #[derive(Clone)]
 pub struct Publications {
     catalog: Catalog,
@@ -210,11 +222,50 @@ impl Publications {
             .await
     }
 
-    pub fn tilejson(&self, publication: &Publication) -> Value {
+    pub async fn tilejson(
+        &self,
+        publication: &Publication,
+        filter: Option<&str>,
+        properties: Option<&[String]>,
+    ) -> Result<Value, Error> {
         let (config, meta) = (&publication.config, &publication.metadata);
+        if let Some(filter) = filter {
+            let permit = self.admission.acquire()?;
+            let (service, publication, filter) =
+                (self.clone(), publication.clone(), filter.to_owned());
+            self.admission
+                .wait(async move {
+                    let _permit = permit;
+                    let mut tx = service.database.begin_read().await?;
+                    let result = prepare(
+                        &mut tx,
+                        publication.config.filter.as_ref().map(|f| f.get()),
+                        Some(filter.as_str()),
+                        None,
+                        &publication.metadata,
+                        &service.config.limits,
+                    )
+                    .await
+                    .map(drop);
+                    let cleanup = tx
+                        .rollback()
+                        .await
+                        .map_err(crate::postgis::connection::error);
+                    cleanup.and(result)
+                })
+                .await?;
+        }
+        if let Some(names) = properties {
+            let unique: std::collections::HashSet<_> = names.iter().collect();
+            let published = |n: &String| meta.attributes.iter().any(|a| a.name == *n);
+            if unique.len() != names.len() || !names.iter().all(published) {
+                return Err(Error::InvalidRequest);
+            }
+        }
         let fields: Map<String, Value> = meta
             .attributes
             .iter()
+            .filter(|a| properties.is_none_or(|names| names.contains(&a.name)))
             .map(|a| {
                 let kind = match a.data_type.as_str() {
                     "int2" | "int4" | "int8" | "float4" | "float8" => "Number",
@@ -225,13 +276,26 @@ impl Publications {
             })
             .collect();
         let base = self.config.public_url.as_deref().unwrap_or_default();
-        let url = format!(
+        let mut url = format!(
             "{base}/api/v1/datasets/{}/tiles/{{z}}/{{x}}/{{y}}.mvt",
             config.id
         );
-        json!({"tilejson": "3.0.0", "name": config.title, "tiles": [url], "minzoom": 0,
-            "maxzoom": self.config.limits.tile_zoom,
-            "vector_layers": [{"id": config.id, "fields": fields}]})
+        let query: Vec<String> = [
+            ("filter", filter.map(str::to_owned)),
+            ("properties", properties.map(|names| names.join(","))),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| Some(format!("{key}={}", encode(&value?))))
+        .collect();
+        if !query.is_empty() {
+            url.push('?');
+            url.push_str(&query.join("&"));
+        }
+        Ok(
+            json!({"tilejson": "3.0.0", "name": config.title, "tiles": [url], "minzoom": 0,
+                "maxzoom": self.config.limits.tile_zoom,
+                "vector_layers": [{"id": config.id, "fields": fields}]}),
+        )
     }
 
     pub fn limits(&self) -> &Limits {

@@ -50,15 +50,16 @@ async fn tilejson(
     Path(id): Path<String>,
     RawQuery(query): RawQuery,
 ) -> Result<Response, Error> {
-    if query.is_some_and(|q| !q.is_empty()) {
-        return Err(Error::InvalidRequest);
+    let id = identifier(&id)?;
+    let (filter, properties) = parameters(query.as_deref())?;
+    if let Some(filter) = &filter {
+        crate::query::predicate::parse(filter, service.limits())?;
     }
-    let publication = service.detail(identifier(&id)?, &principal).await?;
-    Ok(respond(
-        StatusCode::OK,
-        Some(service.tilejson(&publication)),
-        None,
-    ))
+    let publication = service.detail(id, &principal).await?;
+    let body = service
+        .tilejson(&publication, filter.as_deref(), properties.as_deref())
+        .await?;
+    Ok(respond(StatusCode::OK, Some(body), None))
 }
 
 fn number(text: &str) -> Result<u32, Error> {

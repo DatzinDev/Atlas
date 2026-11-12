@@ -8,7 +8,7 @@ Prefijo fijo de versión `/api/v1`; los clientes no usan rutas Python como alias
 Query es idéntico para GET items y POST query. filter en GET es JSON codificado en URL;
 bbox y properties usan listas separadas por comas; sort usa `field:asc,other:desc`.
 GET admin/listado solo admite limit/offset. Export acepta filter/bbox/properties;
-tiles solo filter/properties porque XYZ define su ventana.
+tiles y TileJSON solo filter/properties porque XYZ define su ventana.
 bbox es `minx,miny,maxx,maxy` en EPSG:4326 con `-180 ≤ minx < maxx ≤ 180` y
 `-90 ≤ miny < maxy ≤ 90`; fuera de eso (incluido área cero) es 400 invalid_request.
 Un bbox que cruza el antimeridiano (`minx > maxx`) se rechaza: el cliente parte la consulta
@@ -34,7 +34,11 @@ sin truncar ni cambiar numberReturned/hasMore.
 Todas las respuestas de datos dinámicas tienen Cache-Control: no-store; no hay caché MVT inicial.
 GeoJSON EPSG:4326; tiles XYZ/MVT EPSG:3857. TileJSON 3.0 incluye URL, source-layer,
 minzoom/maxzoom, bounds y attribution disponibles. Las URLs respetan el prefijo del despliegue
-configurado; no se confía en cabeceras forwarded arbitrarias.
+configurado; no se confía en cabeceras forwarded arbitrarias. La plantilla de TileJSON repite
+filter/properties como query (filter primero, codificado salvo no reservados de RFC 3986) y
+fields se limita a las propiedades pedidas. Sin public_url la URL es una ruta absoluta
+(/api/v1/...) y el binario lo avisa al arrancar con el evento public_url_missing; los clientes
+que necesiten URL absoluta con host requieren public_url.
 En MVT, salvo SRID nativo 3857, la geometría se recorta en EPSG:4326 (`ST_ClipByBox2D`) contra
 la envolvente del tile expandida por el buffer y transformada en PostGIS antes de pasar a 3857;
 lo que queda fuera de ±85.0511° no se codifica y un vértice en ±90 nunca hace fallar el tile.
