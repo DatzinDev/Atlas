@@ -41,6 +41,11 @@ PATCH usa Merge Patch: campos omitidos se conservan; null solo borra campos opci
 la configuración resultante se valida e inspecciona como en POST. id no cambia con PATCH.
 Publicar relación ambigua exige geometry_column explícita. id_column es PK simple o clave
 de vista única/no nula verificada. Source solo referencia la BD configurada.
+Atributos e id se aceptan solo si su tipo es por OID un tipo base admitido de pg_catalog;
+dominios, enums y homónimos de otros esquemas son 400 invalid_request. La geometría debe ser
+`geometry` del esquema de la extensión PostGIS. data_type conserva el nombre canónico. POST y
+PATCH verifican SELECT del rol actual sobre geometría, id y propiedades publicadas; si falta
+alguno, 400 invalid_request sin indicar cuál.
 Tipo y SRID salen del typmod; si falta alguno, se infiere recorriendo todas las filas no nulas
 (sujeto a statement_timeout, exceso 504 query_timeout). Se exige un único SRID existente en
 spatial_ref_sys, solo 2D (Z/M es 400) y un único tipo o exactamente X+MultiX (POINT, LINESTRING,

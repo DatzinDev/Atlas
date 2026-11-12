@@ -21,7 +21,7 @@ pub async fn inspect(
         .bind(&source.schema).bind(&source.table).fetch_optional(&mut *tx).await.map_err(error)?.ok_or(Error::DatasetNotFound)?;
     let oid: i64 = relation.try_get("oid").map_err(error)?;
     let kind: String = relation.try_get("kind").map_err(error)?;
-    let rows = sqlx::query("SELECT a.attname AS name, t.typname AS data_type, NOT a.attnotnull AS nullable, CASE WHEN t.typname='geometry' THEN postgis_typmod_type(a.atttypmod) END AS geometry_type, CASE WHEN t.typname='geometry' THEN postgis_typmod_srid(a.atttypmod) END AS srid, EXISTS(SELECT 1 FROM pg_catalog.pg_index i WHERE i.indrelid=a.attrelid AND i.indisprimary AND i.indnkeyatts=1 AND a.attnum=i.indkey[0]) AS primary_key FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid=a.atttypid WHERE a.attrelid=$1::bigint::oid AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum")
+    let rows = sqlx::query("SELECT a.attname AS name, t.typname AS data_type, NOT a.attnotnull AS nullable, CASE WHEN t.typname='geometry' THEN postgis_typmod_type(a.atttypmod) END AS geometry_type, CASE WHEN t.typname='geometry' THEN postgis_typmod_srid(a.atttypmod) END AS srid, EXISTS(SELECT 1 FROM pg_catalog.pg_index i WHERE i.indrelid=a.attrelid AND i.indisprimary AND i.indnkeyatts=1 AND a.attnum=i.indkey[0]) AS primary_key FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid=a.atttypid WHERE a.attrelid=$1::bigint::oid AND a.attnum>0 AND NOT a.attisdropped AND (a.atttypid=ANY('{pg_catalog.int2,pg_catalog.int4,pg_catalog.int8,pg_catalog.float4,pg_catalog.float8,pg_catalog.numeric,pg_catalog.bool,pg_catalog.text,pg_catalog.varchar,pg_catalog.bpchar,pg_catalog.date,pg_catalog.timestamp,pg_catalog.timestamptz}'::regtype[]::oid[]) OR (t.typname='geometry' AND t.typnamespace=(SELECT e.extnamespace FROM pg_catalog.pg_extension e WHERE e.extname='postgis'))) ORDER BY a.attnum")
         .bind(oid).fetch_all(&mut *tx).await.map_err(error)?;
     let mut attributes = Vec::new();
     let (mut geometries, mut primary_key) = (Vec::new(), None);
@@ -52,6 +52,15 @@ pub async fn inspect(
     }
     .ok_or(Error::InvalidRequest)?;
     let (geometry_column, mut geometry_type, mut srid) = geometry.clone();
+    // Missing columns are rejected below; checking first avoids a later permission error (503).
+    let mut columns = vec![geometry_column.clone()];
+    columns.extend(source.id_column.iter().chain(&primary_key).cloned());
+    columns.extend(dataset.properties.iter().cloned());
+    let readable: bool = sqlx::query_scalar("SELECT coalesce(bool_and(has_column_privilege(current_user, a.attrelid, a.attname::text, 'SELECT')), false) FROM pg_catalog.pg_attribute a WHERE a.attrelid=$1::bigint::oid AND a.attnum>0 AND NOT a.attisdropped AND a.attname::text=ANY($2::text[])")
+        .bind(oid).bind(columns).fetch_one(&mut *tx).await.map_err(error)?;
+    if !readable {
+        return Err(Error::InvalidRequest);
+    }
     let relation_name = format!(
         "{}.{}",
         quote_identifier(&source.schema),
@@ -169,29 +178,11 @@ pub async fn inspect(
     }
     let mut published = Vec::new();
     for property in &dataset.properties {
+        // ponytail: the introspection query only returns columns of supported base types.
         let column = attributes
             .iter()
             .find(|a| &a.name == property)
             .ok_or(Error::InvalidRequest)?;
-        if ![
-            "int2",
-            "int4",
-            "int8",
-            "float4",
-            "float8",
-            "numeric",
-            "bool",
-            "text",
-            "varchar",
-            "bpchar",
-            "date",
-            "timestamp",
-            "timestamptz",
-        ]
-        .contains(&column.data_type.as_str())
-        {
-            return Err(Error::InvalidRequest);
-        }
         published.push(column.clone());
     }
     tx.rollback().await.map_err(error)?;

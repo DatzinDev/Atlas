@@ -120,6 +120,10 @@ se excluye de atributos. Los nombres se resuelven por parámetros en pg_catalog 
 se citan como identificadores al consultar la relación. Pruebas contra PostGIS real.
 
 ## Migración explícita (#215)
+Los tipos se comparan por OID con los tipos base de pg_catalog (int2…timestamptz): dominios,
+enums y homónimos de otros esquemas son 400; la geometría debe ser `geometry` del esquema de la
+extensión PostGIS. POST/PATCH exigen SELECT del rol actual (`has_column_privilege`) sobre
+geometría, id y cada propiedad publicada; si falta, 400 sin indicar la columna.
 
 `atlas migrate --config ddl.toml` crea `atlas_catalog.datasets` en una transacción
 con bloqueo de migración. Repetirla es seguro; `serve` nunca ejecuta DDL.
