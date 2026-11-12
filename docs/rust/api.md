@@ -42,23 +42,34 @@ que aún lo traiga ya no autoriza desde la siguiente petición, porque no hay ca
 un stream ya autorizado sigue hasta terminar. Si el emisor deja de otorgar el rol, el token
 emitido lo conserva hasta exp; esa ventana la fija el emisor.
 
-Una publicación guardada con roles fuera de esa regla deja de leerse: el detalle y el listado
-administrativo completo responden 409 schema_changed, PATCH también (lee antes de escribir) y
-DELETE se queda sin ETag. En las rutas públicas no hay 409: la publicación desaparece del
-catálogo y su detalle es 404. Antes de desplegar, detectarlas con el rol DDL:
+Una publicación guardada con roles fuera de esa regla, o con una lista que no es un arreglo de
+strings, deja de leerse: su detalle administrativo responde 409 schema_changed, igual que cada
+página del listado administrativo que la incluya; PATCH también (lee antes de escribir) y DELETE
+se queda sin ETag. En las rutas públicas no hay 409: la publicación desaparece del catálogo y su
+detalle es 404. Antes de desplegar, detectarlas con un SELECT de solo lectura, que solo requiere
+SELECT sobre atlas_catalog.datasets (no el rol DDL):
 
 ```sql
 SELECT id, revision FROM atlas_catalog.datasets
 WHERE EXISTS (
-  SELECT FROM unnest(ARRAY['view_roles','query_roles','download_roles']) AS k
-  WHERE jsonb_array_length(coalesce(config->'access'->k, '[]')) > 1000
-     OR EXISTS (
-       SELECT FROM jsonb_array_elements_text(coalesce(config->'access'->k, '[]')) AS r
-       WHERE char_length(r) NOT BETWEEN 1 AND 128
-          OR r ~ '[\u0001-\u0020\u007f-\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]'));
+  SELECT FROM unnest(ARRAY['view_roles','query_roles','download_roles']) AS k,
+    LATERAL (SELECT config->'access'->k AS v) AS l
+  WHERE CASE
+    WHEN v IS NULL THEN false
+    WHEN jsonb_typeof(v) <> 'array' THEN true
+    WHEN jsonb_array_length(v) > 1000 THEN true
+    ELSE EXISTS (
+      SELECT FROM jsonb_array_elements(v) AS e
+      WHERE CASE
+        WHEN jsonb_typeof(e) <> 'string' THEN true
+        ELSE char_length(e #>> '{}') NOT BETWEEN 1 AND 128
+          OR e #>> '{}' ~ '[\u0001-\u0020\u007f-\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]'
+      END)
+  END);
 ```
 
-y repararlas con SQL, corrigiendo la lista y subiendo la revisión
+y repararlas con SQL, con permiso de escritura sobre la tabla, corrigiendo la lista y subiendo la
+revisión
 (`UPDATE ... SET config = jsonb_set(config, '{access,view_roles}', '[...]'), revision = revision + 1,
 updated_at = now() WHERE id = ... AND revision = ...`), o recrearlas: DELETE con la revision leída
 de la tabla en If-Match y después POST.
