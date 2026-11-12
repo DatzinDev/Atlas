@@ -29,6 +29,21 @@ async fn call(
     headers: &str,
     body: &str,
 ) -> (String, String, Value) {
+    let (status, head, body) = call_raw(a, method, target, headers, body).await;
+    (
+        status,
+        head,
+        serde_json::from_str(&body).unwrap_or_default(),
+    )
+}
+
+async fn call_raw(
+    a: SocketAddr,
+    method: &str,
+    target: &str,
+    headers: &str,
+    body: &str,
+) -> (String, String, String) {
     let raw = format!(
         "{method} {target} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n{headers}\r\n{body}",
         body.len()
@@ -43,11 +58,7 @@ async fn call(
     .await
     .unwrap();
     let (head, body) = response.split_once("\r\n\r\n").unwrap();
-    (
-        head[9..12].to_owned(),
-        head.to_lowercase(),
-        serde_json::from_str(body).unwrap_or_default(),
-    )
+    (head[9..12].to_owned(), head.to_lowercase(), body.to_owned())
 }
 
 fn ids(body: &Value) -> Vec<i64> {
@@ -59,7 +70,26 @@ fn ids(body: &Value) -> Vec<i64> {
         .collect()
 }
 
-async fn server() -> (SocketAddr, Database) {
+async fn serve(service: Publications) -> SocketAddr {
+    let verifier = Verifier::new(
+        include_bytes!("fixtures/jwt-test-public.pem"),
+        "atlas-test",
+        "atlas",
+    )
+    .unwrap();
+    let app = router(service.clone())
+        .merge(atlas::api::export::router(service))
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::new(Some(verifier)),
+            authenticate,
+        ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    address
+}
+
+async fn server() -> (SocketAddr, Database, Config) {
     let mut config = Config::parse(
         "",
         Some(std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required")),
@@ -91,7 +121,7 @@ async fn server() -> (SocketAddr, Database) {
         sqlx::query(statement).execute(&mut *tx).await.unwrap();
     }
     tx.commit().await.unwrap();
-    let service = Publications::new(db.clone(), config).unwrap();
+    let service = Publications::new(db.clone(), config.clone()).unwrap();
     let both = r#"{"view_roles":["viewer"],"query_roles":["viewer"]}"#;
     let download = r#"{"public":true,"public_download":true}"#;
     for (id, table, access) in [
@@ -109,27 +139,12 @@ async fn server() -> (SocketAddr, Database) {
     }
     let boom = r#"{"id":"items_boom","title":"T","source":{"schema":"items_test","table":"boom_view","id_column":"id"},"properties":["name","rank"],"access":{"public":true}}"#;
     service.create(boom.as_bytes()).await.unwrap();
-    let verifier = Verifier::new(
-        include_bytes!("fixtures/jwt-test-public.pem"),
-        "atlas-test",
-        "atlas",
-    )
-    .unwrap();
-    let app = router(service.clone())
-        .merge(atlas::api::export::router(service))
-        .layer(axum::middleware::from_fn_with_state(
-            Arc::new(Some(verifier)),
-            authenticate,
-        ));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    (address, db)
+    (serve(service).await, db, config)
 }
 
 #[tokio::test]
 async fn items_and_query_over_real_http() {
-    let (a, db) = server().await;
+    let (a, db, config) = server().await;
     let viewer = bearer(&["viewer"]);
     let items = "/api/v1/datasets/items_public/items";
     let query = "/api/v1/datasets/items_public/query";
@@ -296,6 +311,8 @@ async fn items_and_query_over_real_http() {
             );
         }
     }
+
+    page_byte_budget(&db, config).await;
 }
 
 // Called from the single server test: a parallel test would race on the items_test schema.
@@ -383,4 +400,90 @@ async fn bbox_domain(a: SocketAddr, db: &Database) {
     );
     let oracle: Vec<i64> = oracle.into_iter().map(i64::from).collect();
     assert_eq!(ids(&body), oracle);
+}
+
+// Shares the setup above: tests in this binary run concurrently and the
+// setup resets the items_test schema and items_* catalog rows.
+async fn page_byte_budget(db: &Database, mut config: Config) {
+    let mut tx = db.begin_catalog().await.unwrap();
+    for statement in [
+        "CREATE TABLE items_test.budget(id integer PRIMARY KEY, name text, rank int4, geom geometry(Point,4326))",
+        "INSERT INTO items_test.budget SELECT n, repeat('n', 100), n, ST_SetSRID(ST_Point(n, n), 4326) FROM generate_series(1, 10) AS n",
+    ] {
+        sqlx::query(statement).execute(&mut *tx).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+    config.limits.page_bytes = 1000;
+    let service = Publications::new(db.clone(), config.clone()).unwrap();
+    let dataset = r#"{"id":"items_budget","title":"T","source":{"schema":"items_test","table":"budget"},"properties":["name","rank"],"access":{"public":true}}"#;
+    service.create(dataset.as_bytes()).await.unwrap();
+    let a = serve(service).await;
+    let items = "/api/v1/datasets/items_budget/items";
+    let query = "/api/v1/datasets/items_budget/query";
+
+    let rejected = |status: &str, head: &str, body: &str| {
+        assert_eq!(status, "413", "{head}");
+        assert!(head.contains("application/json") && !head.contains("geo+json"));
+        assert!(!body.contains("FeatureCollection") && !body.contains("\"Feature\""));
+        let body: Value = serde_json::from_str(body).unwrap();
+        assert!(body["code"] == "query_too_large" && body["request_id"].is_string());
+    };
+
+    // Regression: ten ~200 byte features no longer fit in a 1000 byte page.
+    let (status, head, body) = call_raw(a, "GET", &format!("{items}?limit=10"), "", "").await;
+    rejected(&status, &head, &body);
+    let (status, head, body) = call_raw(a, "POST", query, "", r#"{"limit":10}"#).await;
+    rejected(&status, &head, &body);
+    // No explicit limit means default_limit (1000): every row, over budget.
+    let (status, head, body) = call_raw(a, "GET", items, "", "").await;
+    rejected(&status, &head, &body);
+
+    let (status, head, raw) = call_raw(a, "GET", &format!("{items}?limit=2"), "", "").await;
+    assert_eq!(status, "200", "{head}");
+    assert!(head.contains("application/geo+json"));
+    assert!(raw.len() <= 1000, "{}", raw.len());
+    let page: Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(ids(&page), [1, 2]);
+    assert!(page["numberReturned"] == 2 && page["hasMore"] == true);
+    let (status, _, posted) = call_raw(a, "POST", query, "", r#"{"limit":2}"#).await;
+    assert_eq!((status.as_str(), posted.as_str()), ("200", raw.as_str()));
+
+    // The budget applies to the bytes actually returned, not to the limit.
+    let few = r#"{"limit":10,"filter":{"op":"lte","field":"rank","value":2}}"#;
+    let (status, _, body) = call(a, "POST", query, "", few).await;
+    assert_eq!(status, "200", "{body}");
+    assert!(ids(&body) == [1, 2] && body["hasMore"] == false);
+    let (status, _, body) = call(a, "GET", &format!("{items}?limit=10&offset=8"), "", "").await;
+    assert_eq!(status, "200", "{body}");
+    assert!(ids(&body) == [9, 10] && body["numberReturned"] == 2 && body["hasMore"] == false);
+
+    // Every 200 fits the budget, and once a page is too large so is every longer one.
+    let mut too_large = false;
+    for limit in 1..=10 {
+        let (status, head, body) =
+            call_raw(a, "GET", &format!("{items}?limit={limit}"), "", "").await;
+        if status == "413" {
+            rejected(&status, &head, &body);
+            too_large = true;
+            continue;
+        }
+        assert!(!too_large && status == "200", "limit={limit}: {status}");
+        assert!(body.len() <= 1000, "limit={limit}: {}", body.len());
+        let page: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(ids(&page), (1..=limit).collect::<Vec<i64>>());
+        assert!(page["numberReturned"] == limit && page["hasMore"] == true);
+    }
+    assert!(too_large);
+
+    // The bound is inclusive and ignores the look-ahead row used for hasMore.
+    config.limits.page_bytes = raw.len() as u32;
+    let exact = serve(Publications::new(db.clone(), config.clone()).unwrap()).await;
+    let (status, _, body) = call_raw(exact, "GET", &format!("{items}?limit=2"), "", "").await;
+    assert_eq!((status.as_str(), body.as_str()), ("200", raw.as_str()));
+    config.limits.page_bytes -= 1;
+    let short = serve(Publications::new(db.clone(), config).unwrap()).await;
+    let (status, head, body) = call_raw(short, "GET", &format!("{items}?limit=2"), "", "").await;
+    rejected(&status, &head, &body);
+    let (status, head, body) = call_raw(short, "POST", query, "", r#"{"limit":2}"#).await;
+    rejected(&status, &head, &body);
 }

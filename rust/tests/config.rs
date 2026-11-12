@@ -8,6 +8,12 @@ fn defaults_and_overrides_are_validated() {
     assert_eq!(config.limits.export_bytes, 268435456);
     assert_eq!(config.limits.data_operations, 8);
     assert_eq!(config.limits.export_operations, 2);
+    assert_eq!(config.limits.page_bytes, 33554432);
+    for budget in [1, 1073741824] {
+        let text = format!("[limits]\npage_bytes={budget}");
+        let config = Config::parse(&text, None, None).unwrap();
+        assert_eq!(config.limits.page_bytes, budget);
+    }
     assert!(config.auth.is_none());
     assert_eq!(config.limits.shutdown_seconds, 30);
     for seconds in [1, 3600] {
@@ -46,6 +52,10 @@ fn defaults_and_overrides_are_validated() {
         "[limits]\ndata_operations=1",
         "[limits]\ndata_operations=3\nexport_operations=4",
         "[limits]\nexport_operations=-1",
+        "[limits]\npage_bytes=0",
+        "[limits]\npage_bytes=1073741825",
+        "[limits]\npage_bytes=-1",
+        "[limits]\npage_bytes=4294967296",
     ] {
         assert!(Config::parse(text, None, None).is_err(), "{text}");
     }
