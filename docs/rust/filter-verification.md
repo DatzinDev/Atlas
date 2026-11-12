@@ -8,6 +8,8 @@ Polygon/MultiPolygon XY y claves duplicadas rechazadas. date exige `YYYY-MM-DD`,
 timestamp rechaza `Z`/offset y timestamptz sin offset se lee en UTC.
 SQLx enlaza valores; identificadores provienen de atributos publicados e introspección.
 La entrada común `selection::prepare` combina siempre filtro fijo AND usuario AND bbox.
+Recibe predicados ya parseados: el fijo con `selection::fixed`, una vez por petición al
+usarse, y el de usuario desde la API.
 Su resultado se añade al WHERE mediante `Selection::append`, en la misma transacción
 de solo lectura y después de autorizar. No hay nuevos endpoints HTTP en este bloque.
 

@@ -1,4 +1,7 @@
-use super::{features::selection, identifier, params};
+use super::{
+    features::{checked, selection},
+    identifier, params,
+};
 use crate::{
     domain::{Error, Principal},
     services::publications::Publications,
@@ -31,7 +34,10 @@ async fn export(
         return Err(Error::InvalidRequest);
     }
     let query = selection(filter, bbox, properties)?;
-    let mut export = service.export(id, &principal, &query).await?;
+    let filter = checked(&query, service.limits())?;
+    let mut export = service
+        .export(id, &principal, &query, filter.as_ref())
+        .await?;
     let deadline = export.deadline();
     let (sender, receiver) = tokio::sync::mpsc::channel(1);
     // Task-locals do not cross `spawn`: capture the id of the request that opened the download.

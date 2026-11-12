@@ -20,6 +20,8 @@ API Axum ── identidad JWT ── servicios de publicación/consulta/tiles/ex
 - catalog: persistencia en atlas_catalog y revisión de publicación; no es un ORM de datos fuente.
 - services: autorizar y combinar restricciones antes de I/O; comparten Query, no paginación.
 - api/auth: validación de transporte, JWT→Principal y errores; no construyen SQL.
+  La API ejecuta `Query::validate` y parsea el filtro de usuario una sola vez por petición,
+  antes de cualquier I/O, y entrega el `Predicate` a servicios y selección.
 - main/config: configuración, migraciones explícitas, wiring y shutdown. TLS/rate limiting en proxy.
 
 Stack elegido: Rust estable fijado al crear Cargo, Tokio, Axum, SQLx Postgres, Serde/serde_json,

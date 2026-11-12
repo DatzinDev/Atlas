@@ -164,6 +164,15 @@ pub(crate) fn identifier(id: &str) -> Result<&str, Error> {
     valid.then_some(id).ok_or(Error::InvalidRequest)
 }
 
+/// The only parse of the user filter: once per request, before any I/O.
+pub(crate) fn filter(
+    text: Option<&str>,
+    limits: &crate::config::Limits,
+) -> Result<Option<crate::query::predicate::Predicate>, Error> {
+    text.map(|text| crate::query::predicate::parse(text, limits))
+        .transpose()
+}
+
 pub(crate) fn no_query(query: Option<&str>) -> Result<(), Error> {
     params(query, [])?;
     Ok(())

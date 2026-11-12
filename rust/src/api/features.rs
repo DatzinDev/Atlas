@@ -1,6 +1,8 @@
 use super::{identifier, json_body, no_query, number, params};
 use crate::{
+    config::Limits,
     domain::{Direction, Error, Principal, Query, SortField},
+    query::predicate::Predicate,
     services::publications::Publications,
 };
 use axum::{
@@ -58,18 +60,22 @@ async fn select(
     id: &str,
     selection: &Query,
 ) -> Result<Response, Error> {
-    let limits = service.limits();
-    selection.validate(limits.max_limit, limits.max_offset)?;
-    if let Some(filter) = &selection.filter {
-        crate::query::predicate::parse(filter.get(), limits)?;
-    }
+    let filter = checked(selection, service.limits())?;
     let publication = service.detail(id, principal).await?;
-    let page = service.features(&publication, selection).await?;
+    let page = service
+        .features(&publication, selection, filter.as_ref())
+        .await?;
     let headers = [
         (header::CONTENT_TYPE, "application/geo+json"),
         (header::CACHE_CONTROL, "no-store"),
     ];
     Ok((headers, page.body).into_response())
+}
+
+/// The only `Query::validate`: also parses its user filter, both before any I/O.
+pub(crate) fn checked(query: &Query, limits: &Limits) -> Result<Option<Predicate>, Error> {
+    query.validate(limits.max_limit, limits.max_offset)?;
+    super::filter(query.filter.as_ref().map(|f| f.get()), limits)
 }
 
 pub(crate) fn parse(raw: Option<&str>) -> Result<Query, Error> {

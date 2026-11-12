@@ -10,6 +10,7 @@ use crate::{
         mvt,
         selection::{fixed, prepare},
     },
+    query::predicate::Predicate,
 };
 use serde::{
     Deserialize, Deserializer,
@@ -113,17 +114,14 @@ impl Publications {
         &self,
         publication: &Publication,
         xyz: (u32, u32, u32),
-        filter: Option<&str>,
+        filter: Option<&Predicate>,
         properties: Option<&[String]>,
     ) -> Result<Vec<u8>, Error> {
-        let filter = filter
-            .map(|text| crate::query::predicate::parse(text, &self.config.limits))
-            .transpose()?;
         let permit = self.admission.acquire()?;
         let (service, publication, filter, properties) = (
             self.clone(),
             publication.clone(),
-            filter,
+            filter.cloned(),
             properties.map(<[String]>::to_vec),
         );
         self.admission
@@ -155,15 +153,20 @@ impl Publications {
             .await
     }
 
-    pub async fn features(&self, publication: &Publication, query: &Query) -> Result<Page, Error> {
-        query.validate(self.config.limits.max_limit, self.config.limits.max_offset)?;
-        let filter = query
-            .filter
-            .as_ref()
-            .map(|f| crate::query::predicate::parse(f.get(), &self.config.limits))
-            .transpose()?;
+    /// `filter` is `query.filter` already parsed by the API layer.
+    pub async fn features(
+        &self,
+        publication: &Publication,
+        query: &Query,
+        filter: Option<&Predicate>,
+    ) -> Result<Page, Error> {
         let permit = self.admission.acquire()?;
-        let (service, publication, query) = (self.clone(), publication.clone(), query.clone());
+        let (service, publication, query, filter) = (
+            self.clone(),
+            publication.clone(),
+            query.clone(),
+            filter.cloned(),
+        );
         self.admission
             .wait(async move {
                 let _permit = permit;
@@ -197,13 +200,8 @@ impl Publications {
         id: &str,
         principal: &Principal,
         query: &Query,
+        filter: Option<&Predicate>,
     ) -> Result<crate::exports::geojson::Export, Error> {
-        query.validate(self.config.limits.max_limit, self.config.limits.max_offset)?;
-        let filter = query
-            .filter
-            .as_ref()
-            .map(|f| crate::query::predicate::parse(f.get(), &self.config.limits))
-            .transpose()?;
         let publication = self.catalog.get(id).await.map_err(|e| match e {
             Error::SchemaChanged => Error::DatasetNotFound,
             other => other,
@@ -211,7 +209,7 @@ impl Publications {
         policy::download(&publication.config, principal)?;
         // Exports hold a sub-slot for their whole stream so items and tiles keep the rest.
         let permits = vec![self.exports.acquire()?, self.admission.acquire()?];
-        let (service, query) = (self.clone(), query.clone());
+        let (service, query, filter) = (self.clone(), query.clone(), filter.cloned());
         self.admission
             .wait(async move {
                 crate::exports::geojson::Export::admitted(
@@ -230,14 +228,13 @@ impl Publications {
     pub async fn tilejson(
         &self,
         publication: &Publication,
-        filter: Option<&str>,
+        filter: Option<(&str, &Predicate)>,
         properties: Option<&[String]>,
     ) -> Result<Value, Error> {
         let (config, meta) = (&publication.config, &publication.metadata);
-        if let Some(filter) = filter {
-            let user = crate::query::predicate::parse(filter, &self.config.limits)?;
+        if let Some((_, user)) = filter {
             let permit = self.admission.acquire()?;
-            let (service, publication) = (self.clone(), publication.clone());
+            let (service, publication, user) = (self.clone(), publication.clone(), user.clone());
             self.admission
                 .wait(async move {
                     let _permit = permit;
@@ -280,7 +277,7 @@ impl Publications {
             config.id
         );
         let query: Vec<String> = [
-            ("filter", filter.map(str::to_owned)),
+            ("filter", filter.map(|(text, _)| text.to_owned())),
             ("properties", properties.map(|names| names.join(","))),
         ]
         .into_iter()

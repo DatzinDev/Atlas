@@ -30,12 +30,10 @@ async fn vector(
     let xyz = (number(&z)?, number(&x)?, number(y)?);
     bounds(xyz.0, xyz.1, xyz.2, service.limits().tile_zoom)?;
     let (filter, properties) = parameters(query.as_deref())?;
-    if let Some(filter) = &filter {
-        crate::query::predicate::parse(filter, service.limits())?;
-    }
+    let filter = super::filter(filter.as_deref(), service.limits())?;
     let publication = service.detail(id, &principal).await?;
     let body = service
-        .tile(&publication, xyz, filter.as_deref(), properties.as_deref())
+        .tile(&publication, xyz, filter.as_ref(), properties.as_deref())
         .await?;
     let headers = [
         (header::CONTENT_TYPE, "application/vnd.mapbox-vector-tile"),
@@ -52,12 +50,11 @@ async fn tilejson(
 ) -> Result<Response, Error> {
     let id = identifier(&id)?;
     let (filter, properties) = parameters(query.as_deref())?;
-    if let Some(filter) = &filter {
-        crate::query::predicate::parse(filter, service.limits())?;
-    }
+    let user = super::filter(filter.as_deref(), service.limits())?;
     let publication = service.detail(id, &principal).await?;
+    let filter = filter.as_deref().zip(user.as_ref());
     let body = service
-        .tilejson(&publication, filter.as_deref(), properties.as_deref())
+        .tilejson(&publication, filter, properties.as_deref())
         .await?;
     Ok(respond(StatusCode::OK, Some(body), None))
 }
