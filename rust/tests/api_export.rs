@@ -212,3 +212,81 @@ async fn downloads_over_http() {
     server.abort();
     db.close().await;
 }
+
+#[tokio::test]
+async fn hides_invalid_stored_private_publication() {
+    let mut c = Config::parse(
+        "",
+        Some(std::env::var("ATLAS_TEST_DATABASE_URL").unwrap()),
+        None,
+    )
+    .unwrap();
+    c.allowed_schemas = vec!["http_export_stale".into()];
+    migrate(&c).await.unwrap();
+    let db = Database::open(&c).await.unwrap();
+    let mut tx = db.begin_catalog().await.unwrap();
+    for sql in [
+        "DROP SCHEMA IF EXISTS http_export_stale CASCADE",
+        "CREATE SCHEMA http_export_stale",
+        "DELETE FROM atlas_catalog.datasets WHERE id = 'stale_private'",
+        "CREATE TABLE http_export_stale.data(id bigint PRIMARY KEY, geom geometry(Point,4326))",
+    ] {
+        sqlx::query(sql).execute(&mut *tx).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+    let service = Publications::new(db.clone(), c).unwrap();
+    service
+        .create(br#"{"id":"stale_private","title":"X","source":{"schema":"http_export_stale","table":"data"},"properties":["id"],"access":{"view_roles":["v"],"download_roles":["d"]}}"#)
+        .await
+        .unwrap();
+    let mut tx = db.begin_catalog().await.unwrap();
+    sqlx::query("UPDATE atlas_catalog.datasets SET metadata=jsonb_set(metadata,'{srid}','0') WHERE id='stale_private'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let verifier = Verifier::new(
+        include_bytes!("fixtures/jwt-test-public.pem"),
+        "test",
+        "test",
+    )
+    .unwrap();
+    let app = router(service.clone())
+        .merge(atlas::api::admin::router(service.clone(), 1 << 20))
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::new(Some(verifier)),
+            authenticate,
+        ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let a = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let (head, body) = request(a, "stale_private/export?format=geojson", "", false).await;
+    assert!(head.starts_with("http/1.1 404"), "{head} {body}");
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json["code"], "dataset_not_found");
+    let claims = serde_json::json!({"sub":"a","iss":"test","aud":"test","exp":jsonwebtoken::get_current_timestamp()+60,"roles":["atlas-admin"]});
+    let key =
+        jsonwebtoken::EncodingKey::from_rsa_pem(include_bytes!("fixtures/jwt-test-private.pem"))
+            .unwrap();
+    let token = jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256),
+        &claims,
+        &key,
+    )
+    .unwrap();
+    let raw = format!(
+        "GET /api/v1/admin/datasets/stale_private HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAuthorization: Bearer {token}\r\n\r\n"
+    );
+    let text = tokio::task::spawn_blocking(move || {
+        let mut s = TcpStream::connect(a).unwrap();
+        s.write_all(raw.as_bytes()).unwrap();
+        let mut text = String::new();
+        s.read_to_string(&mut text).unwrap();
+        text
+    })
+    .await
+    .unwrap();
+    assert!(text.starts_with("HTTP/1.1 409"), "{text}");
+    server.abort();
+    db.close().await;
+}
