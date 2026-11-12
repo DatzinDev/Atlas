@@ -119,27 +119,8 @@ fn http_startup_and_shutdown() {
         if auth {
             command.args(["--config", "tests/fixtures/jwt-test.toml"]);
         }
-        let mut server = Server(
-            command
-                .args(["--listen", "127.0.0.1:0"])
-                .stderr(Stdio::piped())
-                .spawn()
-                .unwrap(),
-        );
-        let stderr = server.0.stderr.take().unwrap();
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let logs = thread::spawn(move || {
-            let mut lines = BufReader::new(stderr).lines();
-            let first = lines.next().unwrap().unwrap();
-            sender.send(first).unwrap();
-            lines.map(Result::unwrap).collect::<Vec<_>>().join("\n")
-        });
-        let listening = receiver.recv_timeout(Duration::from_secs(10)).unwrap();
-        let address = listening
-            .strip_prefix("{\"event\":\"listening\",\"address\":\"")
-            .unwrap()
-            .strip_suffix("\"}")
-            .unwrap();
+        let (mut server, address, logs) = start(&mut command);
+        let address = address.as_str();
         for (path, status, authorization) in [
             ("health", "200", ""),
             ("ready", "200", ""),
@@ -188,7 +169,7 @@ fn http_startup_and_shutdown() {
         );
         // Idle servers exit promptly and never report a forced shutdown.
         assert!(exit_within(&mut server, Duration::from_secs(1)) < Duration::from_secs(1));
-        let logs = logs.join().unwrap();
+        let logs = logs.join().unwrap().join("\n");
         assert!(logs.contains("shutdown_complete") && !logs.contains("secret-token"));
         assert!(!logs.contains("shutdown_forced"));
     }
@@ -262,7 +243,8 @@ fn nonce(id: &str) -> &str {
     id.split_once('-').map_or(id, |(nonce, _)| nonce)
 }
 
-/// Spawns `atlas serve` on an ephemeral port; returns its address and stderr after `listening`.
+/// Spawns `atlas serve` on an ephemeral port; returns its address and every stderr line.
+/// Startup events may precede `listening`.
 fn start(command: &mut Command) -> (Server, String, thread::JoinHandle<Vec<String>>) {
     let mut server = Server(
         command
@@ -275,12 +257,18 @@ fn start(command: &mut Command) -> (Server, String, thread::JoinHandle<Vec<Strin
     let stderr = server.0.stderr.take().unwrap();
     let (sender, receiver) = std::sync::mpsc::channel();
     let logs = thread::spawn(move || {
-        let mut lines = BufReader::new(stderr).lines();
-        sender.send(lines.next().unwrap().unwrap()).unwrap();
-        lines
-            .map(Result::unwrap)
-            .inspect(|line| LOGGED.lock().unwrap().push(line.clone()))
-            .collect()
+        let mut lines = BufReader::new(stderr).lines().map(Result::unwrap);
+        let mut seen = Vec::new();
+        for line in lines.by_ref() {
+            let listening = line.starts_with("{\"event\":\"listening\"");
+            seen.push(line.clone());
+            if listening {
+                sender.send(line).unwrap();
+                break;
+            }
+        }
+        seen.extend(lines.inspect(|line| LOGGED.lock().unwrap().push(line.clone())));
+        seen
     });
     let listening = receiver.recv_timeout(Duration::from_secs(10)).unwrap();
     let address = listening
@@ -736,24 +724,12 @@ async fn ready_reports_capacity_exceeded_when_reserved_connections_are_busy() {
         .unwrap();
     assert!(migrate.status.success());
     // pool_max - data_operations = 1 connection for readiness and catalog work.
-    let mut server = Server(
+    // `start` keeps draining stderr: a closed pipe makes the request log panic mid-response.
+    let (_server, address, _logs) = start(
         Command::new(env!("CARGO_BIN_EXE_atlas"))
             .args(["serve", "--config", "tests/fixtures/ready-capacity.toml"])
-            .args(["--listen", "127.0.0.1:0"])
-            .env("ATLAS_DATABASE_URL", &dsn)
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap(),
+            .env("ATLAS_DATABASE_URL", &dsn),
     );
-    // Keep draining stderr: a closed pipe makes the server's request log panic mid-response.
-    let mut lines = BufReader::new(server.0.stderr.take().unwrap()).lines();
-    let listening = lines.next().unwrap().unwrap();
-    thread::spawn(move || lines.for_each(drop));
-    let address = listening
-        .strip_prefix("{\"event\":\"listening\",\"address\":\"")
-        .and_then(|rest| rest.strip_suffix("\"}"))
-        .unwrap()
-        .to_owned();
     let ready = || {
         let address = address.clone();
         thread::spawn(move || {
@@ -1041,28 +1017,12 @@ fn ready_is_unavailable_without_catalog() {
     run(&dsn, format!("CREATE DATABASE {name}"));
     run(&empty, "CREATE EXTENSION postgis".to_owned());
 
-    let mut server = Server(
+    let (server, address, _logs) = start(
         Command::new(env!("CARGO_BIN_EXE_atlas"))
-            .args(["serve", "--listen", "127.0.0.1:0"])
-            .env("ATLAS_DATABASE_URL", &empty)
-            .env_remove("ATLAS_LISTEN")
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap(),
+            .arg("serve")
+            .env("ATLAS_DATABASE_URL", &empty),
     );
-    let stderr = server.0.stderr.take().unwrap();
-    let (sender, receiver) = std::sync::mpsc::channel();
-    thread::spawn(move || {
-        let mut lines = BufReader::new(stderr).lines();
-        sender.send(lines.next().unwrap().unwrap()).unwrap();
-        lines.for_each(drop);
-    });
-    let listening = receiver.recv_timeout(Duration::from_secs(10)).unwrap();
-    let address = listening
-        .strip_prefix("{\"event\":\"listening\",\"address\":\"")
-        .unwrap_or_else(|| panic!("{listening}"))
-        .strip_suffix("\"}")
-        .unwrap();
+    let address = address.as_str();
     let get = |target: &str| {
         call(
             address,
@@ -1074,4 +1034,93 @@ fn ready_is_unavailable_without_catalog() {
     assert_error(&get("/api/v1/ready"), 503, "database_unavailable");
     drop(server);
     run(&dsn, format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"));
+}
+
+fn startup_events(lines: &[String], name: &str) -> usize {
+    lines
+        .iter()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|event| event["event"] == name)
+        .count()
+}
+
+#[test]
+fn public_url_startup_event_and_tilejson_urls() {
+    let dsn = std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required");
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let config = atlas::config::Config::parse("", Some(dsn.clone()), None).unwrap();
+        atlas::migrations::migrate(&config).await.unwrap();
+        let db = atlas::postgis::connection::Database::open(&config)
+            .await
+            .unwrap();
+        let mut tx = db.begin_catalog().await.unwrap();
+        for statement in [
+            "DROP SCHEMA IF EXISTS main_tilejson CASCADE",
+            "CREATE SCHEMA main_tilejson",
+            "CREATE TABLE main_tilejson.points(id integer PRIMARY KEY, name text, geom geometry(Point,4326))",
+            "DELETE FROM atlas_catalog.datasets WHERE id = 'main_tilejson'",
+        ] {
+            sqlx::query(statement).execute(&mut *tx).await.unwrap();
+        }
+        tx.commit().await.unwrap();
+        db.close().await;
+    });
+    let admin = bearer(&["atlas-admin"]);
+    let tiles = "/api/v1/datasets/main_tilejson/tiles/{z}/{x}/{y}.mvt";
+    for (public_url, expected, events) in [
+        ("", tiles.to_owned(), 1),
+        (
+            "public_url = 'https://atlas.example.test/base'\n",
+            format!("https://atlas.example.test/base{tiles}"),
+            0,
+        ),
+    ] {
+        let path = std::env::temp_dir().join(format!(
+            "atlas-main-tilejson-{}-{events}.toml",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            format!(
+                "{public_url}allowed_schemas = ['main_tilejson']\n[auth]\npublic_key_file = '{}/tests/fixtures/jwt-test-public.pem'\nissuer = 'atlas-test'\naudience = 'atlas'\n",
+                env!("CARGO_MANIFEST_DIR")
+            ),
+        )
+        .unwrap();
+        let (server, address, logs) = start(
+            Command::new(env!("CARGO_BIN_EXE_atlas"))
+                .args(["serve", "--config"])
+                .arg(&path)
+                .env("ATLAS_DATABASE_URL", &dsn),
+        );
+        let _ = std::fs::remove_file(&path);
+        if events == 1 {
+            let body = r#"{"id":"main_tilejson","title":"T","source":{"schema":"main_tilejson","table":"points"},"properties":["name"],"access":{"public":true}}"#;
+            let created = call(
+                &address,
+                &format!(
+                    "POST /api/v1/admin/datasets HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{admin}\r\n{body}",
+                    body.len()
+                ),
+            );
+            assert_eq!(created.0, 201, "{}", created.1);
+        }
+        for _ in 0..2 {
+            let (status, head, body) = call(
+                &address,
+                "GET /api/v1/datasets/main_tilejson/tilejson.json HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            );
+            assert_eq!(status, 200, "{head}");
+            let doc: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(doc["tiles"][0].as_str(), Some(expected.as_str()));
+        }
+        drop(server);
+        let lines = logs.join().unwrap();
+        assert_eq!(
+            startup_events(&lines, "public_url_missing"),
+            events,
+            "{lines:?}"
+        );
+        assert_eq!(startup_events(&lines, "listening"), 1, "{lines:?}");
+    }
 }

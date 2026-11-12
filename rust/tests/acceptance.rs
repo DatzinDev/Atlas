@@ -24,9 +24,19 @@ impl Server {
                 let _ = send.send(line);
             }
         });
-        let line = recv.recv_timeout(Duration::from_secs(10)).unwrap();
-        let log: serde_json::Value = serde_json::from_str(&line).unwrap();
-        Self(child, log["address"].as_str().unwrap().to_owned())
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let wait = deadline.saturating_duration_since(Instant::now());
+            let Ok(line) = recv.recv_timeout(wait) else {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("atlas serve did not report listening within 10s");
+            };
+            let log: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+            if log["event"] == "listening" {
+                return Self(child, log["address"].as_str().unwrap().to_owned());
+            }
+        }
     }
     fn stop(&mut self) {
         Command::new("kill")

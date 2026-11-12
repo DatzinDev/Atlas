@@ -54,7 +54,7 @@ async fn server() -> (SocketAddr, Database) {
         "DROP SCHEMA IF EXISTS tiles_test CASCADE",
         "CREATE SCHEMA tiles_test",
         "CREATE TABLE tiles_test.points(id integer PRIMARY KEY, name text, rank int4, secret text, geom geometry(Point,4326))",
-        "INSERT INTO tiles_test.points VALUES (1,'a',1,'x',ST_SetSRID(ST_Point(10,10),4326)), (2,'b',2,'x',ST_SetSRID(ST_Point(10.1,10.1),4326))",
+        "INSERT INTO tiles_test.points VALUES (1,'a',1,'x',ST_SetSRID(ST_Point(10,10),4326)), (2,'b',2,'x',ST_SetSRID(ST_Point(10.1,10.1),4326)), (3,'a b',3,'x',ST_SetSRID(ST_Point(10.05,10.05),4326))",
         "CREATE TABLE tiles_test.polar(id integer PRIMARY KEY, name text, geom geometry(Geometry,4326))",
         "INSERT INTO tiles_test.polar VALUES (1,'antarctica',ST_GeomFromText('POLYGON((-180 -90,180 -90,180 -60,-180 -60,-180 -90))',4326)), (2,'pole',ST_GeomFromText('POLYGON((0 89,1 89,1 90,0 90,0 89))',4326))",
         "CREATE TABLE tiles_test.doomed AS TABLE tiles_test.points",
@@ -195,6 +195,91 @@ async fn vector_tiles_over_real_http() {
     assert_eq!(get(a, private, "").await.0, "404");
     assert_eq!(get(a, private, &viewer).await.0, "200");
     assert_eq!(get(a, &format!("{tilejson}?x=1"), "").await.0, "400");
+
+    // TileJSON of a filtered, projected layer: canonical template and narrowed fields.
+    let wanted = "%7B%22op%22%3A%22eq%22%2C%22field%22%3A%22name%22%2C%22value%22%3A%22a%20b%22%7D";
+    let (status, head, body) = get(
+        a,
+        &format!("{tilejson}?filter={wanted}&properties=name"),
+        "",
+    )
+    .await;
+    assert_eq!(status, "200", "{head}");
+    let doc: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let template = doc["tiles"][0].as_str().unwrap().to_owned();
+    assert!(
+        template.ends_with(&format!(".mvt?filter={wanted}&properties=name")),
+        "{template}"
+    );
+    assert_eq!(template, format!("{url}?filter={wanted}&properties=name"));
+    assert_eq!(
+        doc["vector_layers"][0]["fields"],
+        serde_json::json!({"name": "String"})
+    );
+    // The template, filled with z/x/y, serves the same features as the tile route.
+    let concrete = template
+        .strip_prefix("https://atlas.example.test/base")
+        .unwrap()
+        .replace("{z}/{x}/{y}", "4/8/7");
+    let (status, head, via_template) = get(a, &concrete, "").await;
+    assert_eq!(status, "200", "{concrete}: {head}");
+    let direct = get(a, &format!("{public}?filter={wanted}&properties=name"), "").await;
+    assert_eq!(direct.0, "200");
+    assert!(!via_template.is_empty() && via_template == direct.2);
+    assert!(via_template.windows(3).any(|w| w == b"a b"));
+    assert!(!via_template.windows(4).any(|w| w == b"rank") && via_template.len() < full.len());
+
+    // Input spelling does not leak into the template: `+`, lowercase hex and key order are
+    // normalised, and the properties separator is percent-encoded.
+    let loose = "%7b%22op%22%3a%22eq%22%2c%22field%22%3a%22name%22%2c%22value%22%3a%22a+b%22%7d";
+    for (query, expected, fields) in [
+        (
+            format!("properties=name&filter={loose}"),
+            format!("{url}?filter={wanted}&properties=name"),
+            serde_json::json!({"name": "String"}),
+        ),
+        (
+            "properties=rank,name".to_owned(),
+            format!("{url}?properties=rank%2Cname"),
+            serde_json::json!({"name": "String", "rank": "Number"}),
+        ),
+    ] {
+        let (status, head, body) = get(a, &format!("{tilejson}?{query}"), "").await;
+        assert_eq!(status, "200", "{query}: {head}");
+        let doc: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(doc["tiles"][0].as_str(), Some(expected.as_str()), "{query}");
+        assert_eq!(doc["vector_layers"][0]["fields"], fields, "{query}");
+    }
+
+    // TileJSON parameters share the tile route's validation and codes.
+    let none = "/api/v1/datasets/tiles_none/tilejson.json";
+    let bowtie = "%7B%22op%22%3A%22intersects%22%2C%22geometry%22%3A%7B%22type%22%3A%22Polygon%22%2C%22coordinates%22%3A%5B%5B%5B0%2C0%5D%2C%5B2%2C2%5D%2C%5B0%2C2%5D%2C%5B2%2C0%5D%2C%5B0%2C0%5D%5D%5D%7D%7D";
+    for (target, code) in [
+        (format!("{tilejson}?bbox=0,0,1,1"), req),
+        (format!("{tilejson}?filter=nope"), bad),
+        // Well-formed predicate whose bowtie polygon PostGIS rejects as invalid.
+        (format!("{tilejson}?filter={bowtie}"), bad),
+        (format!("{tilejson}?filter=%7B%7D&filter=%7B%7D"), req),
+        (format!("{tilejson}?properties=name&properties=name"), req),
+        (format!("{tilejson}?filter=%ZZ"), req),
+        (format!("{tilejson}?filter"), req),
+        (format!("{tilejson}?properties=name,"), req),
+        (format!("{tilejson}?properties=secret"), req),
+        (
+            format!("{tilejson}?filter=%7B%22op%22%3A%22bogus%22%7D"),
+            bad,
+        ),
+        (format!("{none}?filter=%7B"), bad),
+        (format!("{none}?properties=name"), gone),
+    ] {
+        let (status, _, body) = get(a, &target, "").await;
+        let expected = if code == gone { "404" } else { "400" };
+        let found = String::from_utf8_lossy(&body).contains(code);
+        assert!(status == expected && found, "{target}");
+    }
+    let private = format!("{private}?filter={wanted}&properties=name");
+    assert_eq!(get(a, &private, "").await.0, "404");
+    assert_eq!(get(a, &private, &viewer).await.0, "200");
     for url in [
         "ftp://atlas.test",
         "https://atlas.test/",
