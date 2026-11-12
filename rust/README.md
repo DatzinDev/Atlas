@@ -42,11 +42,15 @@ Configuración de dominio/archivo, límites y errores REST pertenecen a #212.
 columnas del catálogo: 200 si están disponibles, 503 estructurado si no.
 Sin DSN se puede iniciar health, pero readiness permanece en 503. El resto
 devuelve 404; aún no hay API geoespacial. SIGINT y,
-en Unix, SIGTERM detienen aceptación y esperan conexiones mediante el shutdown
-de Axum. Logs JSON en stderr (`api::log`): el middleware `api::track` emite una línea
+en Unix, SIGTERM detienen aceptación (`shutdown_started`) y esperan peticiones y streams
+hasta `limits.shutdown_seconds` (30 s, rango 1..=3600). Si quedan, se abortan, cerrando
+sus conexiones y transacciones, y se registra `shutdown_forced`. Sus backends terminan
+aunque estén dentro de una consulta larga porque el servidor comprueba clientes desconectados
+cada ~1 s (`client_connection_check_interval`, PostgreSQL 14+ en Linux). El cierre del pool espera
+como máximo 5 s más; luego registra `shutdown_complete` y sale con 0. Logs JSON en stderr
+(`api::log`): el middleware `api::track` emite una línea
 `{"event":"request","request_id","method","path","status","duration_ms"}` por petición, con
 `code` si es error; `path` sin query y truncado a 256 bytes, nunca cabeceras, cuerpos ni tokens.
-El cierre del servidor espera las conexiones prestadas y cierra el pool.
 
 ## Contenedor de desarrollo
 
@@ -354,7 +358,7 @@ de POST/PATCH y `/ready`, que esperan como máximo `acquire_seconds` y luego res
 El deadline de respuesta no cancela el worker SQL: conserva el cupo hasta rollback real;
 el timeout PostgreSQL acota el drenaje. Export transfiere el cupo al cursor y un productor
 con canal acotado aplica `stream_seconds` incluso si el cliente deja de leer. El pool se
-cierra después del drenaje del servidor; no se interpreta el rechazo como throughput.
+cierra después del drenaje del servidor, acotado por `shutdown_seconds`; no se interpreta el rechazo como throughput.
 Cada export retiene además un cupo de `export_operations` (2 por defecto, entre 1 y
 `data_operations`) durante todo el stream y la cancelación; sin cupo libre responde 503
 `capacity_exceeded` sin cola. Items y tiles conservan al menos

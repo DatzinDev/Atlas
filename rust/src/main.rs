@@ -159,7 +159,8 @@ async fn serve(config: Config) -> Result<(), &'static str> {
         None => router,
     };
     eprintln!("{{\"event\":\"listening\",\"address\":\"{bound}\"}}");
-    let result = axum::serve(listener, router)
+    let (started, signalled) = tokio::sync::oneshot::channel();
+    let server = axum::serve(listener, router)
         .with_graceful_shutdown(async move {
             #[cfg(unix)]
             tokio::select! {
@@ -169,10 +170,25 @@ async fn serve(config: Config) -> Result<(), &'static str> {
             #[cfg(not(unix))]
             let _ = interrupt.await;
             eprintln!("{{\"event\":\"shutdown_started\"}}");
+            let _ = started.send(());
         })
-        .await;
+        .into_future();
+    let drain = std::time::Duration::from_secs(config.limits.shutdown_seconds.into());
+    // Dropping the server stops tracking leftover connections; their tasks (and any export
+    // transaction, rolled back when its connection drops) are aborted when the runtime exits.
+    let result = tokio::select! {
+        result = server => result,
+        () = async {
+            let _ = signalled.await;
+            tokio::time::sleep(drain).await;
+        } => {
+            eprintln!("{{\"event\":\"shutdown_forced\"}}");
+            Ok(())
+        }
+    };
     if let Some(database) = database {
-        database.close().await;
+        // Connections still held by aborted work keep `close` waiting; bound it.
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), database.close()).await;
     }
     result.map_err(|_| "server failed")?;
     eprintln!("{{\"event\":\"shutdown_complete\"}}");

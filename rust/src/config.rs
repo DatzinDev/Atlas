@@ -58,6 +58,7 @@ pub struct Limits {
     pub acquire_seconds: u32,
     pub query_seconds: u32,
     pub stream_seconds: u32,
+    pub shutdown_seconds: u32,
     pub data_operations: u32,
     pub export_operations: u32,
     pub tile_candidates: u32,
@@ -89,6 +90,7 @@ impl Default for Limits {
             acquire_seconds: 5,
             query_seconds: 30,
             stream_seconds: 300,
+            shutdown_seconds: 30,
             data_operations: 8,
             export_operations: 2,
             tile_candidates: 100000,
@@ -141,6 +143,7 @@ impl Limits {
             || self.tile_buffer > self.tile_extent
             || self.query_seconds > i32::MAX as u32 / 1000
             || self.filter_depth > 128
+            || !(1..=3600).contains(&self.shutdown_seconds)
         {
             return Err(Error::InvalidRequest);
         }
