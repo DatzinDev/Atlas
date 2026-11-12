@@ -60,7 +60,11 @@ async fn topology_transform_and_indexable_predicates() {
     ] {
         let mut query = QueryBuilder::new("SELECT id FROM spatial_places WHERE ");
         geometry.append(&mut query, "geom", op).unwrap();
-        assert!(!query.sql().as_str().contains("ST_Transform(geom"));
+        let sql = query.sql().as_str().to_owned();
+        assert!(!sql.contains("ST_Transform(geom"));
+        // The EWKB travels once per node; PostGIS >= 3.1 adds the index condition itself.
+        assert_eq!(sql.matches("ST_GeomFromEWKB(").count(), 1, "{sql}");
+        assert!(!sql.contains("&&"), "{sql}");
         query.push(" ORDER BY id");
         let ids: Vec<i32> = query
             .build_query_scalar()
@@ -125,10 +129,17 @@ async fn topology_transform_and_indexable_predicates() {
         prepare(&mut tx, &out_of_range, 3857).await,
         Err(Error::InvalidFilter)
     ));
-    assert!(matches!(
-        prepare(&mut tx, &polygon, 910000).await,
-        Err(Error::SchemaChanged)
-    ));
+    // The SRID check is fused with the transform but still reports a schema change,
+    // without aborting the transaction (later prepares below reuse it).
+    for srid in [910000, 0, -1] {
+        assert!(
+            matches!(
+                prepare(&mut tx, &polygon, srid).await,
+                Err(Error::SchemaChanged)
+            ),
+            "{srid}"
+        );
+    }
     assert!(bbox([2., 0., 1., 1.]).is_err());
     let mut exterior_hole = polygon.clone();
     exterior_hole[0].push(bbox([5., 5., 6., 6.]).unwrap().remove(0).remove(0));

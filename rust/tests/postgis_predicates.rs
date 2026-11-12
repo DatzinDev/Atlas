@@ -2,48 +2,58 @@ use atlas::{
     config::{Config, Limits},
     domain::{Dataset, Error, Metadata},
     postgis::{
-        connection::Database,
-        introspection::inspect,
-        predicates::{query_error, restrict},
+        connection::Database, introspection::inspect, predicates::query_error, selection::prepare,
     },
     query::predicate::{Predicate, parse},
 };
-use sqlx::{Postgres, QueryBuilder};
+use sqlx::QueryBuilder;
 
 fn filter(json: &str) -> Predicate {
     parse(json, &Limits::default()).unwrap()
 }
 
-fn select(
+/// Outer `Err`: rejected by `selection::prepare` before any SQL runs.
+/// Inner `Err`: rejected by PostgreSQL while casting the bound text.
+type Run = Result<(String, Result<Vec<i32>, Error>), Error>;
+
+async fn select(
+    db: &Database,
     table: &str,
     fixed: Option<&Predicate>,
     user: Option<&Predicate>,
     meta: &Metadata,
-) -> Result<QueryBuilder<Postgres>, Error> {
-    let mut builder = QueryBuilder::new(format!("SELECT id FROM predicates_test.{table} WHERE "));
-    restrict(&mut builder, fixed, user, meta)?;
-    builder.push(" ORDER BY id");
-    Ok(builder)
-}
-
-fn compile(table: &str, json: &str, meta: &Metadata) -> Result<QueryBuilder<Postgres>, Error> {
-    select(table, None, Some(&filter(json)), meta)
-}
-
-async fn ids(db: &Database, mut builder: QueryBuilder<Postgres>) -> Result<Vec<i32>, Error> {
+) -> Run {
     let mut tx = db.begin_read().await?;
-    builder
+    let selection = prepare(&mut tx, fixed.cloned(), user.cloned(), None, meta).await?;
+    let mut builder = QueryBuilder::new(format!("SELECT id FROM predicates_test.{table} WHERE "));
+    selection.append(&mut builder)?;
+    builder.push(" ORDER BY id");
+    let sql = builder.sql().as_str().to_owned();
+    let ids = builder
         .build_query_scalar::<i32>()
         .fetch_all(&mut *tx)
         .await
-        .map_err(query_error)
+        .map_err(query_error);
+    Ok((sql, ids))
 }
 
-// Filter rejection may happen while compiling or when PostgreSQL casts the bound text.
+async fn compile(db: &Database, table: &str, json: &str, meta: &Metadata) -> Run {
+    select(db, table, None, Some(&filter(json)), meta).await
+}
+
+async fn ids(db: &Database, table: &str, json: &str, meta: &Metadata) -> Vec<i32> {
+    compile(db, table, json, meta).await.unwrap().1.unwrap()
+}
+
+async fn rejected_early(db: &Database, table: &str, json: &str, meta: &Metadata) -> bool {
+    compile(db, table, json, meta).await.err() == Some(Error::InvalidFilter)
+}
+
+// Filter rejection may happen while preparing or when PostgreSQL casts the bound text.
 async fn refused(db: &Database, table: &str, json: &str, meta: &Metadata) -> bool {
-    match compile(table, json, meta) {
+    match compile(db, table, json, meta).await {
         Err(error) => error == Error::InvalidFilter,
-        Ok(builder) => ids(db, builder).await == Err(Error::InvalidFilter),
+        Ok((_, ids)) => ids == Err(Error::InvalidFilter),
     }
 }
 
@@ -83,7 +93,7 @@ async fn attribute_filters_against_real_postgis() {
     strict_temporal_literals(&db, &edges).await;
     long_strings_are_bounded_only_by_filter_bytes(&db, &edges).await;
     fixed_filter_cannot_be_widened(&db, &meta).await;
-    offensive_fields_operators_and_values_are_rejected(&meta);
+    offensive_fields_operators_and_values_are_rejected(&db, &meta).await;
 }
 
 async fn expected_rows(db: &Database, meta: &Metadata) {
@@ -131,15 +141,13 @@ async fn expected_rows(db: &Database, meta: &Metadata) {
             vec![1, 3, 4],
         ),
     ] {
-        let builder = compile("places", json, meta).unwrap();
-        assert!(
-            !builder.sql().as_str().contains("Alpha") && !builder.sql().as_str().contains("2026")
-        );
-        assert_eq!(ids(db, builder).await.unwrap(), expected, "{json}");
+        let (sql, found) = compile(db, "places", json, meta).await.unwrap();
+        assert!(!sql.contains("Alpha") && !sql.contains("2026"), "{sql}");
+        assert_eq!(found.unwrap(), expected, "{json}");
     }
-    let everything = select("places", None, None, meta).unwrap();
-    assert!(everything.sql().as_str().contains("WHERE TRUE"));
-    assert_eq!(ids(db, everything).await.unwrap(), vec![1, 2, 3, 4]);
+    let (sql, found) = select(db, "places", None, None, meta).await.unwrap();
+    assert!(sql.contains("TRUE"), "{sql}");
+    assert_eq!(found.unwrap(), vec![1, 2, 3, 4]);
     assert!(
         refused(
             db,
@@ -179,8 +187,7 @@ async fn lossless_numeric_and_bounded_floats(db: &Database, edges: &Metadata) {
         (r#"{"op":"lt","field":"single","value":1e38}"#, vec![1, 2]),
         (r#"{"op":"eq","field":"whole","value":2147483647}"#, vec![]),
     ] {
-        let builder = compile("edges", json, edges).unwrap();
-        assert_eq!(ids(db, builder).await.unwrap(), expected, "{json}");
+        assert_eq!(ids(db, "edges", json, edges).await, expected, "{json}");
     }
     for json in [
         r#"{"op":"eq","field":"ratio","value":1e400}"#,
@@ -192,10 +199,7 @@ async fn lossless_numeric_and_bounded_floats(db: &Database, edges: &Metadata) {
         r#"{"op":"eq","field":"whole","value":1.5}"#,
         r#"{"op":"eq","field":"amount","value":"1"}"#,
     ] {
-        assert!(
-            matches!(compile("edges", json, edges), Err(Error::InvalidFilter)),
-            "{json}"
-        );
+        assert!(rejected_early(db, "edges", json, edges).await, "{json}");
     }
 }
 
@@ -228,8 +232,7 @@ async fn strict_temporal_literals(db: &Database, edges: &Metadata) {
             vec![2],
         ),
     ] {
-        let builder = compile("edges", json, edges).unwrap();
-        assert_eq!(ids(db, builder).await.unwrap(), expected, "{json}");
+        assert_eq!(ids(db, "edges", json, edges).await, expected, "{json}");
     }
     for json in [
         r#"{"op":"eq","field":"day","value":"2024-01-01T00:00:00+05:00"}"#,
@@ -255,16 +258,11 @@ async fn long_strings_are_bounded_only_by_filter_bytes(db: &Database, edges: &Me
     let long = "x".repeat(60 * 1024);
     let json = format!(r#"{{"op":"eq","field":"label","value":"{long}"}}"#);
     assert!(json.len() <= Limits::default().filter_bytes as usize);
-    let builder = compile("edges", &json, edges).unwrap();
-    assert!(!builder.sql().as_str().contains(&long));
-    assert_eq!(ids(db, builder).await.unwrap(), Vec::<i32>::new());
+    let (sql, found) = compile(db, "edges", &json, edges).await.unwrap();
+    assert!(!sql.contains(&long));
+    assert_eq!(found.unwrap(), Vec::<i32>::new());
     let prefix = format!(r#"{{"op":"like","field":"label","value":"{long}%"}}"#);
-    assert_eq!(
-        ids(db, compile("edges", &prefix, edges).unwrap())
-            .await
-            .unwrap(),
-        Vec::<i32>::new()
-    );
+    assert_eq!(ids(db, "edges", &prefix, edges).await, Vec::<i32>::new());
 }
 
 async fn fixed_filter_cannot_be_widened(db: &Database, meta: &Metadata) {
@@ -280,14 +278,18 @@ async fn fixed_filter_cannot_be_widened(db: &Database, meta: &Metadata) {
         ),
         (r#"{"op":"is_not_null","field":"category"}"#, vec![1, 2]),
     ] {
-        let builder = select("places", Some(&fixed), Some(&filter(json)), meta).unwrap();
-        assert_eq!(ids(db, builder).await.unwrap(), expected, "{json}");
+        let (_, found) = select(db, "places", Some(&fixed), Some(&filter(json)), meta)
+            .await
+            .unwrap();
+        assert_eq!(found.unwrap(), expected, "{json}");
     }
-    let only_fixed = select("places", Some(&fixed), None, meta).unwrap();
-    assert_eq!(ids(db, only_fixed).await.unwrap(), vec![1, 2]);
+    let (_, found) = select(db, "places", Some(&fixed), None, meta)
+        .await
+        .unwrap();
+    assert_eq!(found.unwrap(), vec![1, 2]);
 }
 
-fn offensive_fields_operators_and_values_are_rejected(meta: &Metadata) {
+async fn offensive_fields_operators_and_values_are_rejected(db: &Database, meta: &Metadata) {
     for json in [
         r#"{"op":"eq","field":"secret","value":"x"}"#,
         r#"{"op":"eq","field":"id","value":1}"#,
@@ -305,11 +307,12 @@ fn offensive_fields_operators_and_values_are_rejected(meta: &Metadata) {
         r#"{"op":"eq","field":"day","value":"Jan 1 2026"}"#,
         r#"{"op":"in","field":"small","value":[1,"2"]}"#,
         r#"{"op":"and","args":[{"op":"is_null","field":"small"},{"op":"is_null","field":"secret"}]}"#,
-        r#"{"op":"intersects","geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]}}"#,
+        // An attribute error next to a spatial node is still rejected before PostGIS runs.
+        r#"{"op":"or","args":[{"op":"intersects","geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]}},{"op":"eq","field":"secret","value":"x"}]}"#,
     ] {
-        assert!(
-            matches!(compile("places", json, meta), Err(Error::InvalidFilter)),
-            "{json}"
-        );
+        assert!(rejected_early(db, "places", json, meta).await, "{json}");
     }
+    // Spatial nodes now compile through the selection instead of being refused; all geoms are NULL.
+    let triangle = r#"{"op":"intersects","geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]}}"#;
+    assert_eq!(ids(db, "places", triangle, meta).await, Vec::<i32>::new());
 }
