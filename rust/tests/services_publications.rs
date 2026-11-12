@@ -89,8 +89,8 @@ async fn publications_validate_before_persisting_and_patch_with_revision() {
         ),
         (other("\"roads\"", "\"missing\""), Error::InvalidRequest),
         (
-            other("\"lanes\",\"value\":2", "\"id\",\"value\":2"),
-            Error::InvalidFilter,
+            other("\"lanes\",\"value\":2", "\"missing_column\",\"value\":2"),
+            Error::InvalidRequest,
         ),
         (
             other("\"value\":2", "\"value\":\"2\""),
@@ -151,7 +151,7 @@ async fn publications_validate_before_persisting_and_patch_with_revision() {
         (
             br#"{"filter":{"op":"eq","field":"secret","value":1}}"#,
             3,
-            Error::InvalidFilter,
+            Error::InvalidRequest,
         ),
     ] {
         assert_eq!(

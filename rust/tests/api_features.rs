@@ -1,5 +1,5 @@
 use atlas::{
-    api::features::router,
+    api::{admin, datasets, export, features::router, tiles},
     auth::{http::authenticate, jwt::Verifier},
     config::Config,
     migrations::migrate,
@@ -64,7 +64,8 @@ fn parse((status, head, body): (String, String, String)) -> (String, String, Val
     (
         status,
         head,
-        serde_json::from_str(&body).unwrap_or_default(),
+        // Non-JSON bodies (MVT, chunked streams) are kept as lossy text.
+        serde_json::from_str(&body).unwrap_or(Value::String(body)),
     )
 }
 
@@ -82,9 +83,9 @@ async fn send_raw(
     let response = tokio::task::spawn_blocking(move || {
         let mut stream = TcpStream::connect(a).unwrap();
         stream.write_all(raw.as_bytes()).unwrap();
-        let mut response = String::new();
-        stream.read_to_string(&mut response).unwrap();
-        response
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        String::from_utf8_lossy(&response).into_owned()
     })
     .await
     .unwrap();
@@ -108,8 +109,12 @@ async fn serve(service: Publications) -> SocketAddr {
         "atlas",
     )
     .unwrap();
+    let admin_body = atlas::config::Limits::default().admin_body_bytes;
     let app = router(service.clone())
-        .merge(atlas::api::export::router(service))
+        .merge(datasets::router(service.clone()))
+        .merge(tiles::router(service.clone()))
+        .merge(export::router(service.clone()))
+        .merge(admin::router(service, admin_body))
         .layer(axum::middleware::from_fn_with_state(
             Arc::new(Some(verifier)),
             authenticate,
@@ -147,6 +152,8 @@ async fn server() -> (SocketAddr, Database, Config) {
         "INSERT INTO items_test.utm SELECT 100, 'edge', 1, ST_PointOnSurface(ST_Difference(ST_Transform(ST_Segmentize(e, 1), 32614), ST_Transform(e, 32614))) FROM ST_MakeEnvelope(-102, 18, -96, 22, 4326) AS e",
         "CREATE FUNCTION items_test.boom(n integer) RETURNS text LANGUAGE plpgsql AS $$BEGIN RETURN 'p' || n; END$$",
         "CREATE VIEW items_test.boom_view AS SELECT id, items_test.boom(id) AS name, rank, geom FROM items_test.places",
+        "CREATE TABLE items_test.parcelas(id integer PRIMARY KEY, geom geometry(Point,4326), nombre text, tenant_id int4, payload jsonb)",
+        "INSERT INTO items_test.parcelas(id, nombre, tenant_id, geom) SELECT id, nombre, tenant, ST_SetSRID(ST_Point(10 + id * 0.01, 10 + id * 0.01), 4326) FROM (VALUES (1,'seven1',7),(2,'nine2',9),(3,'seven3',7),(4,'nobody4',NULL),(5,'seven5',7),(6,'nine6',9)) AS v(id,nombre,tenant)",
         "DELETE FROM atlas_catalog.datasets WHERE config->'source'->>'schema' <> 'items_test' OR id LIKE 'items\\_%'",
     ] {
         sqlx::query(statement).execute(&mut *tx).await.unwrap();
@@ -332,6 +339,8 @@ async fn items_and_query_over_real_http() {
     }
 
     bbox_domain(a, &db).await;
+
+    hidden_filter_columns(a, &db).await;
 
     let doomed = "/api/v1/datasets/items_doomed/items";
     assert_eq!(call(a, "GET", doomed, "", "").await.0, "200");
@@ -552,4 +561,82 @@ async fn page_byte_budget(db: &Database, mut config: Config) {
     rejected(&status, &head, &body);
     let (status, head, body) = call_raw(short, "POST", query, "", r#"{"limit":2}"#).await;
     rejected(&status, &head, &body);
+}
+
+async fn hidden_filter_columns(a: SocketAddr, db: &Database) {
+    let admin = bearer(&["atlas-admin"]);
+    let admin = admin.as_str();
+    let publications = "/api/v1/admin/datasets";
+    let publish = |id: &str, filter: &str| {
+        format!(
+            r#"{{"id":"{id}","title":"Parcelas","source":{{"schema":"items_test","table":"parcelas"}},"properties":["nombre"],"filter":{filter},"access":{{"public":true,"public_download":true}}}}"#
+        )
+    };
+    let body = publish(
+        "items_parcelas",
+        r#"{"op":"eq","field":"tenant_id","value":7}"#,
+    );
+    let (status, _, created) = call(a, "POST", publications, admin, &body).await;
+    assert_eq!(status, "201", "{created}");
+    assert_eq!(created["metadata"]["attributes"][0]["name"], "nombre");
+    assert!(!created["metadata"].to_string().contains("tenant_id"));
+    let (status, _, detail) = call(a, "GET", "/api/v1/datasets/items_parcelas", "", "").await;
+    assert_eq!(status, "200", "{detail}");
+    assert!(!detail.to_string().contains("tenant_id"));
+
+    let items = "/api/v1/datasets/items_parcelas/items";
+    let query = "/api/v1/datasets/items_parcelas/query";
+    for (method, target, body) in [("GET", items, ""), ("POST", query, "{}")] {
+        let (status, _, page) = call(a, method, target, "", body).await;
+        assert_eq!(status, "200", "{page}");
+        assert_eq!(ids(&page), [1, 3, 5]);
+        assert!(!page.to_string().contains("tenant_id"));
+    }
+    // ponytail: needles are matched on the raw (possibly chunked) body.
+    for target in [
+        "/api/v1/datasets/items_parcelas/tiles/4/8/7.mvt",
+        "/api/v1/datasets/items_parcelas/export?format=geojson",
+    ] {
+        let (status, _, body) = call(a, "GET", target, "", "").await;
+        let body = body.to_string();
+        assert!(status == "200" && body.contains("seven1"), "{target}");
+        for leak in ["tenant_id", "nine2", "nine6"] {
+            assert!(!body.contains(leak), "{target}: {leak}");
+        }
+    }
+    let tilejson = "/api/v1/datasets/items_parcelas/tilejson.json";
+    let (_, _, document) = call(a, "GET", tilejson, "", "").await;
+    let fields = document["vector_layers"][0]["fields"].as_object().unwrap();
+    assert_eq!(fields.keys().collect::<Vec<_>>(), ["nombre"]);
+
+    let user = r#"{"filter":{"op":"eq","field":"tenant_id","value":9}}"#;
+    let (properties, sort) = (
+        format!("{items}?properties=tenant_id"),
+        format!("{items}?sort=tenant_id:asc"),
+    );
+    let missing = publish("items_bad", r#"{"op":"eq","field":"missing","value":7}"#);
+    let jsonb = publish("items_bad", r#"{"op":"is_null","field":"payload"}"#);
+    for (method, target, headers, body, code) in [
+        ("POST", query, "", user, "invalid_filter"),
+        ("GET", &*properties, "", "", "invalid_request"),
+        ("GET", &*sort, "", "", "invalid_request"),
+        ("POST", publications, admin, &*missing, "invalid_request"),
+        ("POST", publications, admin, &*jsonb, "invalid_request"),
+    ] {
+        let (status, _, response) = call(a, method, target, headers, body).await;
+        let result = (status.as_str(), response["code"].as_str());
+        assert_eq!(result, ("400", Some(code)), "{target} {body}");
+    }
+
+    let mut tx = db.begin_catalog().await.unwrap();
+    sqlx::query("ALTER TABLE items_test.parcelas DROP COLUMN tenant_id")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let (status, _, body) = call(a, "GET", items, "", "").await;
+    assert_eq!(
+        (status.as_str(), body["code"].as_str()),
+        ("409", Some("schema_changed"))
+    );
 }

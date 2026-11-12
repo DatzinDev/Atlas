@@ -1,6 +1,6 @@
 use atlas::{
     config::{Config, Limits},
-    domain::Dataset,
+    domain::{Dataset, Error, Metadata},
     postgis::{connection::Database, introspection::inspect, selection::prepare},
 };
 use sqlx::QueryBuilder;
@@ -19,8 +19,8 @@ async fn fixed_user_and_bbox_cannot_widen_each_other() {
     for sql in [
         "DROP SCHEMA IF EXISTS selection_test CASCADE",
         "CREATE SCHEMA selection_test",
-        "CREATE TABLE selection_test.places(id int PRIMARY KEY, category text, geom geometry(Point,3857))",
-        "INSERT INTO selection_test.places SELECT id,category,ST_Transform(ST_SetSRID(ST_Point(x,y),4326),3857) FROM (VALUES (1,'a',1,1),(2,'a',3,3),(3,'b',1,1),(4,'a',0,0)) AS v(id,category,x,y)",
+        "CREATE TABLE selection_test.places(id int PRIMARY KEY, category text, geom geometry(Point,3857), tenant_id int4)",
+        "INSERT INTO selection_test.places SELECT id,category,ST_Transform(ST_SetSRID(ST_Point(x,y),4326),3857),id % 2 FROM (VALUES (1,'a',1,1),(2,'a',3,3),(3,'b',1,1),(4,'a',0,0)) AS v(id,category,x,y)",
     ] {
         sqlx::query(sql).execute(&mut *tx).await.unwrap();
     }
@@ -95,6 +95,38 @@ async fn fixed_user_and_bbox_cannot_widen_each_other() {
             .unwrap(),
         4
     );
+    tx.rollback().await.unwrap();
+
+    // The fixed filter may use the unpublished tenant_id; user filters may not.
+    let tenant = r#"{"op":"eq","field":"tenant_id","value":1}"#;
+    let dataset: Dataset = serde_json::from_str(&format!(r#"{{"id":"places","title":"Places","source":{{"schema":"selection_test","table":"places"}},"properties":["category"],"filter":{tenant}}}"#)).unwrap();
+    let meta = inspect(&db, &config, &dataset).await.unwrap();
+    let a = r#"{"op":"eq","field":"category","value":"a"}"#;
+    for (user, expected) in [(None, vec![1, 3]), (Some(a), vec![1])] {
+        let mut tx = db.begin_read().await.unwrap();
+        let selection = prepare(&mut tx, Some(tenant), user, None, &meta, &Limits::default())
+            .await
+            .unwrap();
+        let mut builder = QueryBuilder::new("SELECT id FROM selection_test.places WHERE ");
+        selection.append(&mut builder).unwrap();
+        builder.push(" ORDER BY id");
+        let found = builder
+            .build_query_scalar::<i32>()
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(found, expected, "{user:?}");
+        tx.rollback().await.unwrap();
+    }
+    let legacy = Metadata {
+        filter_attributes: Vec::new(),
+        ..meta.clone()
+    };
+    let mut tx = db.begin_read().await.unwrap();
+    for (fixed, user, meta) in [(None, Some(tenant), &meta), (Some(tenant), None, &legacy)] {
+        let result = prepare(&mut tx, fixed, user, None, meta, &Limits::default()).await;
+        assert_eq!(result.err(), Some(Error::InvalidFilter), "{user:?}");
+    }
     tx.rollback().await.unwrap();
     db.close().await;
 }

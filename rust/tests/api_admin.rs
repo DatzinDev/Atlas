@@ -386,12 +386,13 @@ async fn admin_routes_over_real_http() {
         "invalid_filter",
     )
     .await;
-    let hidden = r#"{"filter":{"op":"is_null","field":"secret"}}"#;
+    // A fixed filter on a column that does not exist is invalid_request.
+    let missing = r#"{"filter":{"op":"is_null","field":"secret"}}"#;
     expect(
         a,
-        ("PATCH", ITEM, &revision("\"3\""), hidden),
+        ("PATCH", ITEM, &revision("\"3\""), missing),
         "400",
-        "invalid_filter",
+        "invalid_request",
     )
     .await;
     let described = r#"{"description":"D"}"#;

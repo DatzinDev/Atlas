@@ -375,7 +375,7 @@ async fn publication_requires_select_on_every_published_column() {
     let role = "atlas_introspection_reader";
     let table = |name: &str| {
         format!(
-            "CREATE TABLE introspection_privileges.{name}(id integer PRIMARY KEY, geom geometry(Point,4326), nombre text, secreto text)"
+            "CREATE TABLE introspection_privileges.{name}(id integer PRIMARY KEY, geom geometry(Point,4326), nombre text, secreto text, payload jsonb)"
         )
     };
     let statements = [
@@ -393,6 +393,10 @@ async fn publication_requires_select_on_every_published_column() {
         format!("GRANT SELECT (id, nombre) ON introspection_privileges.no_geometry TO {role}"),
         table("no_id"),
         format!("GRANT SELECT (geom, nombre) ON introspection_privileges.no_id TO {role}"),
+        table("filter_granted"),
+        format!(
+            "GRANT SELECT (id, geom, nombre, secreto, payload) ON introspection_privileges.filter_granted TO {role}"
+        ),
     ];
     execute_all(
         &admin,
@@ -428,6 +432,36 @@ async fn publication_requires_select_on_every_published_column() {
         assert_eq!(meta.id_column, "id");
         assert_eq!(meta.geometry_column, "geom");
         assert_eq!(meta.attributes.len(), properties.len());
+    }
+    // The fixed filter may use unpublished columns, but only readable, supported ones.
+    let filtered = |table: &str, filter: serde_json::Value| {
+        let mut dataset = dataset_for(schema, table, None, &["nombre"]);
+        dataset.filter =
+            Some(serde_json::value::RawValue::from_string(filter.to_string()).unwrap());
+        dataset
+    };
+    let nested = serde_json::json!({"op": "and", "args": [
+        {"op": "eq", "field": "secreto", "value": "x"},
+        {"op": "or", "args": [{"op": "is_null", "field": "secreto"},
+            {"op": "eq", "field": "nombre", "value": "x"}]}]});
+    let meta = inspect(&reader, &config, &filtered("filter_granted", nested))
+        .await
+        .unwrap();
+    assert_eq!(meta.attributes.len(), 1);
+    assert_eq!(meta.filter_attributes.len(), 1);
+    assert_eq!(meta.filter_attributes[0].name, "secreto");
+    for (table, field) in [
+        ("granted", "secreto"),
+        ("filter_granted", "missing"),
+        ("filter_granted", "payload"),
+        ("filter_granted", "geom"),
+    ] {
+        let dataset = filtered(table, serde_json::json!({"op": "is_null", "field": field}));
+        assert_eq!(
+            inspect(&reader, &config, &dataset).await.unwrap_err(),
+            Error::InvalidRequest,
+            "{table} {field}"
+        );
     }
     reader.close().await;
 

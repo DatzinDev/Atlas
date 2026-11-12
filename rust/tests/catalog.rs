@@ -21,9 +21,9 @@ async fn persistent_publications_compare_and_swap_and_source_survives() {
     for statement in [
         "DROP SCHEMA IF EXISTS catalog_test CASCADE",
         "CREATE SCHEMA catalog_test",
-        "CREATE TABLE catalog_test.source(id bigint PRIMARY KEY, geom geometry(Point,4326))",
+        "CREATE TABLE catalog_test.source(id bigint PRIMARY KEY, geom geometry(Point,4326), tenant_id int4)",
         "INSERT INTO catalog_test.source VALUES (1,ST_SetSRID(ST_Point(0,0),4326))",
-        "DELETE FROM atlas_catalog.datasets WHERE id IN ('persist_test','invalid_test')",
+        "DELETE FROM atlas_catalog.datasets WHERE id IN ('persist_test','invalid_test','hidden_test')",
         "DO $$ BEGIN IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname='atlas_service_block') THEN CREATE ROLE atlas_service_block NOLOGIN; END IF; END $$",
         "GRANT USAGE ON SCHEMA atlas_catalog,catalog_test TO atlas_service_block",
         "GRANT SELECT ON catalog_test.source TO atlas_service_block",
@@ -143,6 +143,45 @@ async fn persistent_publications_compare_and_swap_and_source_survives() {
         catalog.get(&dataset.id).await,
         Err(Error::DatasetNotFound)
     ));
+
+    // The fixed filter's unpublished columns are stored apart and checked on read.
+    let hidden: Dataset = serde_json::from_str(r#"{"id":"hidden_test","title":"Hidden","source":{"schema":"catalog_test","table":"source"},"properties":["id"],"filter":{"op":"eq","field":"tenant_id","value":7}}"#).unwrap();
+    catalog.create(&hidden).await.unwrap();
+    let read = catalog.get("hidden_test").await.unwrap().metadata;
+    assert_eq!(read.attributes[0].name, "id");
+    assert_eq!(read.filter_attributes.len(), 1);
+    assert_eq!(read.filter_attributes[0].name, "tenant_id");
+    let edit = |sql: String| {
+        let db = db.clone();
+        async move {
+            let mut tx = db.begin_catalog().await.unwrap();
+            sqlx::query(sqlx::AssertSqlSafe(sql))
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        }
+    };
+    let row = "WHERE id='hidden_test'";
+    edit(format!(
+        "UPDATE atlas_catalog.datasets SET metadata = metadata - 'filter_attributes' {row}"
+    ))
+    .await;
+    let legacy = catalog.get("hidden_test").await.unwrap().metadata;
+    assert!(legacy.filter_attributes.is_empty());
+    // A published property, the geometry, an invalid name and an unsupported type.
+    for (name, data_type) in [
+        ("id", "int8"),
+        ("geom", "int4"),
+        ("", "int4"),
+        ("tenant_id", "bytea"),
+    ] {
+        let broken = format!(r#"[{{"name":"{name}","data_type":"{data_type}","nullable":true}}]"#);
+        edit(format!("UPDATE atlas_catalog.datasets SET metadata = jsonb_set(metadata, '{{filter_attributes}}', '{broken}') {row}")).await;
+        let result = catalog.get("hidden_test").await;
+        assert!(matches!(result, Err(Error::SchemaChanged)), "{broken}");
+    }
+    edit(format!("DELETE FROM atlas_catalog.datasets {row}")).await;
     let mut tx = db.begin_read().await.unwrap();
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM catalog_test.source")
