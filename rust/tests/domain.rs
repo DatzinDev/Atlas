@@ -140,3 +140,18 @@ fn bbox_must_lie_in_the_wgs84_domain() {
         assert_eq!(check(invalid), Err(Error::InvalidRequest), "{invalid}");
     }
 }
+
+#[test]
+fn routing_errors_serialize_as_snake_case_codes() {
+    for (error, code) in [
+        (Error::NotFound, "not_found"),
+        (Error::MethodNotAllowed, "method_not_allowed"),
+        (Error::DatasetNotFound, "dataset_not_found"),
+        (Error::DatabaseUnavailable, "database_unavailable"),
+    ] {
+        assert_eq!(serde_json::to_value(error).unwrap(), code);
+    }
+    assert_ne!(Error::NotFound, Error::DatasetNotFound);
+    assert_eq!(Error::NotFound.to_string(), "NotFound");
+    assert_eq!(Error::MethodNotAllowed.to_string(), "MethodNotAllowed");
+}
