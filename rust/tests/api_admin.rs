@@ -73,7 +73,7 @@ async fn declared(address: SocketAddr, method: &str, target: &str, headers: &str
     .unwrap()
 }
 
-async fn server() -> (SocketAddr, Publications) {
+async fn server() -> (SocketAddr, Database) {
     let mut config = Config::parse(
         "",
         Some(std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required")),
@@ -99,7 +99,7 @@ async fn server() -> (SocketAddr, Publications) {
         "atlas",
     )
     .unwrap();
-    let service = Publications::new(db, config).unwrap();
+    let service = Publications::new(db.clone(), config).unwrap();
     let app = router(service.clone(), 1024).layer(axum::middleware::from_fn_with_state(
         Arc::new(Some(verifier)),
         authenticate,
@@ -107,12 +107,12 @@ async fn server() -> (SocketAddr, Publications) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    (address, service)
+    (address, db)
 }
 
 #[tokio::test]
 async fn admin_routes_over_real_http() {
-    let (a, _) = server().await;
+    let (a, db) = server().await;
     let (admin, viewer) = (bearer(&["atlas-admin"]), bearer(&["viewer"]));
     let revision = |n: &str| format!("{admin}If-Match: {n}\r\n");
     let large = BODY.replace("Roads", &"x".repeat(1024));
@@ -302,4 +302,46 @@ async fn admin_routes_over_real_http() {
     )
     .await;
     expect(a, ("GET", ITEM, &admin, ""), "404", "dataset_not_found").await;
+    let roles = BODY.replace("api_roads", "api_roles");
+    let roles_item = "/api/v1/admin/datasets/api_roles";
+    expect(a, ("POST", LIST, &admin, &roles), "201", "etag: \"1\"").await;
+    for key in ["view_roles", "query_roles", "download_roles"] {
+        let access = format!(r#""access":{{"{key}":[" viewer"]}}"#);
+        let posted = BODY.replace("\"properties\"", &format!("{access},\"properties\""));
+        let patch = format!("{{{access}}}");
+        expect(a, ("POST", LIST, &admin, &posted), "400", "invalid_request").await;
+        expect(
+            a,
+            ("PATCH", roles_item, &revision("\"1\""), &patch),
+            "400",
+            "invalid_request",
+        )
+        .await;
+        for stored in [r#"[" viewer"]"#, "[]"] {
+            let mut tx = db.begin_catalog().await.unwrap();
+            sqlx::query("UPDATE atlas_catalog.datasets SET config=jsonb_set(config,ARRAY['access',$1],$2::jsonb) WHERE id='api_roles'")
+                .bind(key)
+                .bind(stored)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            if stored != "[]" {
+                expect(
+                    a,
+                    ("PATCH", roles_item, &revision("\"1\""), title),
+                    "409",
+                    "schema_changed",
+                )
+                .await;
+            }
+        }
+    }
+    expect(
+        a,
+        ("DELETE", roles_item, &revision("\"1\""), ""),
+        "204",
+        "no-store",
+    )
+    .await;
 }
