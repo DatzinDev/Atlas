@@ -585,3 +585,160 @@ fn http_fallback_public_probes_and_nosniff() {
         "{stderr}"
     );
 }
+
+/// Trimmed value of the first header line starting with `name` (head is lowercased).
+fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
+    head.lines()
+        .find_map(|line| line.strip_prefix(name))
+        .map(str::trim)
+}
+
+/// Whether `tok` is among the comma-separated values of header `name`, across repeated lines.
+fn has_token(head: &str, name: &str, tok: &str) -> bool {
+    head.lines()
+        .filter_map(|line| line.strip_prefix(name))
+        .flat_map(|value| value.split(','))
+        .any(|token| token.trim() == tok)
+}
+
+#[test]
+fn cors_is_configurable_outermost_and_disabled_by_default() {
+    let dsn = std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required");
+    let serve = |cors: &str| {
+        let path = std::env::temp_dir().join(format!(
+            "atlas-main-cors-{}-{}.toml",
+            std::process::id(),
+            cors.len()
+        ));
+        std::fs::write(
+            &path,
+            format!(
+                "[auth]\npublic_key_file = '{}/tests/fixtures/jwt-test-public.pem'\nissuer = 'atlas-test'\naudience = 'atlas'\n{cors}",
+                env!("CARGO_MANIFEST_DIR")
+            ),
+        )
+        .unwrap();
+        let started = start(
+            Command::new(env!("CARGO_BIN_EXE_atlas"))
+                .args(["serve", "--config"])
+                .arg(&path)
+                .env("ATLAS_DATABASE_URL", &dsn),
+        );
+        let _ = std::fs::remove_file(&path);
+        started
+    };
+    let request = |address: &str, method: &str, target: &str, headers: &str| {
+        call(
+            address,
+            &format!(
+                "{method} {target} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 0\r\n{headers}\r\n"
+            ),
+        )
+    };
+    let preflight = |origin: &str| {
+        format!(
+            "Origin: {origin}\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: authorization, content-type\r\n"
+        )
+    };
+    let invalid = "Authorization: Bearer secret-token\r\n";
+    let no_cors = |head: &str| {
+        assert!(
+            !head.lines().any(|line| line.starts_with("access-control-")),
+            "{head}"
+        );
+    };
+
+    // Disabled: no CORS headers anywhere and OPTIONS is a plain 405.
+    let (server, address, _logs) = serve("");
+    let response = request(
+        &address,
+        "OPTIONS",
+        "/api/v1/datasets",
+        &preflight("https://a.example"),
+    );
+    assert_error(&response, 405, "method_not_allowed");
+    no_cors(&response.1);
+    for headers in ["", invalid] {
+        let (_, head, _) = request(
+            &address,
+            "GET",
+            "/api/v1/datasets",
+            &format!("Origin: https://a.example\r\n{headers}"),
+        );
+        no_cors(&head);
+    }
+    drop(server);
+
+    // Listed origin: preflight needs no token; even a 401 carries CORS.
+    let (server, address, _logs) = serve("[cors]\nallowed_origins = ['https://a.example']\n");
+    let (status, head, _) = request(
+        &address,
+        "OPTIONS",
+        "/api/v1/datasets/x/query",
+        &preflight("https://a.example"),
+    );
+    assert!(
+        (200..300).contains(&status)
+            && header(&head, "access-control-allow-origin:") == Some("https://a.example")
+            && has_token(&head, "access-control-allow-methods:", "post")
+            && has_token(&head, "access-control-allow-headers:", "authorization")
+            && header(&head, "access-control-max-age:") == Some("600")
+            && has_token(&head, "vary:", "origin")
+            && header(&head, "access-control-allow-credentials:").is_none(),
+        "{head}"
+    );
+    let response = request(
+        &address,
+        "GET",
+        "/api/v1/datasets",
+        &format!("Origin: https://a.example\r\n{invalid}"),
+    );
+    assert_error(&response, 401, "invalid_token");
+    assert!(
+        header(&response.1, "access-control-allow-origin:") == Some("https://a.example")
+            && has_token(
+                &response.1,
+                "access-control-expose-headers:",
+                "x-request-id"
+            ),
+        "{}",
+        response.1
+    );
+
+    // Unlisted origin: never allowed, on preflight or on a 401.
+    for (method, target, headers) in [
+        (
+            "OPTIONS",
+            "/api/v1/datasets/x/query",
+            preflight("https://b.example"),
+        ),
+        (
+            "GET",
+            "/api/v1/datasets",
+            format!("Origin: https://b.example\r\n{invalid}"),
+        ),
+    ] {
+        let (_, head, _) = request(&address, method, target, &headers);
+        assert!(
+            header(&head, "access-control-allow-origin:").is_none(),
+            "{head}"
+        );
+    }
+    drop(server);
+
+    // Wildcard.
+    let (server, address, _logs) = serve("[cors]\nallowed_origins = ['*']\n");
+    let (status, head, _) = request(
+        &address,
+        "OPTIONS",
+        "/api/v1/datasets/x/query",
+        &preflight("https://b.example"),
+    );
+    assert!(
+        (200..300).contains(&status)
+            && header(&head, "access-control-allow-origin:") == Some("*")
+            && header(&head, "access-control-allow-credentials:").is_none(),
+        "{head}"
+    );
+    drop(server);
+}

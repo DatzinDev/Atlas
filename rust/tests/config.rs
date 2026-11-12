@@ -111,3 +111,47 @@ fn jwt_trust_configuration_is_closed_and_local() {
         assert!(config.auth.unwrap().verifier().is_err());
     }
 }
+
+#[test]
+fn cors_origins_are_disabled_by_default_and_strictly_validated() {
+    let cors =
+        |origins: &str| Config::parse(&format!("[cors]\nallowed_origins={origins}"), None, None);
+    assert!(
+        Config::parse("", None, None)
+            .unwrap()
+            .cors
+            .allowed_origins
+            .is_empty()
+    );
+    assert!(cors("[]").unwrap().cors.allowed_origins.is_empty());
+    for valid in [
+        "['*']",
+        "['https://a.example']",
+        "['http://a.example:8080', 'https://b.example']",
+    ] {
+        assert!(cors(valid).is_ok(), "{valid}");
+    }
+    let list = |n: usize| {
+        let origins: Vec<_> = (0..n).map(|i| format!("'https://h{i}.example'")).collect();
+        format!("[{}]", origins.join(","))
+    };
+    assert_eq!(cors(&list(100)).unwrap().cors.allowed_origins.len(), 100);
+    for invalid in [
+        "['*','https://a.example']".to_owned(),
+        "['https://a.example/']".into(),
+        "['ftp://x']".into(),
+        "['https://a.example','https://a.example']".into(),
+        list(101),
+        "['https://a.example/path']".into(),
+        "['https://a.example?q=1']".into(),
+        "['https://a.example#f']".into(),
+        "[' https://a.example']".into(),
+        "['https://a.example ']".into(),
+        "['https://a .example']".into(),
+        "['a.example']".into(),
+        "['']".into(),
+        "'https://a.example'".into(),
+    ] {
+        assert!(cors(&invalid).is_err(), "{invalid}");
+    }
+}
