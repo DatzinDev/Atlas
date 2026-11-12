@@ -59,6 +59,7 @@ pub struct Limits {
     pub query_seconds: u32,
     pub stream_seconds: u32,
     pub data_operations: u32,
+    pub export_operations: u32,
     pub tile_candidates: u32,
     pub tile_bytes: u32,
     pub tile_zoom: u32,
@@ -89,6 +90,7 @@ impl Default for Limits {
             query_seconds: 30,
             stream_seconds: 300,
             data_operations: 8,
+            export_operations: 2,
             tile_candidates: 100000,
             tile_bytes: 8 * 1024 * 1024,
             tile_zoom: 22,
@@ -119,6 +121,7 @@ impl Limits {
             self.query_seconds,
             self.stream_seconds,
             self.data_operations,
+            self.export_operations,
             self.tile_candidates,
             self.tile_bytes,
             self.tile_extent,
@@ -131,6 +134,7 @@ impl Limits {
             || self.default_limit > self.max_limit
             || self.catalog_default > self.catalog_max
             || self.pool_min > self.pool_max
+            || self.export_operations > self.data_operations
             || self.pool_max > 10
             || self.tile_zoom > 22
             || self.tile_extent > 65536

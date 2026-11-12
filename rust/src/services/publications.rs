@@ -23,6 +23,7 @@ pub struct Publications {
     database: Database,
     config: Config,
     admission: super::admission::Admission,
+    exports: super::admission::Admission,
 }
 
 impl Publications {
@@ -32,6 +33,10 @@ impl Publications {
             database,
             admission: super::admission::Admission::new(
                 config.limits.data_operations,
+                config.limits.query_seconds,
+            ),
+            exports: super::admission::Admission::new(
+                config.limits.export_operations,
                 config.limits.query_seconds,
             ),
             config,
@@ -188,7 +193,8 @@ impl Publications {
             other => other,
         })?;
         policy::download(&publication.config, principal)?;
-        let permit = self.admission.acquire()?;
+        // Exports hold a sub-slot for their whole stream so items and tiles keep the rest.
+        let permits = vec![self.exports.acquire()?, self.admission.acquire()?];
         let (service, query) = (self.clone(), query.clone());
         self.admission
             .wait(async move {
@@ -197,7 +203,7 @@ impl Publications {
                     &publication,
                     &query,
                     &service.config.limits,
-                    Some(permit),
+                    permits,
                 )
                 .await
             })

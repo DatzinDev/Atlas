@@ -124,7 +124,8 @@ valores; el cuerpo HTTP no incluye el SQLSTATE.
 not_found es cualquier ruta inexistente (dataset_not_found queda reservado a datasets);
 method_not_allowed es una ruta existente con otro método y conserva la cabecera Allow.
 Ambos, como /ready en 503 (database_unavailable), usan el error uniforme con
-Content-Type: application/json y Cache-Control: no-store. /health y /ready no autentican:
+Content-Type: application/json y Cache-Control: no-store. Export sin cupo de export libre
+(`export_operations`) responde 503 capacity_exceeded inmediato, antes de cabeceras. /health y /ready no autentican:
 cualquier Authorization se ignora. Toda respuesta, incluidas MVT y exportaciones en streaming,
 lleva X-Content-Type-Options: nosniff. No convertir resultados truncados en 200. Errores tardíos de stream
 interrumpen el cuerpo y se registran; no pueden sustituir headers ya enviados.

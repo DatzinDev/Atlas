@@ -18,7 +18,7 @@ const END: &str = "]}";
 
 pub struct Export {
     tx: Option<Transaction<'static, Postgres>>,
-    permit: Option<OwnedSemaphorePermit>,
+    permits: Vec<OwnedSemaphorePermit>,
     pending: VecDeque<String>,
     deadline: Instant,
     remaining: usize,
@@ -34,7 +34,7 @@ impl Export {
         query: &Query,
         limits: &Limits,
     ) -> Result<Self, Error> {
-        Self::admitted(db, publication, query, limits, None).await
+        Self::admitted(db, publication, query, limits, Vec::new()).await
     }
 
     pub(crate) async fn admitted(
@@ -42,7 +42,7 @@ impl Export {
         publication: &Publication,
         query: &Query,
         limits: &Limits,
-        permit: Option<OwnedSemaphorePermit>,
+        permits: Vec<OwnedSemaphorePermit>,
     ) -> Result<Self, Error> {
         if query.limit.is_some() || query.offset != 0 || query.sort.is_some() {
             return Err(Error::InvalidRequest);
@@ -52,7 +52,7 @@ impl Export {
             .ok_or(Error::QueryTooLarge)?;
         let mut export = Self {
             tx: Some(db.begin_read().await?),
-            permit,
+            permits,
             pending: VecDeque::new(),
             deadline: Instant::now() + Duration::from_secs(limits.stream_seconds.into()),
             remaining,
@@ -152,9 +152,9 @@ impl Export {
                 self.first = false;
                 format!("{comma}{row}")
             } else if let Some(tx) = self.tx.take() {
-                let permit = self.permit.take();
+                let permits = std::mem::take(&mut self.permits);
                 tokio::spawn(async move {
-                    let _permit = permit;
+                    let _permits = permits;
                     tx.rollback()
                         .await
                         .map_err(crate::postgis::connection::error)
@@ -178,9 +178,9 @@ impl Drop for Export {
     fn drop(&mut self) {
         if let Some(tx) = self.tx.take() {
             // Keep the connection leased until rollback has really completed.
-            let permit = self.permit.take();
+            let permits = std::mem::take(&mut self.permits);
             tokio::spawn(async move {
-                let _permit = permit;
+                let _permits = permits;
                 let _ = tx.rollback().await;
             });
         }

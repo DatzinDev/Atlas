@@ -351,6 +351,10 @@ El deadline de respuesta no cancela el worker SQL: conserva el cupo hasta rollba
 el timeout PostgreSQL acota el drenaje. Export transfiere el cupo al cursor y un productor
 con canal acotado aplica `stream_seconds` incluso si el cliente deja de leer. El pool se
 cierra después del drenaje del servidor; no se interpreta el rechazo como throughput.
+Cada export retiene además un cupo de `export_operations` (2 por defecto, entre 1 y
+`data_operations`) durante todo el stream y la cancelación; sin cupo libre responde 503
+`capacity_exceeded` sin cola. Items y tiles conservan al menos
+`data_operations − export_operations` cupos frente a descargas lentas.
 
 ## Ejecutar el MVP experimental (#229)
 

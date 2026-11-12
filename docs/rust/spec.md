@@ -73,6 +73,7 @@ No se aceptan claves, issuer o rutas de JWKS suministradas por el token.
 | Pool mínimo / máximo; adquisición | 1 / 10; 5 s |
 | Consulta SQL; stream total | 30 s; 300 s |
 | Operaciones de datos simultáneas | 8; sin cola propia, rechazo 503 |
+| Exportaciones simultáneas (`export_operations`) | 2; `1 ≤ n ≤ data_operations`; consume además un cupo de datos; sin cola, rechazo 503 |
 | MVT candidatos / bytes / zoom máximo | 100.000 / 8 MiB / 22 |
 | MVT extent / buffer | 4.096 / 64 |
 | Exportación features / bytes emitidos | 1.000.000 / 256 MiB |
