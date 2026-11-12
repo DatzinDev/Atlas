@@ -221,7 +221,7 @@ components:
     PublicationPatch:
       type: object
       additionalProperties: false
-      properties: {title: {type: string, minLength: 1}, description: {type: string, nullable: true}, source: {$ref: '#/components/schemas/Source'}, properties: {type: array, minItems: 1, uniqueItems: true, items: {type: string}}, filter: {allOf: [{$ref: '#/components/schemas/Predicate'}], nullable: true}, access: {$ref: '#/components/schemas/Access'}, enabled: {type: boolean, default: true}}
+      properties: {title: {type: string, minLength: 1}, description: {type: string, nullable: true}, source: {$ref: '#/components/schemas/Source'}, properties: {type: array, minItems: 1, uniqueItems: true, items: {type: string}}, filter: {allOf: [{$ref: '#/components/schemas/Predicate'}], nullable: true, description: 'Filtro fijo; puede usar columnas inspeccionadas no publicadas, que nunca se exponen.'}, access: {$ref: '#/components/schemas/Access'}, enabled: {type: boolean, default: true}}
     PublicationCreate:
       type: object
       additionalProperties: false
@@ -232,7 +232,7 @@ components:
         description: {type: string}
         source: {$ref: '#/components/schemas/Source'}
         properties: {type: array, minItems: 1, uniqueItems: true, items: {type: string}}
-        filter: {$ref: '#/components/schemas/Predicate'}
+        filter: {allOf: [{$ref: '#/components/schemas/Predicate'}], description: 'Filtro fijo; puede usar columnas inspeccionadas no publicadas, que nunca se exponen.'}
         access: {$ref: '#/components/schemas/Access'}
         enabled: {type: boolean, default: true}
     Publication:

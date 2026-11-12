@@ -47,6 +47,12 @@ impl Catalog {
         config
             .validate(&self.config.allowed_schemas)
             .map_err(|_| Error::SchemaChanged)?;
+        let columns = || {
+            metadata
+                .attributes
+                .iter()
+                .chain(&metadata.filter_attributes)
+        };
         if id != config.id
             || revision <= 0
             || metadata.srid <= 0
@@ -69,7 +75,11 @@ impl Catalog {
                 .map(|a| &a.name)
                 .collect::<Vec<_>>()
                 != config.properties.iter().collect::<Vec<_>>()
-            || metadata.attributes.iter().any(|a| {
+            || metadata
+                .filter_attributes
+                .iter()
+                .any(|a| !crate::domain::identifier(&a.name) || config.properties.contains(&a.name))
+            || columns().any(|a| {
                 a.name == metadata.geometry_column
                     || ![
                         "int2",

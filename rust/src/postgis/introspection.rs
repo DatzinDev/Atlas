@@ -2,6 +2,7 @@ use super::connection::{Database, error};
 use crate::{
     config::Config,
     domain::{Attribute, Dataset, Error, Metadata},
+    query::predicate::{Predicate, parse},
 };
 use sqlx::Row;
 
@@ -16,6 +17,18 @@ pub async fn inspect(
 ) -> Result<Metadata, Error> {
     dataset.validate(&config.allowed_schemas)?;
     let source = &dataset.source;
+    // ponytail: an unparsable fixed filter is reported later by selection::prepare.
+    let mut hidden = Vec::new();
+    if let Some(predicate) = dataset
+        .filter
+        .as_ref()
+        .and_then(|filter| parse(filter.get(), &config.limits).ok())
+    {
+        fields(&predicate, &mut hidden);
+    }
+    hidden.retain(|field| !dataset.properties.contains(field));
+    hidden.sort();
+    hidden.dedup();
     let mut tx = database.begin_read().await?;
     let relation = sqlx::query("SELECT c.oid::bigint AS oid, c.relkind::text AS kind FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relname=$2 AND c.relkind IN ('r','p','v','m')")
         .bind(&source.schema).bind(&source.table).fetch_optional(&mut *tx).await.map_err(error)?.ok_or(Error::DatasetNotFound)?;
@@ -55,7 +68,7 @@ pub async fn inspect(
     // Missing columns are rejected below; checking first avoids a later permission error (503).
     let mut columns = vec![geometry_column.clone()];
     columns.extend(source.id_column.iter().chain(&primary_key).cloned());
-    columns.extend(dataset.properties.iter().cloned());
+    columns.extend(dataset.properties.iter().chain(&hidden).cloned());
     let readable: bool = sqlx::query_scalar("SELECT coalesce(bool_and(has_column_privilege(current_user, a.attrelid, a.attname::text, 'SELECT')), false) FROM pg_catalog.pg_attribute a WHERE a.attrelid=$1::bigint::oid AND a.attnum>0 AND NOT a.attisdropped AND a.attname::text=ANY($2::text[])")
         .bind(oid).bind(columns).fetch_one(&mut *tx).await.map_err(error)?;
     if !readable {
@@ -185,6 +198,17 @@ pub async fn inspect(
             .ok_or(Error::InvalidRequest)?;
         published.push(column.clone());
     }
+    // Missing, geometry or unsupported-type columns are absent from `attributes`.
+    let filter_attributes = hidden
+        .iter()
+        .map(|field| {
+            attributes
+                .iter()
+                .find(|a| &a.name == field)
+                .cloned()
+                .ok_or(Error::InvalidRequest)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     tx.rollback().await.map_err(error)?;
     Ok(Metadata {
         geometry_column,
@@ -193,5 +217,17 @@ pub async fn inspect(
         id_column,
         id_type: id.data_type.clone(),
         attributes: published,
+        filter_attributes,
     })
+}
+
+fn fields(predicate: &Predicate, out: &mut Vec<String>) {
+    match predicate {
+        Predicate::Compare { field, .. }
+        | Predicate::In { field, .. }
+        | Predicate::Null { field, .. } => out.push(field.clone()),
+        Predicate::And(args) | Predicate::Or(args) => args.iter().for_each(|arg| fields(arg, out)),
+        Predicate::Not(arg) => fields(arg, out),
+        Predicate::Spatial { .. } => {}
+    }
 }

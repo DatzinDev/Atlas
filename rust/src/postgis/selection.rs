@@ -32,7 +32,15 @@ pub async fn prepare(
         .map(|text| parse(text, limits))
         .collect::<Result<Vec<_>, _>>()?;
     // Reject unpublished attributes before even validating geometries in PostGIS.
-    for predicate in &predicates {
+    let mut wide = meta.clone();
+    wide.attributes.extend_from_slice(&meta.filter_attributes);
+    for (i, predicate) in predicates.iter().enumerate() {
+        // Only the admin fixed filter may use unpublished columns.
+        let meta = if i == 0 && fixed.is_some() {
+            &wide
+        } else {
+            meta
+        };
         compile_using(&mut QueryBuilder::new(""), predicate, meta, &mut |_, _| {
             Ok(())
         })?;
@@ -65,7 +73,7 @@ pub async fn prepare(
         predicates,
         geometries,
         bbox,
-        meta: meta.clone(),
+        meta: wide,
     })
 }
 

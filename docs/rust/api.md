@@ -53,6 +53,12 @@ dominios, enums y homónimos de otros esquemas son 400 invalid_request. La geome
 `geometry` del esquema de la extensión PostGIS. data_type conserva el nombre canónico. POST y
 PATCH verifican SELECT del rol actual sobre geometría, id y propiedades publicadas; si falta
 alguno, 400 invalid_request sin indicar cuál.
+El filter fijo (solo admin) puede usar cualquier columna inspeccionada aunque no esté en
+properties: cada campo debe existir con tipo admitido (no geometría) y SELECT, o 400
+invalid_request. Esas columnas se guardan en metadata.filter_attributes y ninguna salida
+(detalle público/admin, TileJSON, GeoJSON, MVT) las expone. Filtros, properties y sort del
+cliente solo ven propiedades publicadas: un campo oculto es 400 invalid_filter en filter e
+invalid_request en properties/sort. Si la columna oculta desaparece, 409 schema_changed.
 Tipo y SRID salen del typmod; si falta alguno, se infiere recorriendo todas las filas no nulas
 (sujeto a statement_timeout, exceso 504 query_timeout). Se exige un único SRID existente en
 spatial_ref_sys, solo 2D (Z/M es 400) y un único tipo o exactamente X+MultiX (POINT, LINESTRING,

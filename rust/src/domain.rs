@@ -218,6 +218,9 @@ pub struct Metadata {
     pub id_column: String,
     pub id_type: String,
     pub attributes: Vec<Attribute>,
+    /// Unpublished columns referenced only by the fixed filter; never exposed.
+    #[serde(default)]
+    pub filter_attributes: Vec<Attribute>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
