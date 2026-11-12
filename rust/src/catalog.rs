@@ -2,10 +2,7 @@ use crate::{
     config::Config,
     domain::{Dataset, Error, Metadata},
     migrations::CATALOG_VERSION,
-    postgis::{
-        connection::{Database, error},
-        introspection::inspect,
-    },
+    postgis::connection::{Database, error},
 };
 use sqlx::{Row, postgres::PgRow, types::Json};
 
@@ -234,8 +231,12 @@ impl Catalog {
         Ok(rows)
     }
 
-    pub async fn create(&self, dataset: &Dataset) -> Result<Publication, Error> {
-        let metadata = inspect(&self.database, &self.config, dataset).await?;
+    /// `metadata` is the caller's single inspection of `dataset`.
+    pub async fn create(
+        &self,
+        dataset: &Dataset,
+        metadata: Metadata,
+    ) -> Result<Publication, Error> {
         let mut tx = self.database.begin_catalog().await?;
         let row = sqlx::query("INSERT INTO atlas_catalog.datasets(id,config,metadata) VALUES ($1,$2,$3) RETURNING id,config,metadata,revision")
             .bind(&dataset.id).bind(Json(dataset)).bind(Json(metadata)).fetch_one(&mut *tx).await.map_err(error)?;
@@ -244,11 +245,16 @@ impl Catalog {
         Ok(record)
     }
 
-    pub async fn update(&self, dataset: &Dataset, revision: i64) -> Result<Publication, Error> {
+    /// `metadata` is the caller's single inspection of `dataset`.
+    pub async fn update(
+        &self,
+        dataset: &Dataset,
+        metadata: Metadata,
+        revision: i64,
+    ) -> Result<Publication, Error> {
         if revision <= 0 {
             return Err(Error::InvalidRequest);
         }
-        let metadata = inspect(&self.database, &self.config, dataset).await?;
         let mut tx = self.database.begin_catalog().await?;
         let row = sqlx::query("UPDATE atlas_catalog.datasets SET config=$1, metadata=$2, revision=revision+1, updated_at=now() WHERE id=$3 AND revision=$4 RETURNING id,config,metadata,revision")
             .bind(Json(dataset)).bind(Json(metadata)).bind(&dataset.id).bind(revision).fetch_optional(&mut *tx).await.map_err(error)?;

@@ -126,6 +126,8 @@ PostGIS; fallan si falta. CI proporciona una BD separada para Rust.
 ## Introspección (#214)
 
 `postgis::introspection::inspect` exige schemas permitidos y propiedades explícitas.
+POST/PATCH inspeccionan una sola vez: la validación devuelve la `Metadata` que el catálogo
+guarda.
 Tablas requieren PK simple; vistas/materializadas, id declarado único/no nulo.
 Una geometría se infiere solo si es única; varias requieren columna explícita.
 Geometría genérica vacía se rechaza; tipada vacía conserva CRS/tipo. Toda geometría
@@ -369,7 +371,8 @@ El pool se parte en dos: `data_operations` conexiones para el trabajo admitido y
 de POST/PATCH y `/ready`, que esperan como máximo `acquire_seconds` y luego responden 503
 `capacity_exceeded`. Así el catálogo nunca deja sin conexión a items, tiles ni export.
 El deadline de respuesta no cancela el worker SQL: conserva el cupo hasta rollback real;
-el timeout PostgreSQL acota el drenaje. Export transfiere el cupo al cursor y un productor
+el timeout PostgreSQL acota el drenaje. Features y tiles comparten un único helper de
+admisión, transacción y rollback. Export transfiere el cupo al cursor y un productor
 con canal acotado aplica `stream_seconds` incluso si el cliente deja de leer. El pool se
 cierra después del drenaje del servidor, acotado por `shutdown_seconds`; no se interpreta el rechazo como throughput.
 Cada export retiene además un cupo de `export_operations` (2 por defecto, entre 1 y

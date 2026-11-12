@@ -2,21 +2,23 @@ use crate::{
     auth::policy,
     catalog::{Catalog, Invalid, Publication},
     config::{Config, Limits},
-    domain::{Dataset, Error, Principal, Query},
+    domain::{Dataset, Error, Metadata, Principal, Query},
     postgis::{
         connection::Database,
         features::{self, Page},
         introspection::inspect,
         mvt,
-        selection::{fixed, prepare},
+        selection::{Selection, fixed, prepare},
     },
     query::predicate::Predicate,
 };
+use futures_util::future::BoxFuture;
 use serde::{
     Deserialize, Deserializer,
     de::{self, DeserializeOwned, MapAccess, SeqAccess, Visitor},
 };
 use serde_json::{Map, Value, json};
+use sqlx::{Postgres, Transaction};
 
 /// Percent-encodes every byte except RFC 3986 unreserved characters.
 fn encode(text: &str) -> String {
@@ -117,40 +119,27 @@ impl Publications {
         filter: Option<&Predicate>,
         properties: Option<&[String]>,
     ) -> Result<Vec<u8>, Error> {
-        let permit = self.admission.acquire()?;
-        let (service, publication, filter, properties) = (
-            self.clone(),
-            publication.clone(),
-            filter.cloned(),
-            properties.map(<[String]>::to_vec),
-        );
-        self.admission
-            .wait(async move {
-                let _permit = permit;
-                let mut tx = service.database.begin_data().await?;
-                let result = async {
-                    let fixed = fixed(&publication.config, &service.config.limits)?;
-                    let selection =
-                        prepare(&mut tx, fixed, filter, None, &publication.metadata).await?;
+        let properties = properties.map(<[String]>::to_vec);
+        self.data(
+            publication,
+            filter,
+            None,
+            move |tx, publication, selection, limits| {
+                Box::pin(async move {
                     mvt::tile(
-                        &mut tx,
+                        tx,
                         &publication.config,
                         &publication.metadata,
-                        &selection,
+                        selection,
                         xyz,
                         properties.as_deref(),
-                        &service.config.limits,
+                        limits,
                     )
                     .await
-                }
-                .await;
-                let cleanup = tx
-                    .rollback()
-                    .await
-                    .map_err(crate::postgis::connection::error);
-                cleanup.and(result)
-            })
-            .await
+                })
+            },
+        )
+        .await
     }
 
     /// `filter` is `query.filter` already parsed by the API layer.
@@ -160,30 +149,60 @@ impl Publications {
         query: &Query,
         filter: Option<&Predicate>,
     ) -> Result<Page, Error> {
+        let query = query.clone();
+        let bbox = query.bbox;
+        self.data(
+            publication,
+            filter,
+            bbox,
+            move |tx, publication, selection, limits| {
+                Box::pin(async move {
+                    features::page(
+                        tx,
+                        &publication.config,
+                        &publication.metadata,
+                        selection,
+                        &query,
+                        limits,
+                    )
+                    .await
+                })
+            },
+        )
+        .await
+    }
+
+    /// Admits a data operation and runs `run` on its selection in one rolled-back transaction.
+    async fn data<T, F>(
+        &self,
+        publication: &Publication,
+        filter: Option<&Predicate>,
+        bbox: Option<[f64; 4]>,
+        run: F,
+    ) -> Result<T, Error>
+    where
+        T: Send + 'static,
+        F: for<'a> FnOnce(
+                &'a mut Transaction<'static, Postgres>,
+                &'a Publication,
+                &'a Selection,
+                &'a Limits,
+            ) -> BoxFuture<'a, Result<T, Error>>
+            + Send
+            + 'static,
+    {
         let permit = self.admission.acquire()?;
-        let (service, publication, query, filter) = (
-            self.clone(),
-            publication.clone(),
-            query.clone(),
-            filter.cloned(),
-        );
+        let (service, publication, filter) = (self.clone(), publication.clone(), filter.cloned());
         self.admission
             .wait(async move {
                 let _permit = permit;
+                let limits = &service.config.limits;
                 let mut tx = service.database.begin_data().await?;
                 let result = async {
-                    let fixed = fixed(&publication.config, &service.config.limits)?;
+                    let fixed = fixed(&publication.config, limits)?;
                     let selection =
-                        prepare(&mut tx, fixed, filter, query.bbox, &publication.metadata).await?;
-                    features::page(
-                        &mut tx,
-                        &publication.config,
-                        &publication.metadata,
-                        &selection,
-                        &query,
-                        &service.config.limits,
-                    )
-                    .await
+                        prepare(&mut tx, fixed, filter, bbox, &publication.metadata).await?;
+                    run(&mut tx, &publication, &selection, limits).await
                 }
                 .await;
                 let cleanup = tx
@@ -316,8 +335,8 @@ impl Publications {
             return Err(Error::InvalidRequest);
         }
         let dataset: Dataset = decode(body)?;
-        self.check(&dataset).await?;
-        self.catalog.create(&dataset).await
+        let metadata = self.check(&dataset).await?;
+        self.catalog.create(&dataset, metadata).await
     }
 
     pub async fn update(&self, id: &str, body: &[u8], revision: i64) -> Result<Publication, Error> {
@@ -344,15 +363,16 @@ impl Publications {
         if let Some(filter) = filter {
             dataset.filter = (filter.get().trim() != "null").then_some(filter);
         }
-        self.check(&dataset).await?;
-        self.catalog.update(&dataset, revision).await
+        let metadata = self.check(&dataset).await?;
+        self.catalog.update(&dataset, metadata, revision).await
     }
 
     pub async fn delete(&self, id: &str, revision: i64) -> Result<(), Error> {
         self.catalog.delete(id, revision).await
     }
 
-    async fn check(&self, dataset: &Dataset) -> Result<(), Error> {
+    /// Validates `dataset` and returns its single inspection for the catalog write.
+    async fn check(&self, dataset: &Dataset) -> Result<Metadata, Error> {
         dataset.validate(&self.config.allowed_schemas)?;
         let meta = inspect(&self.database, &self.config, dataset)
             .await
@@ -363,7 +383,7 @@ impl Publications {
         let fixed = fixed(dataset, &self.config.limits)?;
         let mut tx = self.database.begin_read().await?;
         prepare(&mut tx, fixed, None, None, &meta).await?;
-        Ok(())
+        Ok(meta)
     }
 }
 
