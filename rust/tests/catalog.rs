@@ -28,6 +28,7 @@ async fn persistent_publications_compare_and_swap_and_source_survives() {
         "GRANT USAGE ON SCHEMA atlas_catalog,catalog_test TO atlas_service_block",
         "GRANT SELECT ON catalog_test.source TO atlas_service_block",
         "GRANT SELECT,INSERT,UPDATE,DELETE ON atlas_catalog.datasets TO atlas_service_block",
+        "GRANT SELECT ON atlas_catalog.migrations TO atlas_service_block",
     ] {
         sqlx::query(statement).execute(&mut *tx).await.unwrap();
     }
@@ -222,6 +223,66 @@ async fn persistent_publications_compare_and_swap_and_source_survives() {
         assert!(matches!(result, Err(Error::SchemaChanged)), "{broken}");
     }
     edit(format!("DELETE FROM atlas_catalog.datasets {row}")).await;
+    // Readiness requires exactly the latest embedded migration version (3).
+    // Hold migrate()'s advisory lock so concurrent tests cannot re-apply what this hides.
+    let mut lock =
+        <sqlx::PgConnection as sqlx::Connection>::connect(owner.database_url.as_deref().unwrap())
+            .await
+            .unwrap();
+    for statement in [
+        "SELECT pg_advisory_lock(657852314)",
+        "DROP TABLE IF EXISTS atlas_catalog.migrations_hidden",
+    ] {
+        sqlx::query(statement).execute(&mut lock).await.unwrap();
+    }
+    let admin = Database::open(&owner).await.unwrap();
+    for (statement, ready) in [
+        (
+            "DELETE FROM atlas_catalog.migrations WHERE version = 3",
+            false,
+        ),
+        (
+            "INSERT INTO atlas_catalog.migrations(version) VALUES (4)",
+            false,
+        ),
+        (
+            "INSERT INTO atlas_catalog.migrations(version) VALUES (3)",
+            false,
+        ),
+        (
+            "DELETE FROM atlas_catalog.migrations WHERE version = 4",
+            true,
+        ),
+        ("DELETE FROM atlas_catalog.migrations", false),
+        (
+            "INSERT INTO atlas_catalog.migrations(version) VALUES (3)",
+            true,
+        ),
+        (
+            "INSERT INTO atlas_catalog.migrations(version) VALUES (1)",
+            true,
+        ),
+        (
+            "ALTER TABLE atlas_catalog.migrations RENAME TO migrations_hidden",
+            false,
+        ),
+        (
+            "ALTER TABLE atlas_catalog.migrations_hidden RENAME TO migrations",
+            true,
+        ),
+    ] {
+        let mut tx = admin.begin_catalog().await.unwrap();
+        sqlx::query(statement).execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        let expected = if ready {
+            Ok(())
+        } else {
+            Err(Error::DatabaseUnavailable)
+        };
+        assert_eq!(catalog.ready().await, expected, "{statement}");
+    }
+    admin.close().await;
+    sqlx::Connection::close(lock).await.unwrap();
     let mut tx = db.begin_read().await.unwrap();
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM catalog_test.source")
