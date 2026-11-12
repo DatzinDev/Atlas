@@ -39,6 +39,13 @@ fn next_id() -> String {
     format!("{}-{}", *NONCE, COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
+/// The current request's id; outside `track` (direct calls) a fresh one keeps output well-formed.
+pub(crate) fn request_id() -> String {
+    REQUEST_ID
+        .try_with(String::clone)
+        .unwrap_or_else(|_| next_id())
+}
+
 /// Writes one structured JSON line to stderr.
 pub fn log(line: Value) {
     eprintln!("{line}");
@@ -94,11 +101,7 @@ impl IntoResponse for Error {
 pub fn failure(error: Error) -> Response {
     let code = serde_json::to_value(error).unwrap_or(Value::Null);
     let message = code.as_str().unwrap_or("error").replace('_', " ");
-    // Outside `track` (direct calls) a fresh id keeps the body well-formed.
-    let request_id = REQUEST_ID
-        .try_with(String::clone)
-        .unwrap_or_else(|_| next_id());
-    let body = json!({"code": code, "message": message, "request_id": request_id});
+    let body = json!({"code": code, "message": message, "request_id": request_id()});
     let mut response = respond(status(error), Some(body), None);
     response.extensions_mut().insert(error);
     response

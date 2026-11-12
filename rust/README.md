@@ -197,7 +197,8 @@ audience = 'atlas'
 El middleware verifica Authorization antes de ejecutar handlers, incluidas rutas públicas.
 Sin cabecera inserta un Principal anónimo; tokens inválidos devuelven 401 estructurado.
 Con auth sin configurar, cualquier Authorization falla cerrado. Solo Bearer en cabecera;
-credenciales en query string no se usan. No registrar tokens ni cabeceras.
+credenciales en query string no se usan. No registrar tokens ni cabeceras. Cada 401
+registra `auth_failed` con `request_id` y un `reason` estable (ver auth-verification.md).
 
 ## Políticas (#217)
 
@@ -330,7 +331,8 @@ La ruta y los permisos de descarga se incorporan en #303.
 `format=geojson`, `filter`, `bbox` y `properties`, únicos. Comparte el filtro fijo AND
 usuario AND bbox con items. Devuelve `application/geo+json`, `no-store` y attachment
 con nombre derivado del id validado. Conteo excedido: 413 antes de headers. Presupuestos
-tardíos: corta el cuerpo y registra `export_failed` con código fijo, sin datos del usuario.
+tardíos: corta el cuerpo y registra una sola línea `export_failed` con `code` fijo y el
+`request_id` de la petición que abrió la descarga, sin datos del usuario.
 El cliente debe tratar cualquier colección incompleta como una descarga fallida.
 
 ## Admisión y cancelación (#228)

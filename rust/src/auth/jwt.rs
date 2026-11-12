@@ -1,5 +1,5 @@
 use crate::domain::{Error, Principal};
-use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, errors::ErrorKind};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -19,6 +19,25 @@ struct Claims {
 
 fn present_timestamp<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
     u64::deserialize(d).map(Some)
+}
+
+fn reason(kind: &ErrorKind) -> &'static str {
+    match kind {
+        ErrorKind::InvalidSignature => "invalid_signature",
+        ErrorKind::InvalidAlgorithm
+        | ErrorKind::MissingAlgorithm
+        | ErrorKind::UnsupportedAlgorithm
+        | ErrorKind::InvalidAlgorithmName => "invalid_algorithm",
+        ErrorKind::ExpiredSignature => "expired",
+        ErrorKind::ImmatureSignature => "not_yet_valid",
+        ErrorKind::InvalidIssuer => "invalid_issuer",
+        ErrorKind::InvalidAudience => "invalid_audience",
+        ErrorKind::MissingRequiredClaim(_)
+        | ErrorKind::InvalidClaimFormat(_)
+        | ErrorKind::InvalidSubject
+        | ErrorKind::Json(_) => "invalid_claims",
+        _ => "malformed_token",
+    }
 }
 
 pub struct Verifier {
@@ -49,16 +68,17 @@ impl Verifier {
         Ok(Self { key, validation })
     }
 
-    pub fn verify(&self, token: &str) -> Result<Principal, Error> {
+    /// On failure returns a stable reason for logs; never the token or its claims.
+    pub fn verify(&self, token: &str) -> Result<Principal, &'static str> {
         // Bound decoding and signature work independently of future request body limits.
         if token.len() > 16384 {
-            return Err(Error::InvalidToken);
+            return Err("token_too_large");
         }
         let claims = decode::<Claims>(token, &self.key, &self.validation)
-            .map_err(|_| Error::InvalidToken)?
+            .map_err(|e| reason(e.kind()))?
             .claims;
         if claims.sub.trim().is_empty() || claims.roles.iter().any(|r| r.trim().is_empty()) {
-            return Err(Error::InvalidToken);
+            return Err("invalid_claims");
         }
         Ok(Principal {
             sub: Some(claims.sub),

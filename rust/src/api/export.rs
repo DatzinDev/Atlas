@@ -44,26 +44,24 @@ async fn export(
     let mut export = service.export(id, &principal, &query).await?;
     let deadline = export.deadline();
     let (sender, receiver) = tokio::sync::mpsc::channel(1);
+    // Task-locals do not cross `spawn`: capture the id of the request that opened the download.
+    let request_id = super::request_id();
     tokio::spawn(async move {
         loop {
             let chunk = export.next().await;
             let finished = !matches!(chunk, Ok(Some(_)));
-            if let Err(error) = &chunk {
-                eprintln!(
-                    "{}",
-                    serde_json::json!({"event":"export_failed", "code":error})
-                );
+            let mut failed = chunk.as_ref().err().copied();
+            let sent = tokio::time::timeout_at(deadline, sender.send(chunk)).await;
+            if sent.is_err() {
+                failed = failed.or(Some(Error::QueryTimeout));
             }
-            match tokio::time::timeout_at(deadline, sender.send(chunk)).await {
-                Ok(Ok(())) if !finished => {}
-                Err(_) => {
-                    eprintln!(
-                        "{}",
-                        serde_json::json!({"event":"export_failed", "code":"query_timeout"})
-                    );
-                    break;
-                }
-                _ => break,
+            // One line per failed stream: the chunk error wins over a later send timeout.
+            if let Some(code) = failed {
+                super::log(serde_json::json!({"event": "export_failed",
+                    "request_id": request_id, "code": code}));
+            }
+            if finished || !matches!(sent, Ok(Ok(()))) {
+                break;
             }
         }
     });
