@@ -58,25 +58,56 @@ pub async fn inspect(
         quote_identifier(&source.table)
     );
     if geometry_type.eq_ignore_ascii_case("geometry") || srid <= 0 {
+        // A sampled row cannot prove a uniform SRID/type/dimension: scan every non-null row.
         let column = quote_identifier(&geometry_column);
-        let mut query = sqlx::QueryBuilder::new("SELECT GeometryType(");
+        let mut query = sqlx::QueryBuilder::new("SELECT min(ST_SRID(");
         query
             .push(&column)
-            .push(") AS kind, ST_SRID(")
+            .push(")) AS min_srid, max(ST_SRID(")
             .push(&column)
-            .push(") AS srid FROM ")
+            .push(")) AS max_srid, max(ST_NDims(")
+            .push(&column)
+            .push(")) AS dims, array_agg(DISTINCT GeometryType(")
+            .push(&column)
+            .push(")) AS kinds FROM ")
             .push(&relation_name)
             .push(" WHERE ")
             .push(&column)
-            .push(" IS NOT NULL LIMIT 1");
-        let sample = query
-            .build()
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(error)?
-            .ok_or(Error::InvalidRequest)?;
-        geometry_type = sample.try_get("kind").map_err(error)?;
-        srid = sample.try_get("srid").map_err(error)?;
+            .push(" IS NOT NULL");
+        let stats = query.build().fetch_one(&mut *tx).await.map_err(error)?;
+        if srid <= 0 {
+            let min: Option<i32> = stats.try_get("min_srid").map_err(error)?;
+            let max: Option<i32> = stats.try_get("max_srid").map_err(error)?;
+            srid = match (min, max) {
+                (Some(min), Some(max)) if min == max => min,
+                _ => return Err(Error::InvalidRequest),
+            };
+        }
+        if geometry_type.eq_ignore_ascii_case("geometry") {
+            let dims: Option<i16> = stats.try_get("dims").map_err(error)?;
+            let mut kinds: Vec<String> = stats
+                .try_get::<Option<Vec<String>>, _>("kinds")
+                .map_err(error)?
+                .unwrap_or_default();
+            kinds.sort();
+            geometry_type = match (dims, kinds.as_slice()) {
+                (Some(2), [kind]) => kind.clone(),
+                (Some(2), [a, b]) => {
+                    let (multi, single) = if a.starts_with("MULTI") {
+                        (a, b)
+                    } else {
+                        (b, a)
+                    };
+                    if !["POINT", "LINESTRING", "POLYGON"].contains(&single.as_str())
+                        || *multi != format!("MULTI{single}")
+                    {
+                        return Err(Error::InvalidRequest);
+                    }
+                    multi.clone()
+                }
+                _ => return Err(Error::InvalidRequest),
+            };
+        }
     }
     geometry_type.make_ascii_uppercase();
     if srid <= 0

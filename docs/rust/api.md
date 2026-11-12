@@ -41,6 +41,11 @@ PATCH usa Merge Patch: campos omitidos se conservan; null solo borra campos opci
 la configuración resultante se valida e inspecciona como en POST. id no cambia con PATCH.
 Publicar relación ambigua exige geometry_column explícita. id_column es PK simple o clave
 de vista única/no nula verificada. Source solo referencia la BD configurada.
+Tipo y SRID salen del typmod; si falta alguno, se infiere recorriendo todas las filas no nulas
+(sujeto a statement_timeout, exceso 504 query_timeout). Se exige un único SRID existente en
+spatial_ref_sys, solo 2D (Z/M es 400) y un único tipo o exactamente X+MultiX (POINT, LINESTRING,
+POLYGON), publicado como MultiX; otra mezcla es 400. Una relación sin filas no nulas y sin typmod
+es 400: declarar la columna como geometry(Tipo,SRID).
 ETag es la revision entre comillas en detalle administrativo/POST/PATCH. If-Match es obligatorio
 para PATCH/DELETE; ausente o malformado es 400, revisión distinta 412. DELETE devuelve 204.
 No usar ETag de datos: la revisión del catálogo no identifica cambios externos en PostGIS.
