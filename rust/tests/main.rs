@@ -43,6 +43,48 @@ fn configuration_errors_do_not_echo_input() {
 }
 
 #[test]
+fn weak_public_key_fails_before_listening() {
+    let config = std::env::temp_dir().join(format!("atlas-weak-key-{}.toml", std::process::id()));
+    std::fs::write(
+        &config,
+        "[auth]\npublic_key_file='tests/fixtures/jwt-test-1024-public.pem'\nissuer='atlas-test'\naudience='atlas'\n",
+    )
+    .unwrap();
+    let address = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .to_string();
+    let mut server = Server(
+        Command::new(env!("CARGO_BIN_EXE_atlas"))
+            .args(["serve", "--config", config.to_str().unwrap()])
+            .args(["--listen", &address])
+            .env_remove("ATLAS_DATABASE_URL")
+            .env_remove("ATLAS_LISTEN")
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut stderr = server.0.stderr.take().unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    // EOF on stderr means the process exited; a listening server keeps it open.
+    thread::spawn(move || {
+        let mut output = String::new();
+        let _ = stderr.read_to_string(&mut output);
+        let _ = sender.send(output);
+    });
+    let output = receiver.recv_timeout(Duration::from_secs(10));
+    let _ = std::fs::remove_file(&config);
+    let output = output.expect("server with a 1024-bit key must exit, not listen");
+    assert!(!server.0.wait().unwrap().success());
+    assert_eq!(
+        output.trim(),
+        r#"{"event":"startup_failed","message":"invalid authentication configuration"}"#
+    );
+    assert!(TcpStream::connect(&address).is_err());
+}
+
+#[test]
 fn http_startup_and_shutdown() {
     let dsn = std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required");
     assert!(

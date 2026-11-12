@@ -66,6 +66,22 @@ fn allowed_schemas_reject_system_schemas() {
 fn jwt_trust_configuration_is_closed_and_local() {
     let text = "[auth]\npublic_key_file='tests/fixtures/jwt-test-public.pem'\nissuer='atlas-test'\naudience='atlas'";
     let config = Config::parse(text, None, None).unwrap();
+    let auth = config.auth.unwrap();
+    assert_eq!(auth.leeway_seconds, 30);
+    assert!(auth.verifier().is_ok());
+    for leeway in [0, 300] {
+        let config =
+            Config::parse(&format!("{text}\nleeway_seconds={leeway}"), None, None).unwrap();
+        let auth = config.auth.unwrap();
+        assert_eq!(auth.leeway_seconds, leeway);
+        assert!(auth.verifier().is_ok());
+    }
+    for leeway in ["301", "-1", "1.5", "'30'", "99999999999"] {
+        let text = format!("{text}\nleeway_seconds={leeway}");
+        assert!(Config::parse(&text, None, None).is_err(), "{leeway}");
+    }
+    let strong = text.replace("jwt-test-public.pem", "jwt-test-4096-public.pem");
+    let config = Config::parse(&strong, None, None).unwrap();
     assert!(config.auth.unwrap().verifier().is_ok());
     for invalid in [
         "[auth]",
@@ -87,6 +103,7 @@ fn jwt_trust_configuration_is_closed_and_local() {
     for path in [
         "/missing/secret-key.pem",
         "tests/fixtures/jwt-test-private.pem",
+        "tests/fixtures/jwt-test-1024-public.pem",
         "Cargo.toml",
     ] {
         let text = text.replace("tests/fixtures/jwt-test-public.pem", path);
