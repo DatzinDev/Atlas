@@ -1,7 +1,7 @@
 use std::{env, process::ExitCode};
 
 use atlas::{
-    api::{failure, nosniff},
+    api::{failure, nosniff, track},
     config::Config,
     domain::Error,
 };
@@ -113,7 +113,9 @@ async fn serve(config: Config) -> Result<(), &'static str> {
         .fallback(|| async { failure(Error::NotFound) })
         // Set after every route is added: axum applies it to existing routes and keeps `Allow`.
         .method_not_allowed_fallback(|| async { failure(Error::MethodNotAllowed) })
-        .layer(axum::middleware::map_response(nosniff));
+        .layer(axum::middleware::map_response(nosniff))
+        // Outermost: every response, including fallbacks and 401s, gets the request id.
+        .layer(axum::middleware::from_fn(track));
     eprintln!("{{\"event\":\"listening\",\"address\":\"{bound}\"}}");
     let result = axum::serve(listener, router)
         .with_graceful_shutdown(async move {

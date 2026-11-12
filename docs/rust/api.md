@@ -106,6 +106,10 @@ de la tabla en If-Match y después POST.
 Los ejemplos no incluyen tokens reales. Usar cabecera Authorization, nunca query string.
 
 Error uniforme `{code,message,request_id}`; sin SQL, valores filtrados, paths ni credenciales.
+Toda respuesta lleva `x-request-id` con formato `<nonce>-<n>` (nonce de 16 hex fijado al
+arrancar, contador del proceso); en errores coincide con `request_id` del cuerpo. Se ignora el
+`x-request-id` del cliente. Cada petición deja una línea JSON `event: request` en stderr con
+request_id, method, path (sin query), status, duration_ms y `code` en errores.
 400 invalid_request/invalid_filter; 401 invalid_token; 403 permission_denied;
 404 dataset_not_found/not_found; 405 method_not_allowed; 409 publication_conflict/schema_changed;
 412 revision_mismatch; 413 query_too_large; 500 internal_error;

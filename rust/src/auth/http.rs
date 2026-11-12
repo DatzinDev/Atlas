@@ -1,15 +1,13 @@
 use super::jwt::Verifier;
+use crate::api::failure;
 use crate::domain::{Error, Principal};
 use axum::{
     extract::{Request, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, header},
     middleware::Next,
-    response::{IntoResponse, Response},
+    response::Response,
 };
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Arc;
 
 fn principal(headers: &HeaderMap, verifier: Option<&Verifier>) -> Result<Principal, Error> {
     let mut values = headers.get_all("authorization").iter();
@@ -44,19 +42,11 @@ pub async fn authenticate(
             next.run(request).await
         }
         Err(_) => {
-            static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
-            let body = serde_json::json!({"code": Error::InvalidToken,
-                "message":"invalid token", "request_id":REQUEST_ID.fetch_add(1, Ordering::Relaxed).to_string()});
-            (
-                StatusCode::UNAUTHORIZED,
-                [
-                    ("content-type", "application/json"),
-                    ("www-authenticate", "Bearer"),
-                    ("cache-control", "no-store"),
-                ],
-                body.to_string(),
-            )
-                .into_response()
+            let mut response = failure(Error::InvalidToken);
+            response
+                .headers_mut()
+                .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+            response
         }
     }
 }

@@ -6,11 +6,68 @@ pub mod tiles;
 
 use crate::domain::Error;
 use axum::{
+    extract::Request,
     http::{HeaderValue, StatusCode, header},
+    middleware::Next,
     response::{IntoResponse, Response},
 };
 use serde_json::{Value, json};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    sync::{
+        LazyLock,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
+
+tokio::task_local! {
+    static REQUEST_ID: String;
+}
+
+/// `<nonce>-<n>`: a 16-hex nonce fixed at startup plus a process-wide counter.
+fn next_id() -> String {
+    static NONCE: LazyLock<String> = LazyLock::new(|| {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64);
+        format!(
+            "{:016x}",
+            nanos ^ u64::from(std::process::id()).rotate_left(32)
+        )
+    });
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    format!("{}-{}", *NONCE, COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
+/// Writes one structured JSON line to stderr.
+pub fn log(line: Value) {
+    eprintln!("{line}");
+}
+
+/// Outermost middleware: assigns the request id, sets `x-request-id` and logs the request.
+/// Client-sent `x-request-id` is ignored; never logs headers, bodies or the query string.
+pub async fn track(request: Request, next: Next) -> Response {
+    let (id, start) = (next_id(), Instant::now());
+    let method = request.method().to_string();
+    let mut path = request.uri().path().to_owned();
+    let mut end = path.len().min(256);
+    while !path.is_char_boundary(end) {
+        end -= 1;
+    }
+    path.truncate(end);
+    let mut response = REQUEST_ID.scope(id.clone(), next.run(request)).await;
+    if let Ok(value) = HeaderValue::from_str(&id) {
+        response.headers_mut().insert("x-request-id", value);
+    }
+    let mut line = json!({"event": "request", "request_id": id, "method": method,
+        "path": path, "status": response.status().as_u16(),
+        "duration_ms": start.elapsed().as_millis() as u64});
+    if let Some(error) = response.extensions().get::<Error>() {
+        line["code"] = json!(error);
+    }
+    log(line);
+    response
+}
 
 pub fn status(error: Error) -> StatusCode {
     match error {
@@ -35,12 +92,16 @@ impl IntoResponse for Error {
 }
 
 pub fn failure(error: Error) -> Response {
-    static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
     let code = serde_json::to_value(error).unwrap_or(Value::Null);
     let message = code.as_str().unwrap_or("error").replace('_', " ");
-    let body = json!({"code": code, "message": message,
-        "request_id": REQUEST_ID.fetch_add(1, Ordering::Relaxed).to_string()});
-    respond(status(error), Some(body), None)
+    // Outside `track` (direct calls) a fresh id keeps the body well-formed.
+    let request_id = REQUEST_ID
+        .try_with(String::clone)
+        .unwrap_or_else(|_| next_id());
+    let body = json!({"code": code, "message": message, "request_id": request_id});
+    let mut response = respond(status(error), Some(body), None);
+    response.extensions_mut().insert(error);
+    response
 }
 
 pub async fn nosniff(mut response: Response) -> Response {

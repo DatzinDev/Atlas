@@ -43,7 +43,9 @@ columnas del catálogo: 200 si están disponibles, 503 estructurado si no.
 Sin DSN se puede iniciar health, pero readiness permanece en 503. El resto
 devuelve 404; aún no hay API geoespacial. SIGINT y,
 en Unix, SIGTERM detienen aceptación y esperan conexiones mediante el shutdown
-de Axum. Logs JSON mínimos en stderr, sin registrar solicitudes ni cabeceras.
+de Axum. Logs JSON en stderr (`api::log`): el middleware `api::track` emite una línea
+`{"event":"request","request_id","method","path","status","duration_ms"}` por petición, con
+`code` si es error; `path` sin query y truncado a 256 bytes, nunca cabeceras, cuerpos ni tokens.
 El cierre del servidor espera las conexiones prestadas y cierra el pool.
 
 ## Contenedor de desarrollo
