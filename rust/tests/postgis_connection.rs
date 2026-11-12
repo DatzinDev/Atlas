@@ -169,3 +169,75 @@ async fn sqlstate_mapping() {
     assert_eq!(error(sqlx::Error::PoolTimedOut), Error::CapacityExceeded);
     database.close().await;
 }
+
+/// Reads `(current_setting, reset_val)` of `statement_timeout` inside a fresh transaction.
+async fn timeouts(tx: &mut sqlx::Transaction<'static, sqlx::Postgres>) -> (String, String) {
+    sqlx::query_as(
+        "SELECT current_setting('statement_timeout'), \
+         (SELECT reset_val FROM pg_settings WHERE name = 'statement_timeout')",
+    )
+    .fetch_one(&mut **tx)
+    .await
+    .unwrap()
+}
+
+/// Session default as seen by a plain connection with the same DSN (server default plus
+/// whatever the URL itself carries), without any Atlas option.
+async fn session_default(dsn: &str) -> String {
+    use sqlx::Connection;
+    let mut connection = sqlx::PgConnection::connect(dsn).await.unwrap();
+    let value: String =
+        sqlx::query_scalar("SELECT reset_val FROM pg_settings WHERE name = 'statement_timeout'")
+            .fetch_one(&mut connection)
+            .await
+            .unwrap();
+    connection.close().await.unwrap();
+    value
+}
+
+#[tokio::test]
+async fn statement_timeout_is_transaction_local_without_startup_options() {
+    let dsn = std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required");
+    let server_default = session_default(&dsn).await;
+    let config = Config::parse(
+        "[limits]\npool_max=2\ndata_operations=1\nexport_operations=1\nquery_seconds=30",
+        Some(dsn),
+        None,
+    )
+    .unwrap();
+    let database = Database::open(&config).await.unwrap();
+    // One reserved connection: every transaction below reuses the same physical session.
+    let mut tx = database.begin_read().await.unwrap();
+    let (current, reset) = timeouts(&mut tx).await;
+    assert_eq!(current, "30s");
+    // A startup `options` would turn the session default into 30000.
+    assert_eq!(reset, server_default);
+    tx.rollback().await.unwrap();
+    let mut tx = database.begin_catalog().await.unwrap();
+    let (current, reset) = timeouts(&mut tx).await;
+    assert_eq!(current, "30s");
+    assert_eq!(reset, server_default);
+    tx.commit().await.unwrap();
+    database.close().await;
+}
+
+#[tokio::test]
+async fn url_options_are_kept_and_transaction_timeout_still_wins() {
+    let dsn = std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required");
+    let separator = if dsn.contains('?') { '&' } else { '?' };
+    let dsn = format!("{dsn}{separator}options=-c%20statement_timeout%3D7s");
+    let config = Config::parse(
+        "[limits]\npool_max=2\ndata_operations=1\nexport_operations=1\nquery_seconds=30",
+        Some(dsn),
+        None,
+    )
+    .unwrap();
+    let database = Database::open(&config).await.unwrap();
+    let mut tx = database.begin_read().await.unwrap();
+    let (current, reset) = timeouts(&mut tx).await;
+    assert_eq!(current, "30s");
+    // The URL's own startup option is the session default; Atlas adds none on top of it.
+    assert_eq!(reset, "7000");
+    drop(tx);
+    database.close().await;
+}

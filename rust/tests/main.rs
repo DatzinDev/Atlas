@@ -72,7 +72,8 @@ fn weak_public_key_fails_before_listening() {
         Command::new(env!("CARGO_BIN_EXE_atlas"))
             .args(["serve", "--config", config.to_str().unwrap()])
             .args(["--listen", &address])
-            .env_remove("ATLAS_DATABASE_URL")
+            // Never dialled: the key check fails before any connection is opened.
+            .env("ATLAS_DATABASE_URL", "postgres://unused.invalid/atlas")
             .env_remove("ATLAS_LISTEN")
             .stderr(Stdio::piped())
             .spawn()
@@ -109,19 +110,12 @@ fn http_startup_and_shutdown() {
             .status
             .success()
     );
-    for (signal, database, auth) in [
-        ("-TERM", None, false),
-        ("-INT", None, false),
-        ("-TERM", Some(&dsn), true),
-    ] {
+    for (signal, auth) in [("-TERM", false), ("-INT", false), ("-TERM", true)] {
         let mut command = Command::new(env!("CARGO_BIN_EXE_atlas"));
         command.arg("serve");
         command
-            .env_remove("ATLAS_DATABASE_URL")
+            .env("ATLAS_DATABASE_URL", &dsn)
             .env_remove("ATLAS_LISTEN");
-        if let Some(dsn) = database {
-            command.env("ATLAS_DATABASE_URL", dsn);
-        }
         if auth {
             command.args(["--config", "tests/fixtures/jwt-test.toml"]);
         }
@@ -148,18 +142,10 @@ fn http_startup_and_shutdown() {
             .unwrap();
         for (path, status, authorization) in [
             ("health", "200", ""),
-            ("ready", if database.is_some() { "200" } else { "503" }, ""),
-            (
-                "datasets",
-                if database.is_some() { "200" } else { "404" },
-                "",
-            ),
+            ("ready", "200", ""),
+            ("datasets", "200", ""),
             ("health", "200", "Authorization: Bearer secret-token\r\n"),
-            (
-                "ready",
-                if database.is_some() { "200" } else { "503" },
-                "Authorization: Bearer secret-token\r\n",
-            ),
+            ("ready", "200", "Authorization: Bearer secret-token\r\n"),
         ] {
             let mut stream = TcpStream::connect(address).unwrap();
             stream
@@ -181,21 +167,10 @@ fn http_startup_and_shutdown() {
                 head.contains("x-content-type-options: nosniff"),
                 "{response}"
             );
-            if path == "ready" && database.is_none() {
-                assert!(
-                    response.contains("\"code\":\"database_unavailable\"")
-                        && response.contains("request_id")
-                        && head.contains("cache-control: no-store")
-                        && head.contains("content-type: application/json"),
-                    "{response}"
-                );
-            }
-            if path == "datasets" && database.is_none() {
-                assert!(response.contains("\"code\":\"not_found\""), "{response}");
-            }
         }
         let occupied = Command::new(env!("CARGO_BIN_EXE_atlas"))
             .args(["serve", "--listen", address])
+            .env("ATLAS_DATABASE_URL", &dsn)
             .output()
             .unwrap();
         assert!(!occupied.status.success());
@@ -476,17 +451,17 @@ fn http_fallback_public_probes_and_nosniff() {
     let nonces: HashSet<_> = ids.iter().map(|id| nonce(id)).collect();
     assert!(ids.len() == 100 && ids.iter().all(|id| well_formed(id)) && nonces.len() == 1);
 
-    // Another process without DSN: 503 ready, client id ignored, different nonce.
+    // Another process: client id ignored, different nonce.
     let (_other, other, _) = start(
         Command::new(env!("CARGO_BIN_EXE_atlas"))
             .args(["serve", "--config", "tests/fixtures/jwt-test.toml"])
-            .env_remove("ATLAS_DATABASE_URL"),
+            .env("ATLAS_DATABASE_URL", &dsn),
     );
     let ready = call(
         &other,
         "GET /api/v1/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nX-Request-Id: abc\r\n\r\n",
     );
-    assert_error(&ready, 503, "database_unavailable");
+    assert_eq!(ready.0, 200, "{}", ready.1);
     assert!(!nonces.contains(nonce(request_id(&ready.1))), "{}", ready.1);
 
     // One `event:request` line per request, matching the response; no secrets in stderr.
@@ -976,4 +951,127 @@ async fn shutdown_deadline_aborts_stalled_work() {
     wait_for_sessions(&mut monitor, false, false).await;
     drop(download);
     let _ = std::fs::remove_file(&file);
+}
+
+/// Runs a command that must exit on its own; a server left listening fails the test.
+fn exit_output(command: &mut Command) -> (bool, String) {
+    let mut child = Server(
+        command
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "serve kept running");
+        thread::sleep(Duration::from_millis(10));
+    };
+    let mut stderr = String::new();
+    child
+        .0
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    (status.success(), stderr)
+}
+
+#[test]
+fn serve_without_database_url_fails_before_listening() {
+    // Holding the port proves the check runs before binding: otherwise bind would fail first.
+    let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let busy = occupied.local_addr().unwrap().to_string();
+    for args in [
+        vec!["serve", "--listen", busy.as_str()],
+        vec![
+            "serve",
+            "--config",
+            "tests/fixtures/jwt-test.toml",
+            "--listen",
+            busy.as_str(),
+        ],
+    ] {
+        let (success, stderr) = exit_output(
+            Command::new(env!("CARGO_BIN_EXE_atlas"))
+                .args(&args)
+                .env_remove("ATLAS_DATABASE_URL")
+                .env_remove("ATLAS_LISTEN"),
+        );
+        assert!(!success, "{args:?}: {stderr}");
+        assert!(
+            stderr.contains(r#"{"event":"startup_failed","message":"database url required"}"#),
+            "{args:?}: {stderr}"
+        );
+        assert!(
+            !stderr.contains("listening") && !stderr.contains("cannot bind listener"),
+            "{args:?}: {stderr}"
+        );
+    }
+    drop(occupied);
+}
+
+#[test]
+fn ready_is_unavailable_without_catalog() {
+    use sqlx::Connection;
+    let dsn = std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required");
+    let name = format!("atlas_main_ready_{}", std::process::id());
+    let (base, query) = dsn.split_once('?').unwrap_or((dsn.as_str(), ""));
+    let empty = format!(
+        "{}/{name}{}{query}",
+        base.rsplit_once('/').unwrap().0,
+        if query.is_empty() { "" } else { "?" }
+    );
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let run = |url: &str, sql: String| {
+        runtime.block_on(async move {
+            let mut connection = sqlx::PgConnection::connect(url).await.unwrap();
+            sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
+                .execute(&mut connection)
+                .await
+                .unwrap();
+            connection.close().await.unwrap();
+        })
+    };
+    run(&dsn, format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"));
+    run(&dsn, format!("CREATE DATABASE {name}"));
+    run(&empty, "CREATE EXTENSION postgis".to_owned());
+
+    let mut server = Server(
+        Command::new(env!("CARGO_BIN_EXE_atlas"))
+            .args(["serve", "--listen", "127.0.0.1:0"])
+            .env("ATLAS_DATABASE_URL", &empty)
+            .env_remove("ATLAS_LISTEN")
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let stderr = server.0.stderr.take().unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let mut lines = BufReader::new(stderr).lines();
+        sender.send(lines.next().unwrap().unwrap()).unwrap();
+        lines.for_each(drop);
+    });
+    let listening = receiver.recv_timeout(Duration::from_secs(10)).unwrap();
+    let address = listening
+        .strip_prefix("{\"event\":\"listening\",\"address\":\"")
+        .unwrap_or_else(|| panic!("{listening}"))
+        .strip_suffix("\"}")
+        .unwrap();
+    let get = |target: &str| {
+        call(
+            address,
+            &format!("GET {target} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"),
+        )
+    };
+    let (status, head, _) = get("/api/v1/health");
+    assert_eq!(status, 200, "{head}");
+    assert_error(&get("/api/v1/ready"), 503, "database_unavailable");
+    drop(server);
+    run(&dsn, format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"));
 }
