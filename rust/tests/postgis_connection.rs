@@ -1,7 +1,10 @@
 use atlas::{
     config::Config,
     domain::Error,
-    postgis::connection::{Database, error},
+    postgis::{
+        connection::{Database, error},
+        predicates::query_error,
+    },
 };
 use std::time::{Duration, Instant};
 
@@ -40,7 +43,7 @@ async fn timeout_saturation_rollback_cancel_and_close() {
         .execute(&mut *tx)
         .await
         .unwrap_err();
-    assert_eq!(error(err), Error::DatabaseUnavailable);
+    assert_eq!(error(err), Error::InternalError);
     drop(tx);
     let mut tx = database.begin_read().await.unwrap();
     let absent: bool = sqlx::query_scalar("SELECT to_regclass('pg_temp.rolled_back') IS NULL")
@@ -82,4 +85,87 @@ async fn timeout_saturation_rollback_cancel_and_close() {
         database.begin_read().await,
         Err(Error::DatabaseUnavailable)
     ));
+}
+
+async fn raised(database: &Database, code: &str) -> sqlx::Error {
+    let mut tx = database.begin_catalog().await.unwrap();
+    let statement =
+        format!("DO $$BEGIN RAISE EXCEPTION 'leaked-detail' USING ERRCODE = '{code}'; END$$");
+    // Safe: `code` only ever comes from fixed SQLSTATE literals in this test; DO blocks take no binds.
+    let failure = sqlx::query(sqlx::AssertSqlSafe(statement))
+        .execute(&mut *tx)
+        .await
+        .unwrap_err();
+    drop(tx);
+    failure
+}
+
+#[tokio::test]
+async fn sqlstate_mapping() {
+    let dsn = std::env::var("ATLAS_TEST_DATABASE_URL").expect("real disposable PostGIS required");
+    let config = Config::parse("", Some(dsn), None).unwrap();
+    let database = Database::open(&config).await.unwrap();
+    for (code, expected) in [
+        ("42501", Error::InternalError),
+        ("42883", Error::InternalError),
+        ("XX000", Error::InternalError),
+        ("22P02", Error::InternalError),
+        ("42703", Error::InternalError),
+        ("42P01", Error::InternalError),
+        ("P0001", Error::InternalError),
+        ("08006", Error::DatabaseUnavailable),
+        ("08000", Error::DatabaseUnavailable),
+        ("53300", Error::DatabaseUnavailable),
+        ("53100", Error::DatabaseUnavailable),
+        ("57P01", Error::DatabaseUnavailable),
+        ("57P02", Error::DatabaseUnavailable),
+        ("57P03", Error::DatabaseUnavailable),
+        ("57014", Error::QueryTimeout),
+        ("23505", Error::PublicationConflict),
+    ] {
+        assert_eq!(
+            error(raised(&database, code).await),
+            expected,
+            "error {code}"
+        );
+    }
+    for (code, expected) in [
+        ("22P02", Error::InvalidFilter),
+        ("22012", Error::InvalidFilter),
+        ("42703", Error::SchemaChanged),
+        ("42P01", Error::SchemaChanged),
+        ("42501", Error::InternalError),
+        ("42883", Error::InternalError),
+        ("XX000", Error::InternalError),
+        ("57014", Error::QueryTimeout),
+        ("57P01", Error::DatabaseUnavailable),
+    ] {
+        assert_eq!(
+            query_error(raised(&database, code).await),
+            expected,
+            "query_error {code}"
+        );
+    }
+    let mut tx = database.begin_read().await.unwrap();
+    let decode = sqlx::query_scalar::<_, i32>("SELECT 'x'::text")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap_err();
+    assert_eq!(error(decode), Error::InternalError);
+    drop(tx);
+    assert_eq!(
+        error(sqlx::Error::Decode("bad".into())),
+        Error::InternalError
+    );
+    assert_eq!(
+        query_error(sqlx::Error::Decode("bad".into())),
+        Error::InternalError
+    );
+    assert_eq!(
+        error(sqlx::Error::Io(std::io::Error::other("reset"))),
+        Error::DatabaseUnavailable
+    );
+    assert_eq!(error(sqlx::Error::PoolClosed), Error::DatabaseUnavailable);
+    assert_eq!(error(sqlx::Error::PoolTimedOut), Error::CapacityExceeded);
+    database.close().await;
 }

@@ -84,6 +84,8 @@ async fn server() -> (SocketAddr, Database) {
         "INSERT INTO items_test.utm SELECT n, 'u' || n, 1, ST_Transform(ST_SetSRID(ST_Point(n - 104.5, 17.5 + n % 7), 4326), 32614) FROM generate_series(1, 9) AS n",
         // Chosen by SQL: inside the densified bbox, outside the straight-edged transform.
         "INSERT INTO items_test.utm SELECT 100, 'edge', 1, ST_PointOnSurface(ST_Difference(ST_Transform(ST_Segmentize(e, 1), 32614), ST_Transform(e, 32614))) FROM ST_MakeEnvelope(-102, 18, -96, 22, 4326) AS e",
+        "CREATE FUNCTION items_test.boom(n integer) RETURNS text LANGUAGE plpgsql AS $$BEGIN RETURN 'p' || n; END$$",
+        "CREATE VIEW items_test.boom_view AS SELECT id, items_test.boom(id) AS name, rank, geom FROM items_test.places",
         "DELETE FROM atlas_catalog.datasets WHERE config->'source'->>'schema' <> 'items_test' OR id LIKE 'items\\_%'",
     ] {
         sqlx::query(statement).execute(&mut *tx).await.unwrap();
@@ -105,6 +107,8 @@ async fn server() -> (SocketAddr, Database) {
         );
         service.create(body.as_bytes()).await.unwrap();
     }
+    let boom = r#"{"id":"items_boom","title":"T","source":{"schema":"items_test","table":"boom_view","id_column":"id"},"properties":["name","rank"],"access":{"public":true}}"#;
+    service.create(boom.as_bytes()).await.unwrap();
     let verifier = Verifier::new(
         include_bytes!("fixtures/jwt-test-public.pem"),
         "atlas-test",
@@ -260,6 +264,37 @@ async fn items_and_query_over_real_http() {
         let (status, _, body) = call(a, "GET", doomed, "", "").await;
         assert_eq!(status, "409", "{body}");
         assert_eq!(body["code"], "schema_changed");
+    }
+
+    // Regression: privilege/internal errors raised while reading a published view
+    // are server faults (500), not an unavailable database (503) or a client error.
+    let boom = "/api/v1/datasets/items_boom/items";
+    assert_eq!(call(a, "GET", boom, "", "").await.0, "200");
+    for code in ["XX000", "42501", "42883"] {
+        let mut tx = db.begin_catalog().await.unwrap();
+        let replace = format!(
+            "CREATE OR REPLACE FUNCTION items_test.boom(n integer) RETURNS text LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'leaked-detail-{code}' USING ERRCODE = '{code}'; END$$"
+        );
+        // Safe: `code` only ever comes from the fixed SQLSTATE list above; function bodies take no binds.
+        sqlx::query(sqlx::AssertSqlSafe(replace))
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        for (method, target, body) in [
+            ("GET", boom.to_owned(), ""),
+            ("POST", "/api/v1/datasets/items_boom/query".to_owned(), "{}"),
+        ] {
+            let (status, _, body) = call(a, method, &target, "", body).await;
+            assert_eq!(status, "500", "{code} {method}: {body}");
+            assert_eq!(body["code"], "internal_error", "{code}");
+            assert!(body["request_id"].is_string() && body.get("features").is_none());
+            let text = body.to_string();
+            assert!(
+                !text.contains(code) && !text.contains("leaked-detail") && !text.contains("boom"),
+                "{text}"
+            );
+        }
     }
 }
 
