@@ -38,8 +38,10 @@ informa la dirección efectiva. Argumentos inválidos o fallos de bind devuelven
 salida no cero con mensajes fijos, sin copiar argumentos ni errores internos.
 Configuración de dominio/archivo, límites y errores REST pertenecen a #212.
 
-`GET /api/v1/health` devuelve 200; `/api/v1/ready` comprueba pool y acceso a las
-columnas del catálogo: 200 si están disponibles, 503 estructurado si no.
+`GET /api/v1/health` devuelve 200; `/api/v1/ready` comprueba pool, acceso a las
+columnas del catálogo y que `max(version)` de `atlas_catalog.migrations` sea exactamente
+la última versión embebida (3): 200 si se cumple, 503 `database_unavailable` si no
+(tabla ausente, versión menor o mayor).
 `serve` sin `database_url` (TOML o `ATLAS_DATABASE_URL`) termina con código no
 cero y `startup_failed`/`database url required` antes de abrir el puerto. El resto
 devuelve 404; aún no hay API geoespacial. SIGINT y,
@@ -136,12 +138,15 @@ geometría, id y cada propiedad publicada; si falta, 400 sin indicar la columna.
 
 ## Migración explícita (#215)
 
-`atlas migrate --config ddl.toml` crea `atlas_catalog.datasets` en una transacción
-con bloqueo de migración. Repetirla es seguro; `serve` nunca ejecuta DDL.
+`atlas migrate --config ddl.toml` aplica en orden, en una transacción con bloqueo de
+migración, cada archivo de `rust/migrations/` cuya versión no figure en
+`atlas_catalog.migrations(version, applied_at)` y registra esas versiones. Una
+instalación previa sin esa tabla queda con 1, 2 y 3 sin perder filas. Repetirla no cambia
+nada; `serve` nunca ejecuta DDL.
 Usar un rol DDL separado: propietario del esquema/tabla, con CREATE sobre la base.
 `CREATE SCHEMA IF NOT EXISTS` exige ese permiso incluso si `atlas_catalog` ya existe.
 La cuenta de servicio recibe únicamente USAGE en atlas_catalog y
-SELECT/INSERT/UPDATE/DELETE en datasets, además de USAGE/SELECT en los
+SELECT/INSERT/UPDATE/DELETE en datasets, SELECT en migrations, además de USAGE/SELECT en los
 esquemas/relaciones fuente permitidos. Nunca concederle CREATE ni propiedad de
 catálogo, base o fuentes.
 

@@ -50,6 +50,9 @@ MVT se produce en PostGIS; Rust no decodifica geometrías para volver a codifica
 Migración inicial crea atlas_catalog.datasets: id, configuración validada JSONB, metadatos
 inspeccionados JSONB, revision bigint y timestamps. id único; PATCH/DELETE con If-Match de la
 revision para evitar actualizaciones perdidas (412). Config/metadata siempre validados al leer.
+atlas_catalog.migrations(version, applied_at) registra cada migración embebida aplicada;
+`migrate` ejecuta solo las pendientes bajo el advisory lock y `/ready` exige que la versión
+máxima sea exactamente la última embebida (otra versión o tabla ausente → 503).
 Un repositorio concreto SQLx; sin interfaz genérica para otros backends.
 No caché de catálogo en el MVP: resolver publicación vigente por petición evita invalidación
 entre instancias. Actualizar publicación no revoca un stream ya autorizado; aplica a solicitudes

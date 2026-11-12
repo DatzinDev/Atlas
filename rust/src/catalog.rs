@@ -1,6 +1,7 @@
 use crate::{
     config::Config,
     domain::{Dataset, Error, Metadata},
+    migrations::CATALOG_VERSION,
     postgis::{
         connection::{Database, error},
         introspection::inspect,
@@ -37,7 +38,25 @@ impl Catalog {
             .execute(&mut *tx)
             .await
             .map_err(error)?;
-        tx.rollback().await.map_err(error)
+        // A missing versions table means an unmigrated catalog (503), not a 500 from 42P01.
+        let tracked: bool =
+            sqlx::query_scalar("SELECT to_regclass('atlas_catalog.migrations') IS NOT NULL")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(error)?;
+        let version: Option<i32> = if tracked {
+            sqlx::query_scalar("SELECT max(version) FROM atlas_catalog.migrations")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(error)?
+        } else {
+            None
+        };
+        tx.rollback().await.map_err(error)?;
+        if version != Some(CATALOG_VERSION) {
+            return Err(Error::DatabaseUnavailable);
+        }
+        Ok(())
     }
     pub fn new(database: Database, config: Config) -> Result<Self, Error> {
         config.validate()?;
