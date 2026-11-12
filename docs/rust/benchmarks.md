@@ -95,8 +95,8 @@ rutas relativas y sin '..'. Las muestras originales se preservan byte a byte.
 ## Comparación futura (PERF01–PERF06; no bloquea el cierre Python)
 
 El instrumento mínimo entregado mide samples HTTP y expectativas conocidas; su uso y límites
-están en COMPARE.md. El protocolo ampliado siguiente pertenece a #230/#231; duración/soak,
-oráculos espaciales y recursos del servidor aún no están implementados en compare.py.
+están en COMPARE.md. #230 añadió el mapeo de casos Rust, equivalencia MVT decodificada y
+CPU/memoria por cgroup de servidor y BD; duración/soak y la matriz completa pertenecen a #231.
 No comparar directamente esta referencia ASGI con números TCP de Rust. Si se quiere cuantificar
 la ganancia del cambio, ejecutar Python fijado y Rust release con el mismo instrumento HTTP,
 dataset/índices/configuración y trabajo equivalente. GeoServer se incorpora después mediante #209.
