@@ -9,7 +9,8 @@ use std::{
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Auth {
-    pub public_key_file: PathBuf,
+    pub public_key_file: Option<PathBuf>,
+    pub jwks_url: Option<String>,
     pub issuer: String,
     pub audience: String,
     #[serde(default = "default_leeway")]
@@ -28,7 +29,12 @@ fn default_roles_claim() -> String {
 
 impl Auth {
     pub fn validate(&self) -> Result<(), Error> {
-        if self.public_key_file.as_os_str().is_empty()
+        let trust = match (&self.public_key_file, &self.jwks_url) {
+            (Some(path), None) => !path.as_os_str().is_empty(),
+            (None, Some(url)) => !url.is_empty(),
+            _ => false,
+        };
+        if !trust
             || self.roles_claim.split('.').any(str::is_empty)
             || self.issuer.trim().is_empty()
             || self.audience.trim().is_empty()
@@ -39,10 +45,22 @@ impl Auth {
         Ok(())
     }
 
+    /// Loads the trust source; in JWKS mode this downloads the keys and fails closed.
     pub async fn verifier(&self) -> Result<crate::auth::jwt::Verifier, Error> {
+        use crate::auth::{jwks, jwt::Verifier};
         self.validate()?;
-        let pem = std::fs::read(&self.public_key_file).map_err(|_| Error::InvalidRequest)?;
-        crate::auth::jwt::Verifier::new(&pem, &self.issuer, &self.audience)?
+        let verifier = match (&self.public_key_file, &self.jwks_url) {
+            (Some(path), _) => {
+                let pem = std::fs::read(path).map_err(|_| Error::InvalidRequest)?;
+                Verifier::new(&pem, &self.issuer, &self.audience)?
+            }
+            (None, Some(url)) => {
+                let keys = jwks::Jwks::load(url, jwks::Timing::default()).await?;
+                Verifier::from_jwks(keys, &self.issuer, &self.audience)?
+            }
+            (None, None) => return Err(Error::InvalidRequest),
+        };
+        verifier
             .with_leeway(self.leeway_seconds)
             .with_roles_claim(&self.roles_claim)
     }

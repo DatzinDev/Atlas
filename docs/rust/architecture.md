@@ -61,7 +61,8 @@ No caché de catálogo en el MVP: resolver publicación vigente por petición ev
 entre instancias. Actualizar publicación no revoca un stream ya autorizado; aplica a solicitudes
 nuevas. Deshabilitar no toca las tablas; cambios de datos se ven en nuevas transacciones.
 Sin caché de resultados; respuestas de datos privadas y dinámicas con Cache-Control: no-store.
-OIDC añadirá un verificador real de issuer/JWKS en fase 3; no crear un framework de proveedores.
+OIDC verifica con el JWKS de un solo proveedor configurado (ADR 0010); no crear un framework de
+proveedores.
 
 ## Referencias
 

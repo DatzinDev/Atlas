@@ -99,8 +99,9 @@ query_body_bytes = 131072 # 128 KiB
 admin_body_bytes = 262144 # 256 KiB
 page_bytes = 33554432     # 32 MiB, máximo 1 GiB
 
-[auth]                    # opcional; si existe, las tres primeras son obligatorias
+[auth]                    # opcional; si existe, una fuente de claves, issuer y audience
 public_key_file = "/etc/atlas/jwt-public.pem"  # RSA 2048–8192 bits, SPKI o PKCS#1
+# jwks_url = "https://identity.example.test/jwks"  # en lugar de public_key_file
 issuer = "https://identity.example.test"
 audience = "atlas"
 leeway_seconds = 30       # 0..=300
@@ -112,7 +113,11 @@ allowed_origins = []      # vacío: sin CORS; ["*"] o hasta 100 "http(s)://host[
 
 Salvo `pool_min`, `max_offset`, `tile_zoom` y `tile_buffer`, los límites deben ser mayores que 0.
 Sin `[auth]` no hay administración. Atlas no emite tokens: verifica RS256 (`sub`, `iss`, `aud`,
-`exp` y el arreglo de `roles_claim`, opcional) con la clave pública local, cargada una vez al arrancar.
+`exp` y el arreglo de `roles_claim`, opcional) con la clave pública local, cargada una vez al
+arrancar, o con el JWKS del proveedor OIDC. `jwks_url` es HTTPS y sin discovery; el token debe
+traer `kid`. Las claves se renuevan al ver un `kid` desconocido (como máximo una vez por minuto) y
+tras 1 h; si el proveedor cae se conservan hasta 24 h y después todo token es 401. El arranque
+falla si la primera descarga no da una clave válida. `/ready` no depende del proveedor.
 
 ## Publicar una capa
 
@@ -167,6 +172,7 @@ Una línea JSON por evento en stderr; nunca cabeceras, cuerpos, tokens, SQL ni D
 | `public_url_missing` | Al arrancar sin `public_url` (TileJSON usa rutas `/api/v1/...`) |
 | `request` | Cada petición: `request_id`, `method`, `path` sin query, `status`, `duration_ms` y `code` si es error |
 | `auth_failed` | Cada 401, con `request_id` y `reason` estable |
+| `jwks_refresh_failed` | Descarga del JWKS fallida, con `reason` (`request`, `status`, `body`, `timeout`, `invalid`, `no_keys`) |
 | `export_failed` | Exportación cortada tras enviar cabeceras, con `request_id` y `code` |
 | `database_error` | 500 de la base, solo con `sqlstate` o `kind` |
 | `shutdown_started` / `shutdown_forced` / `shutdown_complete` | SIGINT/SIGTERM: deja de aceptar, drena hasta `shutdown_seconds`, aborta lo pendiente y sale con 0 |
