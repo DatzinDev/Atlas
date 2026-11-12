@@ -347,6 +347,10 @@ El cliente debe tratar cualquier colección incompleta como una descarga fallida
 
 Un semáforo compartido limita `data_operations` (8 por defecto) para features, MVT y
 exportaciones; adquisición inmediata o 503. Catálogo, administración y health no usan cupos.
+El pool se parte en dos: `data_operations` conexiones para el trabajo admitido y
+`pool_max − data_operations` (exige `data_operations < pool_max`) para catálogo, inspección
+de POST/PATCH y `/ready`, que esperan como máximo `acquire_seconds` y luego responden 503
+`capacity_exceeded`. Así el catálogo nunca deja sin conexión a items, tiles ni export.
 El deadline de respuesta no cancela el worker SQL: conserva el cupo hasta rollback real;
 el timeout PostgreSQL acota el drenaje. Export transfiere el cupo al cursor y un productor
 con canal acotado aplica `stream_seconds` incluso si el cliente deja de leer. El pool se

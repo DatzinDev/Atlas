@@ -70,7 +70,8 @@ No se aceptan claves, issuer o rutas de JWKS suministradas por el token.
 | Catálogo por defecto / máximo | 100 / 1.000 |
 | Filtro: bytes / profundidad / nodos | 65.536 / 8 / 100 |
 | IN / pares XY | 1.000 / 10.000 |
-| Pool mínimo / máximo; adquisición | 1 / 10; 5 s |
+| Pool mínimo / máximo; adquisición | 1 / 10; `data_operations < pool_max`; 5 s |
+| Conexiones reservadas fuera de la admisión | `pool_max − data_operations`; catálogo, inspección y `/ready` esperan hasta `acquire_seconds`, luego 503 `capacity_exceeded` |
 | Consulta SQL; stream total | 30 s; 300 s |
 | Operaciones de datos simultáneas | 8; sin cola propia, rechazo 503 |
 | Exportaciones simultáneas (`export_operations`) | 2; `1 ≤ n ≤ data_operations`; consume además un cupo de datos; sin cola, rechazo 503 |

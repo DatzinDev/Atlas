@@ -51,7 +51,7 @@ impl Export {
             .checked_sub(END.len())
             .ok_or(Error::QueryTooLarge)?;
         let mut export = Self {
-            tx: Some(db.begin_read().await?),
+            tx: Some(db.begin_data().await?),
             permits,
             pending: VecDeque::new(),
             deadline: Instant::now() + Duration::from_secs(limits.stream_seconds.into()),

@@ -34,7 +34,10 @@ pub fn error(error: sqlx::Error) -> Error {
 
 #[derive(Clone)]
 pub struct Database {
-    pool: PgPool,
+    // Admitted work (items, tiles, export) gets `data_operations` connections; catalog,
+    // inspection and readiness share the rest, so they never starve admitted work.
+    data: PgPool,
+    reserved: PgPool,
     timeout_ms: String,
 }
 
@@ -51,14 +54,29 @@ impl Database {
             .disable_statement_logging()
             .application_name("atlas-rust")
             .options([("statement_timeout", timeout_ms.as_str())]);
-        let pool = PgPoolOptions::new()
-            .min_connections(config.limits.pool_min)
-            .max_connections(config.limits.pool_max)
-            .acquire_timeout(Duration::from_secs(config.limits.acquire_seconds.into()))
-            .connect_with(options)
+        let limits = &config.limits;
+        let data_min = limits.pool_min.min(limits.data_operations);
+        let pool = |min: u32, max: u32| {
+            PgPoolOptions::new()
+                .min_connections(min)
+                .max_connections(max)
+                .acquire_timeout(Duration::from_secs(limits.acquire_seconds.into()))
+                .connect_with(options.clone())
+        };
+        let data = pool(data_min, limits.data_operations)
             .await
             .map_err(error)?;
-        let database = Self { pool, timeout_ms };
+        let reserved = pool(
+            limits.pool_min - data_min,
+            limits.pool_max - limits.data_operations,
+        )
+        .await
+        .map_err(error)?;
+        let database = Self {
+            data,
+            reserved,
+            timeout_ms,
+        };
         let mut tx = database.begin_read().await?;
         sqlx::query("SELECT postgis_version()")
             .execute(&mut *tx)
@@ -68,8 +86,12 @@ impl Database {
         Ok(database)
     }
 
-    async fn begin(&self, read_only: bool) -> Result<Transaction<'static, Postgres>, Error> {
-        let mut tx = self.pool.begin().await.map_err(error)?;
+    async fn begin(
+        &self,
+        pool: &PgPool,
+        read_only: bool,
+    ) -> Result<Transaction<'static, Postgres>, Error> {
+        let mut tx = pool.begin().await.map_err(error)?;
         let mode = if read_only {
             "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"
         } else {
@@ -84,13 +106,17 @@ impl Database {
         Ok(tx)
     }
 
+    /// Read transaction for work already holding a data admission slot.
+    pub async fn begin_data(&self) -> Result<Transaction<'static, Postgres>, Error> {
+        self.begin(&self.data, true).await
+    }
     pub async fn begin_read(&self) -> Result<Transaction<'static, Postgres>, Error> {
-        self.begin(true).await
+        self.begin(&self.reserved, true).await
     }
     pub async fn begin_catalog(&self) -> Result<Transaction<'static, Postgres>, Error> {
-        self.begin(false).await
+        self.begin(&self.reserved, false).await
     }
     pub async fn close(&self) {
-        self.pool.close().await;
+        tokio::join!(self.data.close(), self.reserved.close());
     }
 }

@@ -109,7 +109,7 @@ impl Publications {
         self.admission
             .wait(async move {
                 let _permit = permit;
-                let mut tx = service.database.begin_read().await?;
+                let mut tx = service.database.begin_data().await?;
                 let result = async {
                     let selection = prepare(
                         &mut tx,
@@ -147,7 +147,7 @@ impl Publications {
         self.admission
             .wait(async move {
                 let _permit = permit;
-                let mut tx = service.database.begin_read().await?;
+                let mut tx = service.database.begin_data().await?;
                 let result = async {
                     let selection = prepare(
                         &mut tx,

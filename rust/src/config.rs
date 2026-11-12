@@ -135,7 +135,7 @@ impl Limits {
             || self.catalog_default > self.catalog_max
             || self.pool_min > self.pool_max
             || self.export_operations > self.data_operations
-            || self.pool_max > 10
+            || self.data_operations >= self.pool_max
             || self.tile_zoom > 22
             || self.tile_extent > 65536
             || self.tile_buffer > self.tile_extent
