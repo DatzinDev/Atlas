@@ -53,10 +53,16 @@ resuelve quedan sin id_type y se leen como schema_changed.
 
 El catálogo público describe propiedades publicadas; jamás devuelve source, filter fijo,
 roles, SQL o credenciales. El administrativo sí devuelve configuración sin credenciales.
+El listado público prefiltra en SQL las publicaciones habilitadas que son públicas o comparten
+un view_role con el principal (ninguno si es anónimo); la validación y la política en Rust
+siguen decidiendo, con la misma paginación y hasMore.
 PATCH usa Merge Patch: campos omitidos se conservan; null solo borra campos opcionales;
 la configuración resultante se valida e inspecciona como en POST. id no cambia con PATCH.
 Publicar relación ambigua exige geometry_column explícita. id_column es PK simple o clave
-de vista única/no nula verificada. Source solo referencia la BD configurada.
+de vista única/no nula verificada: en una vista materializada con índice único válido, sin
+predicado ni expresiones y cuya única clave es id_column, solo se comprueba que no haya id NULL;
+en otro caso se recorre la vista entera (sujeto a statement_timeout, exceso 504 query_timeout).
+Source solo referencia la BD configurada.
 Atributos e id se aceptan solo si su tipo es por OID un tipo base admitido de pg_catalog;
 dominios, enums y homónimos de otros esquemas son 400 invalid_request. La geometría debe ser
 `geometry` del esquema de la extensión PostGIS. data_type conserva el nombre canónico. POST y

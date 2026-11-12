@@ -85,6 +85,11 @@ impl Publications {
         let mut page = self
             .catalog
             .servable(
+                if principal.sub.is_some() {
+                    principal.roles.as_slice()
+                } else {
+                    &[]
+                },
                 |p| policy::view(&p.config, principal).is_ok(),
                 offset as usize,
                 limit as usize + 1,

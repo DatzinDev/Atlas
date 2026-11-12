@@ -160,8 +160,10 @@ impl Catalog {
         rows.into_iter().map(|row| self.entry(row)).collect()
     }
 
+    /// `roles` only prefilters rows in SQL; `decode` and `keep` stay authoritative.
     pub async fn servable(
         &self,
+        roles: &[String],
         keep: impl Fn(&Publication) -> bool,
         skip: usize,
         take: usize,
@@ -171,9 +173,10 @@ impl Catalog {
         let mut after = String::new();
         loop {
             let mut tx = self.database.begin_read().await?;
-            let rows = sqlx::query("SELECT id, config, metadata, revision FROM atlas_catalog.datasets WHERE id > $1 ORDER BY id LIMIT $2")
+            let rows = sqlx::query("SELECT id, config, metadata, revision FROM atlas_catalog.datasets WHERE id > $1 AND config->'enabled' IS DISTINCT FROM 'false'::jsonb AND (config->'access'->'public' = 'true'::jsonb OR config->'access'->'view_roles' ?| $3::text[]) ORDER BY id LIMIT $2")
                 .bind(&after)
                 .bind(SERVABLE_BATCH)
+                .bind(roles)
                 .fetch_all(&mut *tx)
                 .await
                 .map_err(error)?;
