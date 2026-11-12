@@ -165,10 +165,40 @@ pub(crate) fn identifier(id: &str) -> Result<&str, Error> {
 }
 
 pub(crate) fn no_query(query: Option<&str>) -> Result<(), Error> {
-    match query {
-        Some(query) if !query.is_empty() => Err(Error::InvalidRequest),
-        _ => Ok(()),
+    params(query, [])?;
+    Ok(())
+}
+
+/// The only query-string parser: splits `&`-separated `key=value` pairs (empty segments are
+/// skipped) and returns the decoded value of each of `keys`, in order. A pair without `=`, a key
+/// outside `keys` or repeated, a bad `%` escape or invalid UTF-8 is `invalid_request`; an empty
+/// value is `invalid_filter` for `filter` and `invalid_request` for any other key.
+pub(crate) fn params<const N: usize>(
+    query: Option<&str>,
+    keys: [&str; N],
+) -> Result<[Option<String>; N], Error> {
+    let mut values: [Option<String>; N] = std::array::from_fn(|_| None);
+    for pair in query
+        .unwrap_or_default()
+        .split('&')
+        .filter(|p| !p.is_empty())
+    {
+        let (key, value) = pair.split_once('=').ok_or(Error::InvalidRequest)?;
+        let slot = keys
+            .iter()
+            .position(|k| *k == key)
+            .and_then(|i| values.get_mut(i))
+            .filter(|slot| slot.is_none())
+            .ok_or(Error::InvalidRequest)?;
+        if value.is_empty() {
+            return Err(match key {
+                "filter" => Error::InvalidFilter,
+                _ => Error::InvalidRequest,
+            });
+        }
+        *slot = Some(decode(value)?);
     }
+    Ok(values)
 }
 
 // Exactly one Content-Type: application/json (or merge-patch+json when allowed), charset utf-8 only.
@@ -190,27 +220,22 @@ pub(crate) fn json_body(headers: &HeaderMap, merge_patch: bool) -> Result<(), Er
 }
 
 pub(crate) fn paging(query: Option<&str>) -> Result<(Option<u32>, u32), Error> {
-    let (mut limit, mut offset) = (None, None);
-    for pair in query
-        .unwrap_or_default()
-        .split('&')
-        .filter(|p| !p.is_empty())
-    {
-        let (key, value) = pair.split_once('=').ok_or(Error::InvalidRequest)?;
-        let slot = match key {
-            "limit" if limit.is_none() => &mut limit,
-            "offset" if offset.is_none() => &mut offset,
-            _ => return Err(Error::InvalidRequest),
-        };
-        if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
-            return Err(Error::InvalidRequest);
-        }
-        *slot = Some(value.parse::<u32>().map_err(|_| Error::InvalidRequest)?);
-    }
-    Ok((limit, offset.unwrap_or(0)))
+    let [limit, offset] = params(query, ["limit", "offset"])?;
+    let offset = offset.as_deref().map(number).transpose()?;
+    Ok((
+        limit.as_deref().map(number).transpose()?,
+        offset.unwrap_or(0),
+    ))
 }
 
-pub(crate) fn decode(text: &str) -> Result<String, Error> {
+pub(crate) fn number(text: &str) -> Result<u32, Error> {
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(Error::InvalidRequest);
+    }
+    text.parse().map_err(|_| Error::InvalidRequest)
+}
+
+fn decode(text: &str) -> Result<String, Error> {
     let (bytes, mut out, mut i) = (text.as_bytes(), Vec::new(), 0);
     while i < bytes.len() {
         match bytes[i] {

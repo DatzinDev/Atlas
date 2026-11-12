@@ -18,6 +18,12 @@ invalid_filter. En datasets EPSG:3857 bbox y polígonos se recortan a latitud
 nativo no es 4326 se densifican cada 1° antes de transformar; una selección transformada
 inválida, vacía o sin área es 400, nunca un 200 casi vacío. Parámetros desconocidos o repetidos
 y claves JSON duplicadas son 400, no se ignoran. No aceptar ATLAS_FILTER, CQL o SQL del cliente.
+Todas las rutas usan un único parser de query string con reglas idénticas: los segmentos vacíos
+(`&&`, `&` final) se ignoran; par sin `=`, clave no admitida por la ruta o repetida, `%` mal
+formado o UTF-8 inválido tras decodificar `%`/`+` son 400 invalid_request; un valor vacío es 400
+invalid_request (limit, offset, bbox, properties, sort, format) salvo `filter=`, que es 400
+invalid_filter. `format` solo existe en export y solo admite `geojson`; las rutas sin parámetros
+(detalle, POST query, admin salvo listado) rechazan cualquier clave.
 POST query y POST admin exigen una sola cabecera Content-Type `application/json` (sin distinguir
 mayúsculas; solo admite el parámetro `charset=utf-8`); PATCH admite además
 `application/merge-patch+json`. Otro valor, ausente o repetido es 400 invalid_request; en admin

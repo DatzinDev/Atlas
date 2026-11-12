@@ -1,4 +1,4 @@
-use super::{decode, features::parse, identifier};
+use super::{features::selection, identifier, params};
 use crate::{
     domain::{Error, Principal},
     services::publications::Publications,
@@ -25,22 +25,12 @@ async fn export(
     RawQuery(raw): RawQuery,
 ) -> Result<Response, Error> {
     let id = identifier(&id)?;
-    let mut selection = Vec::new();
-    let mut format_seen = false;
-    for pair in raw
-        .as_deref()
-        .unwrap_or_default()
-        .split('&')
-        .filter(|p| !p.is_empty())
-    {
-        let (key, value) = pair.split_once('=').ok_or(Error::InvalidRequest)?;
-        match key {
-            "format" if !format_seen && decode(value)? == "geojson" => format_seen = true,
-            "filter" | "bbox" | "properties" => selection.push(pair),
-            _ => return Err(Error::InvalidRequest),
-        }
+    let [format, filter, bbox, properties] =
+        params(raw.as_deref(), ["format", "filter", "bbox", "properties"])?;
+    if format.is_some_and(|f| f != "geojson") {
+        return Err(Error::InvalidRequest);
     }
-    let query = parse(Some(&selection.join("&")))?;
+    let query = selection(filter, bbox, properties)?;
     let mut export = service.export(id, &principal, &query).await?;
     let deadline = export.deadline();
     let (sender, receiver) = tokio::sync::mpsc::channel(1);

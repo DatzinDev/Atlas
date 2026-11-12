@@ -1,4 +1,4 @@
-use super::{decode, identifier, respond};
+use super::{identifier, params, respond};
 use crate::{
     domain::{Error, Principal},
     postgis::mvt::bounds,
@@ -72,25 +72,11 @@ fn number(text: &str) -> Result<u32, Error> {
 type Parameters = (Option<String>, Option<Vec<String>>);
 
 fn parameters(query: Option<&str>) -> Result<Parameters, Error> {
-    let (mut filter, mut properties) = (None, None);
-    for pair in query
-        .unwrap_or_default()
-        .split('&')
-        .filter(|p| !p.is_empty())
-    {
-        let (key, value) = pair.split_once('=').ok_or(Error::InvalidRequest)?;
-        let value = decode(value)?;
-        match key {
-            "filter" if filter.is_none() => filter = Some(value),
-            "properties" if properties.is_none() => {
-                let names: Vec<String> = value.split(',').map(str::to_owned).collect();
-                if names.iter().any(String::is_empty) {
-                    return Err(Error::InvalidRequest);
-                }
-                properties = Some(names);
-            }
-            _ => return Err(Error::InvalidRequest),
-        }
+    let [filter, properties] = params(query, ["filter", "properties"])?;
+    let properties: Option<Vec<String>> =
+        properties.map(|v| v.split(',').map(str::to_owned).collect());
+    if properties.iter().flatten().any(String::is_empty) {
+        return Err(Error::InvalidRequest);
     }
     Ok((filter, properties))
 }
