@@ -40,7 +40,8 @@ Configuración de dominio/archivo, límites y errores REST pertenecen a #212.
 
 `GET /api/v1/health` devuelve 200; `/api/v1/ready` comprueba pool y acceso a las
 columnas del catálogo: 200 si están disponibles, 503 estructurado si no.
-Sin DSN se puede iniciar health, pero readiness permanece en 503. El resto
+`serve` sin `database_url` (TOML o `ATLAS_DATABASE_URL`) termina con código no
+cero y `startup_failed`/`database url required` antes de abrir el puerto. El resto
 devuelve 404; aún no hay API geoespacial. SIGINT y,
 en Unix, SIGTERM detienen aceptación (`shutdown_started`) y esperan peticiones y streams
 hasta `limits.shutdown_seconds` (30 s, rango 1..=3600). Si quedan, se abortan, cerrando
@@ -88,7 +89,7 @@ y tabla `[limits]` con los defaults de spec.md. No acepta claves desconocidas.
 `ATLAS_DATABASE_URL` y `ATLAS_LISTEN` prevalecen sobre TOML; `--listen` prevalece
 sobre el entorno. DSN nunca pertenece a un Dataset ni se imprime al fallar.
 La configuración se valida antes del bind/pool. No derive Debug/Serialize en Config.
-El DSN es opcional solo para health; para operar datos es obligatorio.
+El DSN es obligatorio para `serve` y `migrate`.
 
 Domain no importa HTTP/SQL: Dataset/Source/AccessPolicy/Principal, Query y Error.
 Después de deserializar se llama `validate` con schemas/límites del servidor;
@@ -111,7 +112,9 @@ sus componentes. El job Rust de CI es independiente del job Python existente.
 
 `Database::open` valida configuración y extensión PostGIS; máximo 10 conexiones,
 espera 5 s por defecto. `begin_read` abre REPEATABLE READ READ ONLY y
-`begin_catalog` abre READ WRITE; ambas aplican statement_timeout local (30 s).
+`begin_catalog` abre READ WRITE; ambas aplican statement_timeout local (30 s)
+con `set_config(..., true)`. statement_timeout no va en las `options` de arranque
+(solo `client_connection_check_interval`); se respetan las de la URL.
 SQLx revierte transacciones descartadas antes de reutilizar la conexión. Cancelar
 el future no garantiza cancelación SQL inmediata: el timeout del servidor acota
 el trabajo restante. No registrar SQL/DSN/errores del driver. `close` espera leases.

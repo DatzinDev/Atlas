@@ -54,10 +54,7 @@ impl Database {
             .disable_statement_logging()
             .application_name("atlas-rust")
             // Lets the server end backends of aborted work (e.g. a forced shutdown) within ~1 s.
-            .options([
-                ("statement_timeout", timeout_ms.as_str()),
-                ("client_connection_check_interval", "1000"),
-            ]);
+            .options([("client_connection_check_interval", "1000")]);
         let limits = &config.limits;
         let data_min = limits.pool_min.min(limits.data_operations);
         let pool = |min: u32, max: u32| {

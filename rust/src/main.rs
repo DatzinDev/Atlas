@@ -68,6 +68,9 @@ fn configuration() -> Result<(bool, Config), &'static str> {
 }
 
 async fn serve(config: Config) -> Result<(), &'static str> {
+    if config.database_url.is_none() {
+        return Err("database url required");
+    }
     let verifier = std::sync::Arc::new(
         config
             .auth
@@ -91,19 +94,10 @@ async fn serve(config: Config) -> Result<(), &'static str> {
     let bound = listener
         .local_addr()
         .map_err(|_| "cannot inspect listener")?;
-    let database = if config.database_url.is_some() {
-        Some(
-            atlas::postgis::connection::Database::open(&config)
-                .await
-                .map_err(|_| "database unavailable")?,
-        )
-    } else {
-        None
-    };
-    let catalog = database
-        .clone()
-        .map(|db| atlas::catalog::Catalog::new(db, config.clone()))
-        .transpose()
+    let database = atlas::postgis::connection::Database::open(&config)
+        .await
+        .map_err(|_| "database unavailable")?;
+    let catalog = atlas::catalog::Catalog::new(database.clone(), config.clone())
         .map_err(|_| "invalid configuration")?;
     // Probes stay outside authentication: OpenAPI declares them `security: []`.
     let probes = Router::new()
@@ -113,34 +107,26 @@ async fn serve(config: Config) -> Result<(), &'static str> {
             get(move || {
                 let catalog = catalog.clone();
                 async move {
-                    match catalog {
-                        Some(catalog) => match catalog.ready().await {
-                            Ok(()) => StatusCode::OK.into_response(),
-                            Err(e @ Error::CapacityExceeded) => failure(e),
-                            Err(_) => failure(Error::DatabaseUnavailable),
-                        },
-                        None => failure(Error::DatabaseUnavailable),
+                    match catalog.ready().await {
+                        Ok(()) => StatusCode::OK.into_response(),
+                        Err(e @ Error::CapacityExceeded) => failure(e),
+                        Err(_) => failure(Error::DatabaseUnavailable),
                     }
                 }
             }),
         );
-    let publications = database
-        .clone()
-        .map(|db| atlas::services::publications::Publications::new(db, config.clone()))
-        .transpose()
-        .map_err(|_| "invalid configuration")?;
-    let router = match publications {
-        Some(service) => Router::new()
-            .merge(atlas::api::datasets::router(service.clone()))
-            .merge(atlas::api::tiles::router(service.clone()))
-            .merge(atlas::api::features::router(service.clone()))
-            .merge(atlas::api::export::router(service.clone()))
-            .merge(atlas::api::admin::router(
-                service,
-                config.limits.admin_body_bytes,
-            )),
-        None => Router::new(),
-    };
+    let service =
+        atlas::services::publications::Publications::new(database.clone(), config.clone())
+            .map_err(|_| "invalid configuration")?;
+    let router = Router::new()
+        .merge(atlas::api::datasets::router(service.clone()))
+        .merge(atlas::api::tiles::router(service.clone()))
+        .merge(atlas::api::features::router(service.clone()))
+        .merge(atlas::api::export::router(service.clone()))
+        .merge(atlas::api::admin::router(
+            service,
+            config.limits.admin_body_bytes,
+        ));
     let router = router
         .layer(axum::middleware::from_fn_with_state(
             verifier,
@@ -186,10 +172,8 @@ async fn serve(config: Config) -> Result<(), &'static str> {
             Ok(())
         }
     };
-    if let Some(database) = database {
-        // Connections still held by aborted work keep `close` waiting; bound it.
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), database.close()).await;
-    }
+    // Connections still held by aborted work keep `close` waiting; bound it.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), database.close()).await;
     result.map_err(|_| "server failed")?;
     eprintln!("{{\"event\":\"shutdown_complete\"}}");
     Ok(())
