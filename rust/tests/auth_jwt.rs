@@ -275,6 +275,30 @@ fn public_key_strength_is_checked_on_load() {
     }
 }
 
+// R12
+#[test]
+fn roles_claim_maps_a_nested_array_and_rejects_ambiguity() {
+    let verifier = Verifier::new(PUBLIC, "atlas-test", "atlas")
+        .unwrap()
+        .with_roles_claim("realm_access.roles")
+        .unwrap();
+    let mut c = claims();
+    c["realm_access"] = json!({"roles": ["editor"]});
+    assert_eq!(verifier.verify(&token(&c)).unwrap().roles, ["editor"]);
+    c["realm_access"] = json!("editor");
+    assert_eq!(reason(&verifier, &token(&c)), "invalid_claims");
+    let nested = "\"realm_access\":{\"roles\":[\"x\"],\"roles\":[\"editor\"]}";
+    let raw = format!("{{{nested},{}", &claims().to_string()[1..]);
+    let raw = serde_json::value::RawValue::from_string(raw).unwrap();
+    let duplicate = encode(
+        &Header::new(Algorithm::RS256),
+        &raw,
+        &EncodingKey::from_rsa_pem(PRIVATE).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(reason(&verifier, &duplicate), "invalid_claims");
+}
+
 #[test]
 fn leeway_applies_to_exp_and_nbf() {
     let now = get_current_timestamp();

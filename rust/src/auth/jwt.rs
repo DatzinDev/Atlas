@@ -3,6 +3,7 @@ use jsonwebtoken::{
     Algorithm, DecodingKey, DecodingKeyKind, Validation, decode, errors::ErrorKind,
 };
 use serde::Deserialize;
+use serde_json::value::RawValue;
 
 #[derive(Deserialize)]
 struct Claims {
@@ -15,8 +16,6 @@ struct Claims {
     _expires: u64,
     #[serde(default, deserialize_with = "present_timestamp", rename = "nbf")]
     _not_before: Option<u64>,
-    #[serde(default)]
-    roles: Vec<String>,
 }
 
 fn present_timestamp<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
@@ -94,9 +93,51 @@ fn strong_rsa(key: &DecodingKey) -> Option<()> {
         .then_some(())
 }
 
+/// Object members in order, duplicates kept so they can be rejected.
+struct Members(Vec<(String, Box<RawValue>)>);
+
+impl<'de> Deserialize<'de> for Members {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Visit;
+        impl<'de> serde::de::Visitor<'de> for Visit {
+            type Value = Members;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an object")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Members, A::Error> {
+                let mut members = Vec::new();
+                while let Some(member) = map.next_entry()? {
+                    members.push(member);
+                }
+                Ok(Members(members))
+            }
+        }
+        d.deserialize_map(Visit)
+    }
+}
+
+/// Follows the dotted path; absent is no roles, a repeated key on the way is ambiguous.
+fn roles(claims: &RawValue, path: &[String]) -> Result<Vec<String>, &'static str> {
+    let mut current = claims.to_owned();
+    for part in path {
+        let Members(members) = serde_json::from_str(current.get()).map_err(|_| "invalid_claims")?;
+        let mut found = members.into_iter().filter(|(key, _)| key == part);
+        match (found.next(), found.next()) {
+            (None, _) => return Ok(Vec::new()),
+            (Some((_, value)), None) => current = value,
+            _ => return Err("invalid_claims"),
+        }
+    }
+    serde_json::from_str(current.get()).map_err(|_| "invalid_claims")
+}
+
 pub struct Verifier {
     key: DecodingKey,
     validation: Validation,
+    roles_claim: Vec<String>,
 }
 
 impl Verifier {
@@ -120,7 +161,20 @@ impl Verifier {
         validation.validate_nbf = true;
         validation.leeway = DEFAULT_LEEWAY_SECONDS;
         validation.reject_tokens_expiring_in_less_than = 1;
-        Ok(Self { key, validation })
+        Ok(Self {
+            key,
+            validation,
+            roles_claim: vec!["roles".into()],
+        })
+    }
+
+    /// Dotted path to the roles array, `roles` by default.
+    pub fn with_roles_claim(mut self, path: &str) -> Result<Self, Error> {
+        self.roles_claim = path.split('.').map(str::to_owned).collect();
+        if self.roles_claim.iter().any(String::is_empty) {
+            return Err(Error::InvalidRequest);
+        }
+        Ok(self)
     }
 
     /// Overrides the `exp`/`nbf` clock skew tolerance; range is enforced by configuration.
@@ -135,15 +189,17 @@ impl Verifier {
         if token.len() > 16384 {
             return Err("token_too_large");
         }
-        let claims = decode::<Claims>(token, &self.key, &self.validation)
+        let raw = decode::<Box<RawValue>>(token, &self.key, &self.validation)
             .map_err(|e| reason(e.kind()))?
             .claims;
-        if claims.sub.trim().is_empty() || claims.roles.iter().any(|r| r.trim().is_empty()) {
+        let claims: Claims = serde_json::from_str(raw.get()).map_err(|_| "invalid_claims")?;
+        let roles = roles(&raw, &self.roles_claim)?;
+        if claims.sub.trim().is_empty() || roles.iter().any(|r| r.trim().is_empty()) {
             return Err("invalid_claims");
         }
         Ok(Principal {
             sub: Some(claims.sub),
-            roles: claims.roles,
+            roles,
         })
     }
 }

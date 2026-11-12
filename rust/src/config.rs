@@ -14,15 +14,22 @@ pub struct Auth {
     pub audience: String,
     #[serde(default = "default_leeway")]
     pub leeway_seconds: u64,
+    #[serde(default = "default_roles_claim")]
+    pub roles_claim: String,
 }
 
 fn default_leeway() -> u64 {
     crate::auth::jwt::DEFAULT_LEEWAY_SECONDS
 }
 
+fn default_roles_claim() -> String {
+    "roles".into()
+}
+
 impl Auth {
     pub fn validate(&self) -> Result<(), Error> {
         if self.public_key_file.as_os_str().is_empty()
+            || self.roles_claim.split('.').any(str::is_empty)
             || self.issuer.trim().is_empty()
             || self.audience.trim().is_empty()
             || self.leeway_seconds > 300
@@ -35,8 +42,9 @@ impl Auth {
     pub fn verifier(&self) -> Result<crate::auth::jwt::Verifier, Error> {
         self.validate()?;
         let pem = std::fs::read(&self.public_key_file).map_err(|_| Error::InvalidRequest)?;
-        crate::auth::jwt::Verifier::new(&pem, &self.issuer, &self.audience)
-            .map(|v| v.with_leeway(self.leeway_seconds))
+        crate::auth::jwt::Verifier::new(&pem, &self.issuer, &self.audience)?
+            .with_leeway(self.leeway_seconds)
+            .with_roles_claim(&self.roles_claim)
     }
 }
 
