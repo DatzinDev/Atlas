@@ -15,6 +15,9 @@ Todas las respuestas de datos dinámicas tienen Cache-Control: no-store; no hay 
 GeoJSON EPSG:4326; tiles XYZ/MVT EPSG:3857. TileJSON 3.0 incluye URL, source-layer,
 minzoom/maxzoom, bounds y attribution disponibles. Las URLs respetan el prefijo del despliegue
 configurado; no se confía en cabeceras forwarded arbitrarias.
+En MVT, salvo SRID nativo 3857, la geometría se recorta en EPSG:4326 (`ST_ClipByBox2D`) contra
+la envolvente del tile expandida por el buffer y transformada en PostGIS antes de pasar a 3857;
+lo que queda fuera de ±85.0511° no se codifica y un vértice en ±90 nunca hace fallar el tile.
 
 El catálogo público describe propiedades publicadas; jamás devuelve source, filter fijo,
 roles, SQL o credenciales. El administrativo sí devuelve configuración sin credenciales.

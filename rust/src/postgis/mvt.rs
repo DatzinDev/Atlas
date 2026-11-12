@@ -68,19 +68,20 @@ pub async fn tile(
         .push(".")
         .push(quote_identifier(&dataset.source.table))
         .push(" WHERE ");
+    let margin =
+        (bounds[2] - bounds[0]) * f64::from(limits.tile_buffer) / f64::from(limits.tile_extent);
+    let expanded = [
+        (bounds[0] - margin).max(-HALF_WORLD),
+        (bounds[1] - margin).max(-HALF_WORLD),
+        (bounds[2] + margin).min(HALF_WORLD),
+        (bounds[3] + margin).min(HALF_WORLD),
+    ];
     if z != 0 || meta.srid == 4326 || meta.srid == 3857 {
-        let margin =
-            (bounds[2] - bounds[0]) * f64::from(limits.tile_buffer) / f64::from(limits.tile_extent);
         builder
             .push(&source)
             .push(" && ST_Transform(ST_MakeEnvelope(");
-        for (i, value) in bounds.iter().enumerate() {
-            let expanded = if i < 2 {
-                (value - margin).max(-HALF_WORLD)
-            } else {
-                (value + margin).min(HALF_WORLD)
-            };
-            builder.push_bind(expanded).push(", ");
+        for value in expanded {
+            builder.push_bind(value).push(", ");
         }
         builder
             .push("3857), ")
@@ -108,9 +109,25 @@ pub async fn tile(
     for name in &names {
         builder.push(quote_identifier(name)).push(", ");
     }
-    builder.push(format!(
-        "{id}, ST_AsMVTGeom(ST_Transform({geom}, 3857), ST_MakeEnvelope("
-    ));
+    builder.push(format!("{id}, ST_AsMVTGeom("));
+    if meta.srid == 3857 {
+        builder.push(format!("ST_Transform({geom}, 3857)"));
+    } else {
+        // Clip in 4326 to the buffered tile (at most ±85.0511°) so ST_Transform to 3857
+        // never sees latitudes outside the Mercator domain.
+        builder.push("ST_Transform(ST_ClipByBox2D(");
+        if meta.srid == 4326 {
+            builder.push(&geom);
+        } else {
+            builder.push(format!("ST_Transform({geom}, 4326)"));
+        }
+        builder.push(", ST_Transform(ST_MakeEnvelope(");
+        for value in expanded {
+            builder.push_bind(value).push(", ");
+        }
+        builder.push("3857), 4326)::box2d), 3857)");
+    }
+    builder.push(", ST_MakeEnvelope(");
     for value in bounds {
         builder.push_bind(value).push(", ");
     }
