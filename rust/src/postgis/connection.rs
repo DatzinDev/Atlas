@@ -8,11 +8,25 @@ use std::time::Duration;
 pub fn error(error: sqlx::Error) -> Error {
     match error {
         sqlx::Error::PoolTimedOut => Error::CapacityExceeded,
-        sqlx::Error::Database(ref database) if database.code().as_deref() == Some("57014") => {
-            Error::QueryTimeout
-        }
-        sqlx::Error::Database(ref database) if database.is_unique_violation() => {
-            Error::PublicationConflict
+        sqlx::Error::Database(ref database) => match database.code().as_deref().unwrap_or("") {
+            "57014" => Error::QueryTimeout,
+            "23505" => Error::PublicationConflict,
+            "57P01" | "57P02" | "57P03" => Error::DatabaseUnavailable,
+            code if code.starts_with("08") || code.starts_with("53") => Error::DatabaseUnavailable,
+            code => {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({"event":"database_error","sqlstate":code})
+                );
+                Error::InternalError
+            }
+        },
+        sqlx::Error::Decode(_) | sqlx::Error::ColumnDecode { .. } => {
+            eprintln!(
+                "{}",
+                serde_json::json!({"event":"database_error","kind":"decode"})
+            );
+            Error::InternalError
         }
         _ => Error::DatabaseUnavailable,
     }

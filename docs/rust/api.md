@@ -109,8 +109,15 @@ Error uniforme `{code,message,request_id}`; sin SQL, valores filtrados, paths ni
 400 invalid_request/invalid_filter; 401 invalid_token; 403 permission_denied;
 404 dataset_not_found; 409 publication_conflict/schema_changed; 412 revision_mismatch;
 413 query_too_large; 500 internal_error; 503 capacity_exceeded/database_unavailable;
-504 query_timeout. No convertir resultados truncados en 200. Errores tardíos de stream
-interrumpen el cuerpo y se registran; no pueden sustituir headers ya enviados.
+504 query_timeout. Mapeo de la base: `PoolTimedOut` → 503 capacity_exceeded; I/O, TLS,
+`PoolClosed` y SQLSTATE clase 08, clase 53, 57P01, 57P02, 57P03 → 503 database_unavailable;
+57014 → 504 query_timeout; 23505 en el catálogo → 409 publication_conflict; 42703/42P01 en
+consultas de datos → 409 schema_changed; clase 22 en consultas de datos y XX000 solo al preparar
+la geometría del cliente → 400 invalid_filter; cualquier otro SQLSTATE (42501, 42883, XX000…) y
+errores de decodificación → 500 internal_error, que registra en stderr
+`{"event":"database_error","sqlstate":"42501"}` (o `"kind":"decode"`) sin mensaje, SQL ni
+valores; el cuerpo HTTP no incluye el SQLSTATE. No convertir resultados truncados en 200.
+Errores tardíos de stream interrumpen el cuerpo y se registran; no pueden sustituir headers ya enviados.
 
 ## Ejemplo de selección
 
