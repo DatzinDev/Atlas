@@ -79,6 +79,9 @@ async fn fixed_user_and_bbox_cannot_widen_each_other() {
             .is_err()
         );
     }
+    // A geometry rejected by PostGIS aborts the transaction; check the clean case in a new one.
+    tx.rollback().await.unwrap();
+    let mut tx = db.begin_read().await.unwrap();
     let selection = prepare(&mut tx, None, None, None, &meta, &Limits::default())
         .await
         .unwrap();

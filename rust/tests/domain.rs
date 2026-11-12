@@ -107,3 +107,36 @@ fn query_validation_preserves_numeric_filter() {
         "DatabaseUnavailable"
     );
 }
+
+#[test]
+fn bbox_must_lie_in_the_wgs84_domain() {
+    let check = |bbox: &str| {
+        serde_json::from_str::<Query>(&format!(r#"{{"bbox":{bbox}}}"#))
+            .unwrap()
+            .validate(10000, 100000)
+    };
+    for valid in [
+        "[-180,-90,180,90]",
+        "[-102,18,-96,22]",
+        "[0,0,1e-9,1e-9]",
+        "[179,89,180,90]",
+    ] {
+        assert_eq!(check(valid), Ok(()), "{valid}");
+    }
+    for invalid in [
+        // Antimeridian crossing must be split by the client.
+        "[170,-10,-170,10]",
+        "[0,0,0,1]",
+        "[0,0,1,0]",
+        "[1,1,1,1]",
+        "[2,0,1,1]",
+        "[0,1,1,0]",
+        "[-181,0,0,1]",
+        "[0,0,181,1]",
+        "[0,-91,1,0]",
+        "[0,0,1,91]",
+        "[-180.000001,-90,180,90]",
+    ] {
+        assert_eq!(check(invalid), Err(Error::InvalidRequest), "{invalid}");
+    }
+}

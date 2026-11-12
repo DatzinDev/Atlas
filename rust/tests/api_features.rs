@@ -78,6 +78,12 @@ async fn server() -> (SocketAddr, Database) {
         "INSERT INTO items_test.places SELECT n, 'p' || n, n % 3, 'x', ST_SetSRID(ST_Point(n, n), 4326) FROM generate_series(1, 9) AS n",
         "CREATE TABLE items_test.doomed AS TABLE items_test.places",
         "ALTER TABLE items_test.doomed ADD PRIMARY KEY (id)",
+        "CREATE TABLE items_test.mercator(id integer PRIMARY KEY, name text, rank int4, geom geometry(Point,3857))",
+        "INSERT INTO items_test.mercator SELECT n, 'm' || n, n % 3, ST_Transform(ST_SetSRID(ST_Point(n * 10 - 50, n * 9 - 44), 4326), 3857) FROM generate_series(1, 9) AS n UNION ALL SELECT 10, 'm10', 1, ST_Transform(ST_SetSRID(ST_Point(0, 85), 4326), 3857)",
+        "CREATE TABLE items_test.utm(id integer PRIMARY KEY, name text, rank int4, geom geometry(Point,32614))",
+        "INSERT INTO items_test.utm SELECT n, 'u' || n, 1, ST_Transform(ST_SetSRID(ST_Point(n - 104.5, 17.5 + n % 7), 4326), 32614) FROM generate_series(1, 9) AS n",
+        // Chosen by SQL: inside the densified bbox, outside the straight-edged transform.
+        "INSERT INTO items_test.utm SELECT 100, 'edge', 1, ST_PointOnSurface(ST_Difference(ST_Transform(ST_Segmentize(e, 1), 32614), ST_Transform(e, 32614))) FROM ST_MakeEnvelope(-102, 18, -96, 22, 4326) AS e",
         "DELETE FROM atlas_catalog.datasets WHERE config->'source'->>'schema' <> 'items_test' OR id LIKE 'items\\_%'",
     ] {
         sqlx::query(statement).execute(&mut *tx).await.unwrap();
@@ -85,11 +91,14 @@ async fn server() -> (SocketAddr, Database) {
     tx.commit().await.unwrap();
     let service = Publications::new(db.clone(), config).unwrap();
     let both = r#"{"view_roles":["viewer"],"query_roles":["viewer"]}"#;
+    let download = r#"{"public":true,"public_download":true}"#;
     for (id, table, access) in [
         ("items_public", "places", r#"{"public":true}"#),
         ("items_doomed", "doomed", r#"{"public":true}"#),
         ("items_view", "places", r#"{"view_roles":["viewer"]}"#),
         ("items_query", "places", both),
+        ("items_mercator", "mercator", download),
+        ("items_utm", "utm", download),
     ] {
         let body = format!(
             r#"{{"id":"{id}","title":"T","source":{{"schema":"items_test","table":"{table}"}},"properties":["name","rank"],"filter":{{"op":"gte","field":"rank","value":1}},"access":{access}}}"#
@@ -102,10 +111,12 @@ async fn server() -> (SocketAddr, Database) {
         "atlas",
     )
     .unwrap();
-    let app = router(service).layer(axum::middleware::from_fn_with_state(
-        Arc::new(Some(verifier)),
-        authenticate,
-    ));
+    let app = router(service.clone())
+        .merge(atlas::api::export::router(service))
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::new(Some(verifier)),
+            authenticate,
+        ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -235,6 +246,8 @@ async fn items_and_query_over_real_http() {
     let exact = format!("{{}}{}", " ".repeat(510));
     assert_eq!(call(a, "POST", query, "", &exact).await.0, "200");
 
+    bbox_domain(a, &db).await;
+
     let doomed = "/api/v1/datasets/items_doomed/items";
     assert_eq!(call(a, "GET", doomed, "", "").await.0, "200");
     for statement in [
@@ -248,4 +261,91 @@ async fn items_and_query_over_real_http() {
         assert_eq!(status, "409", "{body}");
         assert_eq!(body["code"], "schema_changed");
     }
+}
+
+// Called from the single server test: a parallel test would race on the items_test schema.
+async fn bbox_domain(a: SocketAddr, db: &Database) {
+    let base = "/api/v1/datasets";
+    let world = "bbox=-180,-90,180,90";
+    for id in ["items_public", "items_mercator"] {
+        let (status, _, all) =
+            call(a, "GET", &format!("{base}/{id}/items?limit=100"), "", "").await;
+        assert_eq!(status, "200", "{id} baseline: {all}");
+        let target = format!("{base}/{id}/items?limit=100&{world}");
+        let (status, _, body) = call(a, "GET", &target, "", "").await;
+        assert_eq!(status, "200", "{id}: {body}");
+        assert!(
+            !ids(&all).is_empty() && ids(&body) == ids(&all),
+            "{id}: {body}"
+        );
+    }
+    let mercator = format!("{base}/items_mercator/query");
+    let polygon = |ring: &str| {
+        format!(
+            r#"{{"filter":{{"op":"intersects","geometry":{{"type":"Polygon","coordinates":[{ring}]}}}},"limit":100}}"#
+        )
+    };
+    for (ring, expected) in [
+        (
+            "[[-180,0],[180,0],[180,90],[-180,90],[-180,0]]",
+            vec![5_i64, 7, 8, 10],
+        ),
+        ("[[0,86],[1,86],[1,90],[0,90],[0,86]]", vec![]),
+    ] {
+        let (status, _, body) = call(a, "POST", &mercator, "", &polygon(ring)).await;
+        assert_eq!(status, "200", "{ring}: {body}");
+        assert_eq!(ids(&body), expected, "{ring}");
+    }
+
+    let utm = format!("{base}/items_utm");
+    let mut bad = vec![("items_utm", "-180,-90,180,90")];
+    for id in ["items_public", "items_mercator", "items_utm"] {
+        for bbox in ["170,-10,-170,10", "0,0,0,1", "-181,0,0,1", "0,0,1,91"] {
+            bad.push((id, bbox));
+        }
+    }
+    for (id, bbox) in bad {
+        let post = format!(r#"{{"bbox":[{bbox}]}}"#);
+        for (method, target, body) in [
+            ("GET", format!("{base}/{id}/items?bbox={bbox}"), ""),
+            ("POST", format!("{base}/{id}/query"), post.as_str()),
+            (
+                "GET",
+                format!("{base}/{id}/export?format=geojson&bbox={bbox}"),
+                "",
+            ),
+        ] {
+            let (status, _, response) = call(a, method, &target, "", body).await;
+            assert_eq!(status, "400", "{method} {target}: {response}");
+            assert_eq!(response["code"], "invalid_request", "{method} {target}");
+        }
+    }
+    let world_filter = polygon("[[-180,-90],[180,-90],[180,90],[-180,90],[-180,-90]]");
+    let (status, _, body) = call(a, "POST", &format!("{utm}/query"), "", &world_filter).await;
+    assert_eq!(
+        (status.as_str(), &body["code"]),
+        ("400", &"invalid_filter".into())
+    );
+
+    let (status, _, body) = call(
+        a,
+        "GET",
+        &format!("{utm}/items?limit=100&bbox=-102,18,-96,22"),
+        "",
+        "",
+    )
+    .await;
+    assert_eq!(status, "200", "{body}");
+    let mut tx = db.begin_catalog().await.unwrap();
+    let oracle: Vec<i32> = sqlx::query_scalar("SELECT id FROM items_test.utm WHERE rank >= 1 AND ST_Intersects(geom, ST_Transform(ST_Segmentize(ST_MakeEnvelope(-102,18,-96,22,4326),1),32614)) ORDER BY id")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    assert!(
+        oracle.contains(&100),
+        "fixture must exercise densification: {oracle:?}"
+    );
+    let oracle: Vec<i64> = oracle.into_iter().map(i64::from).collect();
+    assert_eq!(ids(&body), oracle);
 }
