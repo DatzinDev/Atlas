@@ -49,8 +49,16 @@ pub async fn prepare(
             _ => {}
         }
     }
+    // Every bbox failure is a request error; filter geometries keep invalid_filter.
     let bbox = match bbox {
-        Some(bounds) => Some(spatial::prepare(tx, &spatial::bbox(bounds)?, meta.srid).await?),
+        Some(bounds) => Some(
+            spatial::prepare(tx, &spatial::bbox(bounds)?, meta.srid)
+                .await
+                .map_err(|e| match e {
+                    Error::InvalidFilter => Error::InvalidRequest,
+                    other => other,
+                })?,
+        ),
         None => None,
     };
     Ok(Selection {

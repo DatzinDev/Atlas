@@ -8,7 +8,15 @@ Prefijo fijo de versión `/api/v1`; los clientes no usan rutas Python como alias
 Query es idéntico para GET items y POST query. filter en GET es JSON codificado en URL;
 bbox y properties usan listas separadas por comas; sort usa `field:asc,other:desc`.
 GET admin/listado solo admite limit/offset. Export acepta filter/bbox/properties;
-tiles solo filter/properties porque XYZ define su ventana. Parámetros desconocidos o repetidos
+tiles solo filter/properties porque XYZ define su ventana.
+bbox es `minx,miny,maxx,maxy` en EPSG:4326 con `-180 ≤ minx < maxx ≤ 180` y
+`-90 ≤ miny < maxy ≤ 90`; fuera de eso (incluido área cero) es 400 invalid_request.
+Un bbox que cruza el antimeridiano (`minx > maxx`) se rechaza: el cliente parte la consulta
+en dos. Todo error causado por el bbox es invalid_request; los de geometrías de filter son
+invalid_filter. En datasets EPSG:3857 bbox y polígonos se recortan a latitud
+±85.0511287798066 (no es error; un polígono sin parte dentro no selecciona filas). Si el CRS
+nativo no es 4326 se densifican cada 1° antes de transformar; una selección transformada
+inválida, vacía o sin área es 400, nunca un 200 casi vacío. Parámetros desconocidos o repetidos
 y claves JSON duplicadas son 400, no se ignoran. No aceptar ATLAS_FILTER, CQL o SQL del cliente.
 POST query no crea recursos ni persiste consultas. GET/POST producen la misma selección.
 Todas las respuestas de datos dinámicas tienen Cache-Control: no-store; no hay caché MVT inicial.

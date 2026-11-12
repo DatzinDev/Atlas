@@ -5,7 +5,8 @@ use crate::{
 };
 use sqlx::{Postgres, QueryBuilder, Transaction};
 
-pub struct Geometry(Vec<u8>);
+/// `None` selects no rows: the selection lies wholly outside the native CRS domain.
+pub struct Geometry(Option<Vec<u8>>);
 
 fn input_error(failure: sqlx::Error) -> Error {
     if let sqlx::Error::Database(ref database) = failure
@@ -18,8 +19,8 @@ fn input_error(failure: sqlx::Error) -> Error {
 
 pub fn bbox(bounds: [f64; 4]) -> Result<Vec<Polygon>, Error> {
     let [x0, y0, x1, y1] = bounds;
-    if bounds.iter().any(|v| !v.is_finite()) || x0 > x1 || y0 > y1 {
-        return Err(Error::InvalidFilter);
+    if !crate::domain::bbox(bounds) {
+        return Err(Error::InvalidRequest);
     }
     Ok(vec![vec![vec![
         [x0, y0],
@@ -46,8 +47,6 @@ pub async fn prepare(
                         || !y.is_finite()
                         || !(-180.0..=180.0).contains(x)
                         || !(-90.0..=90.0).contains(y)
-                // Web Mercator is undefined at the poles, even if PROJ returns a large finite ordinate.
-                || (srid == 3857 && y.abs() == 90.0)
                 })
         })
     {
@@ -63,10 +62,20 @@ pub async fn prepare(
         return Err(Error::SchemaChanged);
     }
     let json = serde_json::json!({"type":"MultiPolygon", "coordinates":polygons}).to_string();
-    let bytes: Option<Vec<u8>> = sqlx::query_scalar(
-        "SELECT CASE WHEN ST_IsValid(g) AND NOT ST_IsEmpty(g) THEN ST_AsEWKB(ST_Transform(g,$2)) END FROM (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1),4326) AS g) AS selection")
-        .bind(json).bind(srid).fetch_one(&mut **tx).await.map_err(input_error)?;
-    bytes.map(Geometry).ok_or(Error::InvalidFilter)
+    // Clip to the Web Mercator domain and densify (1 degree) so edges follow the native CRS.
+    // A transformed selection that is invalid, empty or without area is rejected, never trimmed.
+    let row: Option<(bool, Option<Vec<u8>>)> = sqlx::query_as(
+        "SELECT ST_IsEmpty(k), CASE WHEN NOT ST_IsEmpty(k) THEN ST_AsEWKB(s) END FROM (\
+         SELECT k, CASE WHEN NOT ST_IsEmpty(k) THEN ST_Transform(CASE WHEN $2=4326 THEN k ELSE ST_Segmentize(k,1) END,$2) END AS s FROM (\
+         SELECT CASE WHEN $2=3857 THEN ST_CollectionExtract(ST_Intersection(g,ST_MakeEnvelope(-180,-85.0511287798066,180,85.0511287798066,4326)),3) ELSE g END AS k \
+         FROM (SELECT ST_SetSRID(ST_GeomFromGeoJSON($1),4326) AS g) AS i WHERE ST_IsValid(g) AND NOT ST_IsEmpty(g)) AS c) AS t \
+         WHERE ST_IsEmpty(k) OR (ST_IsValid(s) AND NOT ST_IsEmpty(s) AND ST_Area(s) > 0)")
+        .bind(json).bind(srid).fetch_optional(&mut **tx).await.map_err(input_error)?;
+    match row {
+        Some((true, _)) => Ok(Geometry(None)),
+        Some((false, Some(bytes))) => Ok(Geometry(Some(bytes))),
+        _ => Err(Error::InvalidFilter),
+    }
 }
 
 impl Geometry {
@@ -79,12 +88,16 @@ impl Geometry {
         if !crate::domain::identifier(column) {
             return Err(Error::SchemaChanged);
         }
+        let Some(bytes) = &self.0 else {
+            builder.push("FALSE");
+            return Ok(());
+        };
         let column = super::introspection::quote_identifier(column);
         builder
             .push("(")
             .push(&column)
             .push(" && ST_GeomFromEWKB(")
-            .push_bind(self.0.clone())
+            .push_bind(bytes.clone())
             .push(") AND ")
             .push(match op {
                 Spatial::Within => "ST_Within(",
@@ -92,7 +105,7 @@ impl Geometry {
             })
             .push(column)
             .push(", ST_GeomFromEWKB(")
-            .push_bind(self.0.clone())
+            .push_bind(bytes.clone())
             .push(")))");
         Ok(())
     }

@@ -112,7 +112,7 @@ components:
       additionalProperties: false
       required: [code, message, request_id]
       properties: {code: {type: string}, message: {type: string}, request_id: {type: string}}
-    Bbox: {type: array, minItems: 4, maxItems: 4, items: {type: number}, description: 'minx,miny,maxx,maxy finitos en EPSG:4326; sin inversión.'}
+    Bbox: {type: array, minItems: 4, maxItems: 4, items: {type: number}, description: 'minx,miny,maxx,maxy en EPSG:4326 con -180 ≤ minx < maxx ≤ 180 y -90 ≤ miny < maxy ≤ 90; sin cruce del antimeridiano ni área cero (400 invalid_request).'}
     Scalar: {oneOf: [{type: string}, {type: number}, {type: boolean}]}
     Predicate:
       oneOf:

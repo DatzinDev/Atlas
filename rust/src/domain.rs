@@ -57,6 +57,12 @@ pub fn identifier(value: &str) -> bool {
     !value.is_empty() && value.len() <= 63 && !value.contains('\0')
 }
 
+/// WGS84 bbox `[minx, miny, maxx, maxy]` with positive area; NaN fails every comparison.
+pub fn bbox(b: [f64; 4]) -> bool {
+    let [x0, y0, x1, y1] = b;
+    -180.0 <= x0 && x0 < x1 && x1 <= 180.0 && -90.0 <= y0 && y0 < y1 && y1 <= 90.0
+}
+
 pub const MAX_ROLES: usize = 1000;
 pub const MAX_ROLE_LENGTH: usize = 128;
 pub const ID_TYPES: [&str; 6] = ["int2", "int4", "int8", "text", "varchar", "bpchar"];
@@ -170,9 +176,7 @@ impl Query {
     pub fn validate(&self, max_limit: u32, max_offset: u32) -> Result<(), Error> {
         if self.limit.is_some_and(|n| n == 0 || n > max_limit)
             || self.offset > max_offset
-            || self
-                .bbox
-                .is_some_and(|b| b.iter().any(|v| !v.is_finite()) || b[0] > b[2] || b[1] > b[3])
+            || self.bbox.is_some_and(|b| !bbox(b))
             || self.properties.as_ref().is_some_and(|v| !names(v))
             || self
                 .sort
