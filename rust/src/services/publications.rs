@@ -183,7 +183,10 @@ impl Publications {
         if let Some(filter) = &query.filter {
             crate::query::predicate::parse(filter.get(), &self.config.limits)?;
         }
-        let publication = self.catalog.get(id).await?;
+        let publication = self.catalog.get(id).await.map_err(|e| match e {
+            Error::SchemaChanged => Error::DatasetNotFound,
+            other => other,
+        })?;
         policy::download(&publication.config, principal)?;
         let permit = self.admission.acquire()?;
         let (service, query) = (self.clone(), query.clone());
