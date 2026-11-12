@@ -153,6 +153,11 @@ async fn publications_validate_before_persisting_and_patch_with_revision() {
             3,
             Error::InvalidRequest,
         ),
+        (
+            br#"{"filter":{"op":"eq","field":"lanes","value":"2"}}"#,
+            3,
+            Error::InvalidFilter,
+        ),
     ] {
         assert_eq!(
             service.update("svc_roads", body, revision).await.err(),
