@@ -232,3 +232,204 @@ async fn experimental_mvp_survives_restart() {
     server.stop();
     std::fs::remove_file(file).unwrap();
 }
+
+fn read(rel: &str) -> Option<String> {
+    std::fs::read_to_string(format!("{}/{rel}", env!("CARGO_MANIFEST_DIR"))).ok()
+}
+fn test_source(file: &str) -> Option<String> {
+    read(&format!("tests/{file}.rs"))
+}
+fn has_token(text: &str, token: &str) -> bool {
+    text.split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|w| w == token)
+}
+/// Matrix rows whose first cell names `id`.
+fn rows<'m>(matrix: &'m str, id: &str) -> Vec<&'m str> {
+    matrix
+        .lines()
+        .filter(|l| {
+            l.trim_start()
+                .strip_prefix('|')
+                .is_some_and(|rest| has_token(rest.split('|').next().unwrap_or(""), id))
+        })
+        .collect()
+}
+/// `file::function` entries written as code spans in `rows`.
+fn entries<'m>(rows: &[&'m str]) -> Vec<(&'m str, &'m str)> {
+    let ident = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    rows.iter()
+        .copied()
+        .flat_map(|r| r.split('`').skip(1).step_by(2))
+        .filter_map(|span| span.split_once("::"))
+        .filter(|&(f, t)| ident(f) && ident(t))
+        .collect()
+}
+fn trace_problems(matrix: &str, source: &dyn Fn(&str) -> Option<String>) -> Vec<String> {
+    let mut problems = Vec::new();
+    for n in 1..=17 {
+        let id = format!("R{n:02}");
+        let rows = rows(matrix, &id);
+        let entries = entries(&rows);
+        if rows.is_empty() {
+            problems.push(format!("{id}: missing matrix row"));
+        } else if n == 17 && !rows.iter().any(|r| r.contains("CI")) {
+            problems.push(format!("{id}: must cite the Python CI job as exception"));
+        } else if n < 17 && entries.is_empty() {
+            problems.push(format!("{id}: no file::function entry"));
+        }
+        for (file, test) in entries {
+            let Some(code) = source(file) else {
+                problems.push(format!("{id}: {file}::{test}: tests/{file}.rs not found"));
+                continue;
+            };
+            let lines: Vec<&str> = code.lines().collect();
+            let Some(at) = lines
+                .iter()
+                .position(|l| l.contains(&format!("fn {test}(")))
+            else {
+                problems.push(format!("{id}: {file}::{test}: function not found"));
+                continue;
+            };
+            // Attributes and comments directly above the fn, closest first.
+            let header: Vec<&str> = lines[..at]
+                .iter()
+                .rev()
+                .map(|l| l.trim())
+                .take_while(|l| l.starts_with("#[") || l.starts_with("//"))
+                .collect();
+            let attr = header
+                .iter()
+                .position(|l| *l == "#[test]" || l.starts_with("#[tokio::test"));
+            let problem = match attr {
+                None => "not a test".to_owned(),
+                Some(a)
+                    if !header[a + 1..]
+                        .iter()
+                        .any(|l| l.starts_with("//") && has_token(l, &id)) =>
+                {
+                    format!("no // {id} above its attribute")
+                }
+                Some(_) => continue,
+            };
+            problems.push(format!("{id}: {file}::{test}: {problem}"));
+        }
+    }
+    problems
+}
+fn acceptance_matrix() -> String {
+    read("../docs/rust/acceptance.md").unwrap()
+}
+
+#[test]
+fn requirements_are_traced() {
+    let problems = trace_problems(&acceptance_matrix(), &test_source);
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+#[test]
+fn requirements_trace_fails_when_a_row_is_removed() {
+    let matrix = acceptance_matrix();
+    for n in 1..=17 {
+        let id = format!("R{n:02}");
+        let removed = rows(&matrix, &id);
+        assert!(!removed.is_empty(), "{id}");
+        let without: String = matrix
+            .lines()
+            .filter(|l| !removed.contains(l))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let problems = trace_problems(&without, &test_source);
+        assert!(
+            problems.contains(&format!("{id}: missing matrix row")),
+            "{id}: {problems:#?}"
+        );
+    }
+}
+
+#[test]
+fn requirements_trace_fails_when_a_cited_test_is_renamed_or_deleted() {
+    let matrix = acceptance_matrix();
+    let cited: Vec<_> = (1..=17)
+        .flat_map(|n| entries(&rows(&matrix, &format!("R{n:02}"))))
+        .collect();
+    assert!(!cited.is_empty());
+    for (file, test) in cited {
+        let check = |source: &dyn Fn(&str) -> Option<String>, problem: String| {
+            let entry = format!("{file}::{test}: {problem}");
+            let problems = trace_problems(&matrix, source);
+            assert!(
+                problems.iter().any(|p| p.ends_with(&entry)),
+                "{entry}: {problems:#?}"
+            );
+        };
+        let renamed = |f: &str| {
+            let code = test_source(f)?;
+            Some(if f == file {
+                code.replace(&format!("fn {test}("), &format!("fn {test}_renamed("))
+            } else {
+                code
+            })
+        };
+        check(&renamed, "function not found".to_owned());
+        check(
+            &|f: &str| test_source(f).filter(|_| f != file),
+            format!("tests/{file}.rs not found"),
+        );
+    }
+}
+
+#[test]
+fn requirements_trace_checks_comments_attributes_and_entries() {
+    let mut matrix = String::from("| Requisito | Evidencia |\n|---|---|\n");
+    let mut good = String::new();
+    for n in 1..=16 {
+        matrix.push_str(&format!("| R{n:02} x | `t::f{n}` |\n"));
+        good.push_str(&format!(
+            "// R{n:02}\n#[tokio::test]\nasync fn f{n}() {{}}\n"
+        ));
+    }
+    matrix.push_str("| R17 convivencia Python | job Python de CI |\n");
+    let missing = "R01: t::f1: no // R01 above its attribute";
+    // Each edit is applied to both the matrix and the source; "" expects no problem.
+    for (from, to, expected) in [
+        ("", "", ""),
+        // Comment missing, naming another R-ID, or below the attribute.
+        ("// R01\n", "", missing),
+        ("// R01\n", "// R010 R11\n", missing),
+        (
+            "// R01\n#[tokio::test]\n",
+            "#[tokio::test]\n// R01\n",
+            missing,
+        ),
+        // Plain #[test] with a multi-ID comment is accepted.
+        (
+            "// R01\n#[tokio::test]\nasync fn f1()",
+            "// R01, R04\n#[test]\nfn f1()",
+            "",
+        ),
+        // A helper is not a test, and a prefix match is not the cited function.
+        (
+            "#[tokio::test]\nasync fn f1()",
+            "fn f1()",
+            "R01: t::f1: not a test",
+        ),
+        ("fn f1(", "fn f1_other(", "R01: t::f1: function not found"),
+        // Regression: module-only evidence (the old matrix format) is rejected.
+        (
+            "`t::f2`",
+            "`api_admin`, `catalog`",
+            "R02: no file::function entry",
+        ),
+        // R17 needs no test but must stay marked as the CI exception.
+        (
+            "job Python de CI",
+            "pendiente",
+            "R17: must cite the Python CI job as exception",
+        ),
+    ] {
+        let code = good.replacen(from, to, 1);
+        let source = |f: &str| (f == "t").then(|| code.clone());
+        let problems = trace_problems(&matrix.replacen(from, to, 1), &source);
+        assert_eq!(problems.join("\n"), expected, "{from:?} -> {to:?}");
+    }
+}
