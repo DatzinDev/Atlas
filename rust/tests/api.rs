@@ -8,6 +8,7 @@ use atlas::{
     services::publications::Publications,
 };
 use axum::body::to_bytes;
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode, get_current_timestamp};
 use serde_json::Value;
 use std::{
     collections::HashSet,
@@ -126,9 +127,10 @@ async fn call(
     let response = tokio::task::spawn_blocking(move || {
         let mut stream = TcpStream::connect(a).unwrap();
         stream.write_all(raw.as_bytes()).unwrap();
-        let mut response = String::new();
-        stream.read_to_string(&mut response).unwrap();
-        response
+        // Bytes, not a String: a 200 vector tile is binary.
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        String::from_utf8_lossy(&response).into_owned()
     })
     .await
     .unwrap();
@@ -172,7 +174,10 @@ async fn server() -> SocketAddr {
     let key = include_bytes!("fixtures/jwt-test-public.pem");
     let verifier = Verifier::new(key, "atlas-test", "atlas").unwrap();
     let app = atlas::api::features::router(service.clone())
-        .merge(atlas::api::export::router(service))
+        .merge(atlas::api::export::router(service.clone()))
+        .merge(atlas::api::tiles::router(service.clone()))
+        .merge(atlas::api::datasets::router(service.clone()))
+        .merge(atlas::api::admin::router(service, 1024))
         .layer(axum::middleware::from_fn_with_state(
             Arc::new(Some(verifier)),
             authenticate,
@@ -189,6 +194,8 @@ async fn error_messages_over_real_http() {
     let a = server().await;
     no_request_values_echoed(a).await;
     bbox_rejections(a).await;
+    query_rules_match_across_routes(a).await;
+    query_values_are_decoded(a).await;
 }
 
 async fn no_request_values_echoed(a: SocketAddr) {
@@ -272,5 +279,85 @@ async fn bbox_rejections(a: SocketAddr) {
                 "{method} {target} {body}"
             );
         }
+    }
+}
+
+fn bearer(roles: &[&str]) -> String {
+    let claims = serde_json::json!({"sub": "alice", "iss": "atlas-test", "aud": "atlas",
+        "exp": get_current_timestamp() + 3600, "roles": roles});
+    let key = EncodingKey::from_rsa_pem(include_bytes!("fixtures/jwt-test-private.pem")).unwrap();
+    let token = encode(&Header::new(Algorithm::RS256), &claims, &key).unwrap();
+    format!("Authorization: Bearer {token}\r\n")
+}
+
+const BASE: &str = "/api/v1/datasets/hints_places";
+
+/// (path, needs admin, a valid query): every route that reads the query string.
+fn routes() -> [(String, bool, &'static str); 8] {
+    let admin = "/api/v1/admin/datasets";
+    [
+        (format!("{BASE}/items"), false, "limit=1"),
+        (format!("{BASE}/export"), false, "format=geojson"),
+        (format!("{BASE}/tiles/0/0/0.mvt"), false, "properties=name"),
+        (format!("{BASE}/tilejson.json"), false, "properties=name"),
+        ("/api/v1/datasets".to_owned(), false, "limit=1"),
+        (admin.to_owned(), true, "limit=1"),
+        // `no_query` routes: no key at all is allowed.
+        (BASE.to_owned(), false, ""),
+        (format!("{admin}/hints_places"), true, ""),
+    ]
+}
+
+/// GETs `path?query` and asserts the status and, for errors, the published code.
+async fn expect_query(a: SocketAddr, path: &str, admin: bool, query: &str, want: (&str, &str)) {
+    let headers = if admin {
+        bearer(&["atlas-admin"])
+    } else {
+        String::new()
+    };
+    let target = if query.is_empty() {
+        path.to_owned()
+    } else {
+        format!("{path}?{query}")
+    };
+    let (status, body) = call(a, "GET", &target, &headers, "").await;
+    assert_eq!(status, want.0, "{target}: {body}");
+    if want.0 != "200" {
+        assert_eq!(fixed(&body), want.1, "{target}");
+    }
+}
+
+// One shared parser: the same malformed query gives the same status and code on every route.
+async fn query_rules_match_across_routes(a: SocketAddr) {
+    let req = ("400", "invalid_request");
+    for (path, admin, valid) in routes() {
+        expect_query(a, &path, admin, valid, ("200", "")).await;
+        for query in ["a", "x=1", "limit=1&limit=2", "filter=%ZZ", "filter=%FF"] {
+            expect_query(a, &path, admin, query, req).await;
+        }
+    }
+    // Empty value: only `filter` reports invalid_filter.
+    let items = format!("{BASE}/items");
+    expect_query(a, &items, false, "filter=", ("400", "invalid_filter")).await;
+    expect_query(a, &items, false, "limit=", req).await;
+    // `format` exists only on export and only as `geojson`.
+    expect_query(a, &format!("{BASE}/export"), false, "format=csv", req).await;
+}
+
+// Regression: /datasets and /admin/datasets read limit/offset without decoding them.
+async fn query_values_are_decoded(a: SocketAddr) {
+    for (path, admin, key) in [
+        ("/api/v1/datasets", String::new(), "datasets"),
+        (
+            "/api/v1/admin/datasets",
+            bearer(&["atlas-admin"]),
+            "publications",
+        ),
+    ] {
+        let target = format!("{path}?limit=%31");
+        let (status, body) = call(a, "GET", &target, &admin, "").await;
+        assert_eq!(status, "200", "{target}: {body}");
+        let page: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(page[key].as_array().map(Vec::len), Some(1), "{page}");
     }
 }
