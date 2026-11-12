@@ -1,6 +1,7 @@
 #![cfg(unix)]
 
 use std::{
+    collections::HashSet,
     io::{BufRead, BufReader, Read, Write},
     net::TcpStream,
     process::{Child, Command, Stdio},
@@ -202,7 +203,57 @@ fn assert_error(response: &(u16, String, Vec<u8>), status: u16, code: &str) {
     );
     let body: serde_json::Value = serde_json::from_slice(body).unwrap();
     assert_eq!(body["code"], code, "{head}");
-    assert!(body["message"].is_string() && body["request_id"].is_string());
+    assert!(body["message"].is_string());
+    let id = request_id(head);
+    assert!(well_formed(id) && body["request_id"] == id, "{head}");
+}
+
+fn request_id(head: &str) -> &str {
+    head.lines()
+        .find_map(|line| line.strip_prefix("x-request-id:"))
+        .map_or("", str::trim)
+}
+
+/// `^[0-9a-f]{16}-[0-9]+$` without a regex dependency.
+fn well_formed(id: &str) -> bool {
+    id.split_once('-').is_some_and(|(nonce, n)| {
+        nonce.len() == 16
+            && nonce
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            && !n.is_empty()
+            && n.bytes().all(|b| b.is_ascii_digit())
+    })
+}
+
+fn nonce(id: &str) -> &str {
+    id.split_once('-').map_or(id, |(nonce, _)| nonce)
+}
+
+/// Spawns `atlas serve` on an ephemeral port; returns its address and stderr after `listening`.
+fn start(command: &mut Command) -> (Server, String, thread::JoinHandle<Vec<String>>) {
+    let mut server = Server(
+        command
+            .args(["--listen", "127.0.0.1:0"])
+            .env_remove("ATLAS_LISTEN")
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let stderr = server.0.stderr.take().unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let logs = thread::spawn(move || {
+        let mut lines = BufReader::new(stderr).lines();
+        sender.send(lines.next().unwrap().unwrap()).unwrap();
+        lines.map(Result::unwrap).collect()
+    });
+    let listening = receiver.recv_timeout(Duration::from_secs(10)).unwrap();
+    let address = listening
+        .strip_prefix("{\"event\":\"listening\",\"address\":\"")
+        .unwrap()
+        .strip_suffix("\"}")
+        .unwrap();
+    (server, address.to_owned(), logs)
 }
 
 #[test]
@@ -236,49 +287,33 @@ fn http_fallback_public_probes_and_nosniff() {
         ),
     )
     .unwrap();
-    let mut server = Server(
+    let (server, address, logs) = start(
         Command::new(env!("CARGO_BIN_EXE_atlas"))
-            .args(["serve", "--listen", "127.0.0.1:0", "--config"])
+            .args(["serve", "--config"])
             .arg(&path)
-            .env("ATLAS_DATABASE_URL", &dsn)
-            .env_remove("ATLAS_LISTEN")
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap(),
+            .env("ATLAS_DATABASE_URL", &dsn),
     );
-    let stderr = server.0.stderr.take().unwrap();
-    let (sender, receiver) = std::sync::mpsc::channel();
-    thread::spawn(move || {
-        let mut lines = BufReader::new(stderr).lines();
-        sender.send(lines.next().unwrap().unwrap()).unwrap();
-        lines.for_each(drop);
-    });
-    let listening = receiver.recv_timeout(Duration::from_secs(10)).unwrap();
     let _ = std::fs::remove_file(&path);
-    let address = listening
-        .strip_prefix("{\"event\":\"listening\",\"address\":\"")
-        .unwrap()
-        .strip_suffix("\"}")
-        .unwrap();
+    // Every request is recorded to match it against its log line.
+    let sent = std::cell::RefCell::new(Vec::new());
+    let send = |raw: &str| {
+        let response = call(&address, raw);
+        sent.borrow_mut().push((raw.to_owned(), response.clone()));
+        response
+    };
     let request = |method: &str, target: &str, headers: &str| {
-        call(
-            address,
-            &format!(
-                "{method} {target} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 0\r\n{headers}\r\n"
-            ),
-        )
+        send(&format!(
+            "{method} {target} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 0\r\n{headers}\r\n"
+        ))
     };
     let invalid = "Authorization: Bearer secret-token\r\n";
+    let admin = bearer(&["atlas-admin"]);
 
     let body = r#"{"id":"main_http","title":"Main","source":{"schema":"main_http","table":"points"},"properties":["name"],"access":{"public":true,"public_download":true}}"#;
-    let created = call(
-        address,
-        &format!(
-            "POST /api/v1/admin/datasets HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{}\r\n{body}",
-            body.len(),
-            bearer(&["atlas-admin"])
-        ),
-    );
+    let created = send(&format!(
+        "POST /api/v1/admin/datasets HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{admin}\r\n{body}",
+        body.len()
+    ));
     assert_eq!(created.0, 201, "{}", created.1);
     assert!(created.1.contains("x-content-type-options: nosniff"));
 
@@ -292,7 +327,7 @@ fn http_fallback_public_probes_and_nosniff() {
 
     // Unknown routes, any method, use the error model.
     for (method, target) in [
-        ("GET", "/api/v1/nope"),
+        ("GET", "/api/v1/nope?filter=secreto"),
         ("GET", "/"),
         ("POST", "/api/v1/nope"),
         ("GET", "/api/v1/health/"),
@@ -352,5 +387,63 @@ fn http_fallback_public_probes_and_nosniff() {
         let response = request("GET", target, invalid);
         assert_error(&response, 401, "invalid_token");
         assert!(response.1.contains("www-authenticate: bearer"));
+    }
+
+    let big = " ".repeat(256 * 1024 + 1);
+    let oversized = send(&format!(
+        "POST /api/v1/admin/datasets HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{admin}\r\n{big}",
+        big.len()
+    ));
+    assert_error(&oversized, 413, "query_too_large");
+
+    // 100 health ids: distinct, well-formed and sharing the process nonce.
+    let ids: HashSet<_> = (0..100)
+        .map(|_| request_id(&request("GET", "/api/v1/health", "").1).to_owned())
+        .collect();
+    let nonces: HashSet<_> = ids.iter().map(|id| nonce(id)).collect();
+    assert!(ids.len() == 100 && ids.iter().all(|id| well_formed(id)) && nonces.len() == 1);
+
+    // Another process without DSN: 503 ready, client id ignored, different nonce.
+    let (_other, other, _) = start(
+        Command::new(env!("CARGO_BIN_EXE_atlas"))
+            .args(["serve", "--config", "tests/fixtures/jwt-test.toml"])
+            .env_remove("ATLAS_DATABASE_URL"),
+    );
+    let ready = call(
+        &other,
+        "GET /api/v1/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nX-Request-Id: abc\r\n\r\n",
+    );
+    assert_error(&ready, 503, "database_unavailable");
+    assert!(!nonces.contains(nonce(request_id(&ready.1))), "{}", ready.1);
+
+    // One `event:request` line per request, matching the response; no secrets in stderr.
+    drop(server);
+    let stderr = logs.join().unwrap().join("\n");
+    let events: Vec<serde_json::Value> = stderr
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|event| event["event"] == "request")
+        .collect();
+    let sent = sent.into_inner();
+    assert_eq!(events.len(), sent.len(), "one line per request");
+    for (raw, (status, head, body)) in &sent {
+        let id = request_id(head);
+        let event = events.iter().find(|e| e["request_id"] == id).unwrap();
+        let (method, target) = raw.split_once(' ').unwrap();
+        assert_eq!(event["method"], method, "{event}");
+        assert_eq!(
+            event["path"],
+            target.split([' ', '?']).next().unwrap(),
+            "{event}"
+        );
+        assert_eq!(event["status"], *status, "{event}");
+        assert!(event["duration_ms"].is_u64(), "{event}");
+        let code = (*status >= 400)
+            .then(|| serde_json::from_slice::<serde_json::Value>(body).unwrap()["code"].clone());
+        assert_eq!(event.get("code"), code.as_ref(), "{event}");
+    }
+    let token = admin.trim_end().rsplit(' ').next().unwrap();
+    for secret in ["secreto", "secret-token", token] {
+        assert!(!stderr.contains(secret), "{secret} leaked");
     }
 }
