@@ -51,3 +51,14 @@ Repetir tres veces a c1/c4 con mismos datos/índices, propiedades, filtros, orde
 hardware y límites. Guardar junto al JSONL las expectativas, seed/hash de datos, configuración,
 versiones y comandos. Usar fixture pública sin tokens/secretos en URL/body. Python HTTP nuevo
 y Rust release son comparables entre sí; el informe histórico ASGI no lo es directamente.
+
+## Referencia GeoServer (#209)
+
+`benchmarks/geoserver/` fija GeoServer 3.0.2 por digest y la extensión vector-tiles de la misma
+versión por SHA-256 en el build. El servicio `geoserver` del perfil `bench` usa 2 CPU, 1 GiB y heap
+fijo de 640 MiB en loopback. `python3 -m benchmarks.geoserver.setup --database atlas_bench_... \
+--schema ... --layer nombre=tabla --output geoserver.json`, con `GEOSERVER_ADMIN_PASSWORD` y
+`ATLAS_BENCH_DB_PASSWORD` por entorno, rechaza bases fuera de `atlas_bench_*` y salidas existentes.
+Recrea solo el workspace `atlas_bench` (pool máximo 10, bbox exacto, capas EPSG:3857), quita la
+caché GWC de cada capa y espera a WFS. El manifiesto guarda versiones, hashes del Dockerfile y de la
+configuración, JDK, heap y cuotas, nunca contraseñas. Casos y equivalencia llegan después.

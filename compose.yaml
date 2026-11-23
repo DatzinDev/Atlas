@@ -73,6 +73,20 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  geoserver:
+    profiles: [bench]
+    build: ./benchmarks/geoserver
+    image: atlas-bench-geoserver:3.0.2
+    environment:
+      GEOSERVER_ADMIN_PASSWORD: ${GEOSERVER_ADMIN_PASSWORD:-}
+    cpus: 2
+    mem_limit: 1g
+    ports:
+      - "127.0.0.1:${GEOSERVER_PORT:-8081}:8080"
+    depends_on:
+      postgis:
+        condition: service_healthy
+
 volumes:
   atlas-postgis-data:
   atlas-cargo-registry:
