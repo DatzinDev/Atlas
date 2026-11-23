@@ -1,6 +1,6 @@
 # ADR 0010 — Verificación OIDC con JWKS del operador
 
-Estado: propuesto; requiere aprobación del responsable del proyecto antes de implementar.
+Estado: aprobado por el responsable del proyecto el 2026-11-19.
 Fecha: 2026-11-12. Seguimiento: [#232](https://github.com/DatzinDev/Atlas/issues/232).
 
 ## Contexto
@@ -20,7 +20,8 @@ Entran `hyper-rustls`, `tokio-rustls` y, por el cliente de hyper, `want` y `try-
 las raíces webpki ya están en el árbol.
 `jsonwebtoken` ya interpreta JWK y JWKS, así que no se agrega parser propio.
 
-Contrato del verificador, en `rust/src/auth/oidc.rs`:
+Contrato del verificador. El modo JWKS es otra fuente de claves de `jwt::Verifier`, en
+`rust/src/auth/jwks.rs`:
 
 - `[auth]` admite exactamente uno de `public_key_file` (modo actual, sin cambios) o
   `jwks_url`. `issuer`, `audience` y `leeway_seconds` valen igual en ambos modos.
@@ -36,7 +37,8 @@ Contrato del verificador, en `rust/src/auth/oidc.rs`:
 - `roles_claim` pasa a `[auth]` para ambos modos, opcional y con `roles` por defecto, así que
   el modo PEM no cambia de comportamiento. Es una ruta con puntos (`roles`,
   `realm_access.roles`); el valor debe ser un arreglo de strings. Ausente equivale a lista
-  vacía; otro tipo es 401.
+  vacía; otro tipo es 401. Igual que en el modo PEM, un `sub` vacío o un rol vacío o solo de
+  espacios es 401 con `invalid_claims`, venga de `roles` o de la ruta de `roles_claim`.
 - Caché en memoria por proceso, solo de claves públicas: carga al arrancar, renovación al
   ver un `kid` desconocido con una sola descarga en curso y como máximo una por minuto, y
   renovación por antigüedad tras 1 h. Estos plazos son fijos, no configurables.
