@@ -285,6 +285,8 @@ fn roles_claim_maps_a_nested_array_and_rejects_ambiguity() {
     let mut c = claims();
     c["realm_access"] = json!({"roles": ["editor"]});
     assert_eq!(verifier.verify(&token(&c)).unwrap().roles, ["editor"]);
+    c["realm_access"] = json!({"roles": ["editor", " "]});
+    assert_eq!(reason(&verifier, &token(&c)), "invalid_claims");
     c["realm_access"] = json!("editor");
     assert_eq!(reason(&verifier, &token(&c)), "invalid_claims");
     let nested = "\"realm_access\":{\"roles\":[\"x\"],\"roles\":[\"editor\"]}";
