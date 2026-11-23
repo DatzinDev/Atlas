@@ -61,4 +61,13 @@ fijo de 640 MiB en loopback. `python3 -m benchmarks.geoserver.setup --database a
 `ATLAS_BENCH_DB_PASSWORD` por entorno, rechaza bases fuera de `atlas_bench_*` y salidas existentes.
 Recrea solo el workspace `atlas_bench` (pool máximo 10, bbox exacto, capas EPSG:3857), quita la
 caché GWC de cada capa y espera a WFS. El manifiesto guarda versiones, hashes del Dockerfile y de la
-configuración, JDK, heap y cuotas, nunca contraseñas. Casos y equivalencia llegan después.
+configuración, JDK, heap y cuotas, nunca contraseñas.
+
+`python3 -m benchmarks.geoserver.cases --case CASO --layer capa [--query query.json] [--tile z/x/y]`
+imprime una línea JSON con la URL para `compare.py --engine geoserver`, o `status: n/a` con motivo
+para `catalog` y `tilejson`, que no tienen equivalente y se informan como N/A. La Query de Atlas se
+traduce solo en el generador: `filter` a ECQL, `bbox` y polígonos en EPSG:4326, `properties` a
+`propertyName`, `sort` más el id como desempate final a `sortBy`, `limit`/`offset` a
+`count`/`startIndex`; `export` es WFS completo sin paginar. `mvt-tile` pide WMS GetMap MVT sin GWC
+sobre la envolvente XYZ: 256 px dan extent 4096 y `buffer=4` equivale a 64 unidades. La
+equivalencia de cuerpos llega después.

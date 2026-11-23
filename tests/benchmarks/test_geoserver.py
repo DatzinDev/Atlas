@@ -1,9 +1,10 @@
 import json
 import re
 from argparse import Namespace
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from benchmarks.geoserver import setup
+from benchmarks.geoserver import cases, setup
 
 ARGS = Namespace(
     db_host="postgis", db_port=5432, database="atlas_bench_x", schema="run_x", db_user="atlas"
@@ -84,3 +85,89 @@ def test_existing_output_is_never_overwritten(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match="exists"):
         setup.main(argv)
     assert out.read_text() == "{}"
+
+
+BASE = "http://127.0.0.1:8081/geoserver"
+COLUMNS = ("geom", "id")
+
+
+def params(url):
+    return {k: v[0] for k, v in parse_qs(urlsplit(url).query, keep_blank_values=True).items()}
+
+
+def page(query, case="geojson-query"):
+    return params(cases.wfs(BASE, "points", query, case, COLUMNS, 1000))
+
+
+def test_filter_ast_becomes_ecql_with_quoted_fields_and_literals():
+    node = {
+        "op": "and",
+        "args": [
+            {"op": "gte", "field": "poblacion", "value": 100000},
+            {"op": "not", "arg": {"op": "in", "field": "nombre", "value": ["a", "o'k"]}},
+            {
+                "op": "or",
+                "args": [
+                    {"op": "is_null", "field": "x"},
+                    {"op": "eq", "field": "b", "value": True},
+                ],
+            },
+            {"op": "ilike", "field": "nombre", "value": "san%"},
+        ],
+    }
+    assert cases.cql(node, "geom") == (
+        "(\"poblacion\" >= 100000 AND (NOT \"nombre\" IN ('a', 'o''k')) AND "
+        '("x" IS NULL OR "b" = TRUE) AND "nombre" ILIKE \'san%\')'
+    )
+
+
+def test_spatial_filters_keep_wgs84_and_every_polygon():
+    ring = [[0, 0], [1, 0], [1, 1], [0, 0]]
+    within = {"op": "within", "geometry": {"type": "MultiPolygon", "coordinates": [[ring], [ring]]}}
+    text = cases.cql(within, "geom")
+    assert text.startswith("WITHIN(geom, SRID=4326;MULTIPOLYGON(((0 0, 1 0, 1 1, 0 0)), ((")
+    for bad in ({"op": "between"}, {"op": "eq", "field": 'a"b', "value": 1}):
+        with pytest.raises(ValueError):
+            cases.cql(bad, "geom")
+
+
+def test_page_maps_limit_offset_sort_bbox_and_properties():
+    query = {"bbox": [-104, 20, -102, 22], "properties": ["nombre"], "sort": ["nombre:desc"]}
+    p = page({**query, "limit": 10, "offset": 20, "filter": {"op": "is_not_null", "field": "n"}})
+    assert p["typeNames"] == "atlas_bench:points"
+    assert p["srsName"] == "EPSG:4326" and p["outputFormat"] == "application/json"
+    assert p["count"] == "10" and p["startIndex"] == "20"
+    assert p["sortBy"] == "nombre D,id A"
+    assert p["propertyName"] == "nombre,geom"
+    assert p["CQL_FILTER"] == "BBOX(geom, -104, 20, -102, 22, 'EPSG:4326') AND \"n\" IS NOT NULL"
+    assert page({})["count"] == "1000" and page({"sort": ["id:desc"]})["sortBy"] == "id D"
+
+
+def test_export_is_complete_and_rejects_paging():
+    p = page({"properties": ["nombre"]}, case="export")
+    assert "count" not in p and "startIndex" not in p and p["sortBy"] == "id A"
+    for bad in ({"limit": 1}, {"offset": 1}, {"sort": ["a"]}, {"cursor": 1}):
+        with pytest.raises(ValueError):
+            page(bad, case="export")
+    with pytest.raises(ValueError, match="sort"):
+        page({"sort": ["a:up"]})
+
+
+def test_tile_requests_extent_4096_and_buffer_64_over_the_xyz_envelope():
+    p = params(cases.tile(BASE, "points", 1, 1, 0))
+    assert [float(v) for v in p["bbox"].split(",")] == [0, 0, cases.ORIGIN, cases.ORIGIN]
+    assert p["width"] == p["height"] == "256" and p["buffer"] == "4"
+    assert p["format"] == "application/vnd.mapbox-vector-tile" and p["crs"] == "EPSG:3857"
+    with pytest.raises(ValueError):
+        cases.tile(BASE, "points", 1, 2, 0)
+
+
+def test_cli_reports_not_applicable_cases_instead_of_failing(capsys):
+    for case in ("catalog", "tilejson"):
+        assert cases.main(["--case", case, "--layer", "points"]) == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["status"] == "n/a" and out["engine"] == "geoserver" and out["reason"]
+    assert cases.main(["--case", "mvt-tile", "--layer", "points", "--tile", "0/0/0"]) == 0
+    assert json.loads(capsys.readouterr().out)["kind"] == "mvt"
+    with pytest.raises(SystemExit):
+        cases.main(["--case", "mvt-tile", "--layer", "points"])
