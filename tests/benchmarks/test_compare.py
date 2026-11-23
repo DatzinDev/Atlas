@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import struct
 import tempfile
 import unittest
 from argparse import Namespace
@@ -133,6 +134,9 @@ class ProbeTests(unittest.TestCase):
         reordered = tile(swapped, keys=("n", "name"), values=(b"\x0a\x01a", b"\x20\x07"))
         self.assertEqual(normalize(reordered, "mvt"), expected)
         self.assertEqual(expected[0][2][0][3], (("n", ("int", 7)), ("name", ("string", "a"))))
+        floats = (b"\x15" + struct.pack("<f", 1.5), b"\x19" + struct.pack("<d", 2.25))
+        decoded = normalize(tile(POINTS, values=floats), "mvt")[0][2][0][3]
+        self.assertEqual(decoded, (("n", ("double", 2.25)), ("name", ("float", 1.5))))
         for features, reason in (
             (POINTS[:1], "count"),
             ([POINTS[0], (3, *POINTS[1][1:])], "ids"),

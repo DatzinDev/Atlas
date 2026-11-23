@@ -74,7 +74,7 @@ def scalar(field, value):
     if field == 1:
         return "string", value.decode()
     if field in (2, 3):
-        return ("float", "double")[field - 2], struct.unpack("<fd"[field - 2], value)[0]
+        return ("float", "double")[field - 2], struct.unpack("<" + "fd"[field - 2], value)[0]
     if field in (4, 5, 6):
         signed = value - (1 << 64) if value >= 1 << 63 else value
         return "int", (signed, value, (value >> 1) ^ -(value & 1))[field - 4]
