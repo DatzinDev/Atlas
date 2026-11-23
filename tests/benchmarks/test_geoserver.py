@@ -1,10 +1,13 @@
 import json
+import os
 import re
 from argparse import Namespace
 from urllib.parse import parse_qs, urlsplit
+from urllib.request import urlopen
 
 import pytest
-from benchmarks.geoserver import cases, setup
+from benchmarks.geoserver import cases, equivalence, setup
+from psycopg.conninfo import conninfo_to_dict
 
 ARGS = Namespace(
     db_host="postgis", db_port=5432, database="atlas_bench_x", schema="run_x", db_user="atlas"
@@ -171,3 +174,75 @@ def test_cli_reports_not_applicable_cases_instead_of_failing(capsys):
     assert json.loads(capsys.readouterr().out)["kind"] == "mvt"
     with pytest.raises(SystemExit):
         cases.main(["--case", "mvt-tile", "--layer", "points"])
+
+
+GEOSERVER = os.environ.get("ATLAS_GEOSERVER_URL")
+FIXTURE = """
+CREATE SCHEMA run_eq;
+CREATE TABLE run_eq.features (id bigint PRIMARY KEY, label text, value float8,
+                              geom geometry(Geometry, 3857));
+INSERT INTO run_eq.features
+SELECT i, 'f' || (i % 7), i / 3.0,
+       CASE WHEN i % 2 = 0 THEN ST_SetSRID(ST_Point(i * 1700.5, i * 900.25), 3857)
+            ELSE ST_MakeEnvelope(i * 1700, i * 900, i * 1700 + 1500, i * 900 + 700, 3857) END
+FROM generate_series(1, 120) i;
+CREATE INDEX ON run_eq.features USING GIST (geom);
+ANALYZE run_eq.features;
+"""
+PAGE = """
+SELECT id, ST_AsGeoJSON(ST_Transform(geom, 4326))::json AS geometry,
+       json_build_object('label', label, 'value', value) AS properties FROM run_eq.features
+WHERE ST_Intersects(geom, ST_Transform(ST_MakeEnvelope(0.1, 0.05, 1.5, 0.8, 4326), 3857))
+ORDER BY label DESC, id LIMIT 7 OFFSET 3
+"""
+TILE = """
+SELECT ST_AsMVT(q, 'eq', 4096, 'geom', 'id') AS tile FROM (
+    SELECT id, label, value, ST_AsMVTGeom(geom, ST_TileEnvelope(8, 128, 127), 4096, 64) AS geom
+    FROM run_eq.features WHERE geom && ST_TileEnvelope(8, 128, 127, margin => 64 / 4096.0)
+) q
+"""
+
+
+@pytest.mark.skipif(not GEOSERVER, reason="ATLAS_GEOSERVER_URL is not set")
+async def test_geoserver_bodies_match_postgis_oracles(bench_db, database_url):
+    async with bench_db.connection() as conn:
+        await conn.execute(FIXTURE)
+        name = (await (await conn.execute("SELECT current_database() AS name")).fetchone())["name"]
+        rows = await (await conn.execute(PAGE)).fetchall()
+        oracle_tile = (await (await conn.execute(TILE)).fetchone())["tile"]
+    info = conninfo_to_dict(database_url)
+    rest = setup.Rest(GEOSERVER, "admin", os.environ["GEOSERVER_ADMIN_PASSWORD"])
+    args = Namespace(
+        db_host=os.environ.get("ATLAS_GEOSERVER_DB_HOST", "postgis"),
+        db_port=5432,
+        database=name,
+        schema="run_eq",
+        db_user=info["user"],
+    )
+    setup.configure(rest, setup.store_parameters(args), info["password"], [("eq", "features")])
+    try:
+        query = {
+            "bbox": [0.1, 0.05, 1.5, 0.8],
+            "properties": ["label", "value"],
+            "sort": ["label:desc"],
+            "limit": 7,
+            "offset": 3,
+        }
+        url = cases.wfs(GEOSERVER, "eq", query, "geojson-query", ("geom", "id"), 1000)
+        with urlopen(url) as response:
+            body = response.read()
+        assert "numberMatched" not in json.loads(body)
+        actual = equivalence.geojson(body)
+        assert len(actual) == 7
+        assert (
+            equivalence.difference(
+                [(r["id"], r["geometry"], r["properties"]) for r in rows], actual
+            )
+            is None
+        )
+        with urlopen(cases.tile(GEOSERVER, "eq", 8, 128, 127)) as response:
+            report = equivalence.coverage(bytes(oracle_tile), response.read())
+        assert report["eq"]["extent"] == [4096, 4096]
+        assert report["eq"]["missing"] == [] and report["eq"]["extra"] == []
+    finally:
+        rest.call("DELETE", f"/rest/workspaces/{setup.WORKSPACE}?recurse=true", ok=(200, 404))

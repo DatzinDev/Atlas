@@ -71,5 +71,15 @@ traduce solo en el generador: `filter` a ECQL, `bbox` y polígonos en EPSG:4326,
 `count`/`startIndex`; `export` es WFS completo sin paginar. `mvt-tile` pide WMS GetMap MVT sin GWC
 sobre la envolvente XYZ: 256 px dan extent 4096 y `buffer=4` equivale a 64 unidades. Medido con
 GeoServer 3.0.2: el extent MVT es 16 veces el ancho en píxeles (4096 px darían 65536) y el buffer
-WMS escala igual (`buffer=64` a 256 px agrega features fuera del margen de `ST_AsMVT`). La
-equivalencia de cuerpos llega después.
+WMS escala igual (`buffer=64` a 256 px agrega features fuera del margen de `ST_AsMVT`).
+
+Conteo y precisión se alinean con Rust: cada capa lleva `skipNumberMatched` (sin COUNT, sin
+`numberMatched`) y `numDecimals=9`, como `ST_AsGeoJSON`. `equivalence.py` compara por contenido:
+`geojson()` quita la envoltura de GeoServer (`timeStamp`, `totalFeatures`, `crs`, `bbox`), toma el id
+de `capa.N` y quita el id repetido en properties; `difference()` nombra `count`, `ids`,
+`properties` o `geometry` (tolerancia 1e-9 grados, GeoTools y PROJ difieren en el último dígito);
+`coverage()` compara capas, extent e ids de un MVT contra `ST_AsMVT` e informa aparte las
+geometrías cuantizadas distintas, que no hacen fallar la cobertura. Con `ATLAS_GEOSERVER_URL`,
+`GEOSERVER_ADMIN_PASSWORD` y `ATLAS_TEST_DATABASE_URL`, `test_geoserver.py` verifica contra GeoServer
+y PostGIS reales una página con bbox, sort y properties y la cobertura de una tesela; sin ellas se
+salta. `compare.py` no cambia: integrar estas normalizaciones a la medición es parte de #231.

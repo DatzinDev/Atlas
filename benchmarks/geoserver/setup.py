@@ -22,6 +22,7 @@ STORE_DEFAULTS = {
     "Loose bbox": "false",
     "Estimated extends": "false",
 }
+FEATURE_SETTINGS = {"numDecimals": 9, "skipNumberMatched": True}
 
 
 class Rest:
@@ -86,6 +87,7 @@ def configure(rest, parameters, password, layers):
             "nativeName": table,
             "srs": "EPSG:3857",
             "projectionPolicy": "FORCE_DECLARED",
+            **FEATURE_SETTINGS,
         }
         path = f"/rest/workspaces/{WORKSPACE}/datastores/{STORE}/featuretypes"
         rest.call("POST", path, {"featureType": feature})
@@ -117,7 +119,11 @@ def container(name):
 
 
 def manifest(versions, plugin, parameters, layers, runtime):
-    config = {"datastore": parameters, "layers": [list(layer) for layer in layers]}
+    config = {
+        "datastore": parameters,
+        "layers": [list(layer) for layer in layers],
+        "feature_settings": FEATURE_SETTINGS,
+    }
     canonical = json.dumps(config, sort_keys=True, separators=(",", ":")).encode()
     return {
         "engine": "geoserver",
