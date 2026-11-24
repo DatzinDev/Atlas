@@ -174,3 +174,35 @@ async fn provider_outage_keeps_keys_until_stale_then_fails_closed() {
     provider.set(200, first(), 0);
     assert!(jwks.key("first").await.is_ok());
 }
+
+#[tokio::test]
+async fn age_renewal_is_rate_limited_and_never_blocks_a_known_kid() {
+    let (provider, url) = start(first()).await;
+    let aged = Timing {
+        min_refresh: Duration::from_secs(3600),
+        max_age: Duration::ZERO,
+        ..timing()
+    };
+    let jwks = Jwks::load(&url, aged).await.unwrap();
+    for _ in 0..3 {
+        assert!(jwks.key("first").await.is_ok());
+    }
+    assert_eq!(provider.hits.load(Ordering::SeqCst), 1);
+    let (provider, url) = start(first()).await;
+    let aged = Timing {
+        max_age: Duration::ZERO,
+        ..timing()
+    };
+    let jwks = Arc::new(Jwks::load(&url, aged).await.unwrap());
+    provider.set(200, first(), 400);
+    let renewing = {
+        let jwks = jwks.clone();
+        tokio::spawn(async move { jwks.key("first").await.is_ok() })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let started = std::time::Instant::now();
+    assert!(jwks.key("first").await.is_ok());
+    assert!(started.elapsed() < Duration::from_millis(100));
+    assert!(renewing.await.unwrap());
+    assert_eq!(provider.hits.load(Ordering::SeqCst), 2);
+}

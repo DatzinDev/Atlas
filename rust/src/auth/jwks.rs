@@ -16,7 +16,7 @@ use std::{
     collections::HashMap,
     time::{Duration, Instant},
 };
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, MutexGuard, RwLock};
 
 pub const MAX_JWKS_BYTES: usize = 65536;
 pub const MAX_KEYS: usize = 32;
@@ -143,9 +143,9 @@ impl Jwks {
         result.map_err(|reason| log(json!({"event": "jwks_refresh_failed", "reason": reason})))
     }
 
-    /// One download at a time, at most one per `min_refresh`.
-    async fn renew(&self, kid: &str) {
-        let _single = self.refresh.lock().await;
+    /// One download at a time, at most one per `min_refresh` counted from the last attempt,
+    /// including the startup load: a rotation in the first minute is `unknown_kid` until then.
+    async fn renew(&self, kid: &str, _single: MutexGuard<'_, ()>) {
         {
             let keys = self.keys.read().await;
             let fresh = keys.fetched.elapsed() < self.timing.max_age;
@@ -165,17 +165,24 @@ impl Jwks {
         }
     }
 
+    /// A known `kid` younger than `max_stale` never waits for a download: past `max_age` the
+    /// first caller renews and the rest get the cached key meanwhile.
     /// On failure returns the stable reason logged for the 401.
     pub async fn key(&self, kid: &str) -> Result<DecodingKey, &'static str> {
-        {
+        let cached = {
             let keys = self.keys.read().await;
-            if keys.fetched.elapsed() < self.timing.max_age
-                && let Some(key) = keys.keys.get(kid)
-            {
-                return Ok(key.clone());
+            let age = keys.fetched.elapsed();
+            match keys.keys.get(kid) {
+                Some(key) if age < self.timing.max_age => return Ok(key.clone()),
+                Some(key) if age < self.timing.max_stale => Some(key.clone()),
+                _ => None,
             }
+        };
+        match (cached, self.refresh.try_lock()) {
+            (Some(key), Err(_)) => return Ok(key),
+            (_, Ok(single)) => self.renew(kid, single).await,
+            (None, Err(_)) => self.renew(kid, self.refresh.lock().await).await,
         }
-        self.renew(kid).await;
         let keys = self.keys.read().await;
         if keys.fetched.elapsed() >= self.timing.max_stale {
             return Err("jwks_expired");
