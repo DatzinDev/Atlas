@@ -66,6 +66,17 @@ def test_setup_only_touches_its_workspace_and_drops_tile_caching():
     assert feature["srs"] == "EPSG:3857" and feature["nativeName"] == "features"
 
 
+def test_missing_container_stops_before_touching_geoserver(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEOSERVER_ADMIN_PASSWORD", "admin-secret")
+    monkeypatch.setenv("ATLAS_BENCH_DB_PASSWORD", "db-secret")
+    monkeypatch.setattr(setup, "Rest", lambda *a: pytest.fail("GeoServer was contacted"))
+    monkeypatch.setattr(setup.subprocess, "run", lambda *a, **k: Namespace(returncode=1, stdout=""))
+    argv = ["--database", "atlas_bench_x", "--schema", "s", "--layer", "a=t"]
+    with pytest.raises(SystemExit, match="--container"):
+        setup.main([*argv, "--container", "other-geoserver-1", "--output", str(tmp_path / "m")])
+    assert not (tmp_path / "m").exists()
+
+
 def test_existing_output_is_never_overwritten(tmp_path, monkeypatch):
     out = tmp_path / "manifest.json"
     out.write_text("{}")

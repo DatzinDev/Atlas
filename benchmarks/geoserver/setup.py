@@ -101,7 +101,9 @@ def configure(rest, parameters, password, layers):
 def container(name):
     if not name:
         return None
-    out = subprocess.run(["docker", "inspect", name], check=True, capture_output=True, text=True)
+    out = subprocess.run(["docker", "inspect", name], capture_output=True, text=True)
+    if out.returncode != 0:
+        raise SystemExit(f"container {name} not found; pass --container")
     info = json.loads(out.stdout)[0]
     env = dict(item.split("=", 1) for item in info["Config"]["Env"])
     return {
@@ -160,6 +162,7 @@ def main(argv=None):
     missing = [k for k, v in secrets.items() if not v]
     if missing:
         raise SystemExit(f"missing environment: {', '.join(missing)}")
+    runtime = container(args.container)
     rest = Rest(
         args.url,
         os.environ.get("GEOSERVER_ADMIN_USER", "admin"),
@@ -174,7 +177,7 @@ def main(argv=None):
         plugin["about"]["resource"]["Implementation-Version"],
         parameters,
         args.layer,
-        container(args.container),
+        runtime,
     )
     cached = rest.call("GET", "/gwc/rest/layers.json") or []
     data["gwc_layers"] = [name for name in cached if name.startswith(WORKSPACE + ":")]
