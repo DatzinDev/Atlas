@@ -71,14 +71,15 @@ async fn serve(config: Config) -> Result<(), &'static str> {
     if config.database_url.is_none() {
         return Err("database url required");
     }
-    let verifier = std::sync::Arc::new(
-        config
-            .auth
-            .as_ref()
-            .map(|auth| auth.verifier())
-            .transpose()
-            .map_err(|_| "invalid authentication configuration")?,
-    );
+    let verifier = match &config.auth {
+        Some(auth) => Some(
+            auth.verifier()
+                .await
+                .map_err(|_| "invalid authentication configuration")?,
+        ),
+        None => None,
+    };
+    let verifier = std::sync::Arc::new(verifier);
     // Register before accepting connections so an early signal cannot bypass draining.
     #[cfg(unix)]
     let mut terminate = signal::unix::signal(signal::unix::SignalKind::terminate())

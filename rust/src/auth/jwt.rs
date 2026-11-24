@@ -1,8 +1,10 @@
+use super::jwks::Jwks;
 use crate::domain::{Error, Principal};
 use jsonwebtoken::{
-    Algorithm, DecodingKey, DecodingKeyKind, Validation, decode, errors::ErrorKind,
+    Algorithm, DecodingKey, DecodingKeyKind, Validation, decode, decode_header, errors::ErrorKind,
 };
 use serde::Deserialize;
+use serde_json::value::RawValue;
 
 #[derive(Deserialize)]
 struct Claims {
@@ -15,8 +17,6 @@ struct Claims {
     _expires: u64,
     #[serde(default, deserialize_with = "present_timestamp", rename = "nbf")]
     _not_before: Option<u64>,
-    #[serde(default)]
-    roles: Vec<String>,
 }
 
 fn present_timestamp<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
@@ -75,44 +75,94 @@ fn unsigned(int: &[u8]) -> Option<&[u8]> {
     int.get(int.iter().position(|&b| b != 0).unwrap_or(int.len())..)
 }
 
-/// Accepts PKCS#1 `RSAPublicKey` DER with a 2048..=8192-bit modulus and odd exponent >= 3.
-fn strong_rsa(key: &DecodingKey) -> Option<()> {
-    let DecodingKeyKind::SecretOrDer(bytes) = key.kind() else {
-        return None;
-    };
+/// Splits PKCS#1 `RSAPublicKey` DER into its unsigned modulus and exponent.
+fn der_components(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
     let (body, rest) = der(bytes, 0x30)?;
     let (n, body) = der(body, 0x02)?;
     let (e, body) = der(body, 0x02)?;
-    let (n, e) = (unsigned(n)?, unsigned(e)?);
+    (rest.is_empty() && body.is_empty()).then_some((unsigned(n)?, unsigned(e)?))
+}
+
+fn trimmed(int: &[u8]) -> &[u8] {
+    &int[int.iter().position(|&b| b != 0).unwrap_or(int.len())..]
+}
+
+/// Accepts RSA keys with a 2048..=8192-bit modulus and odd exponent >= 3, from PEM or JWK.
+fn strong_rsa(key: &DecodingKey) -> Option<()> {
+    let (n, e) = match key.kind() {
+        DecodingKeyKind::SecretOrDer(bytes) => der_components(bytes)?,
+        DecodingKeyKind::RsaModulusExponent { n, e } => (trimmed(n), trimmed(e)),
+    };
     let bits = n.len() * 8 - n.first()?.leading_zeros() as usize;
     let odd = e.last()? & 1 == 1;
-    (rest.is_empty()
-        && body.is_empty()
-        && (2048..=8192).contains(&bits)
-        && odd
-        && (e.len() > 1 || e[0] >= 3))
-        .then_some(())
+    ((2048..=8192).contains(&bits) && odd && (e.len() > 1 || e[0] >= 3)).then_some(())
+}
+
+/// A strong RS256 public key the crypto provider accepts.
+pub(crate) fn usable(key: &DecodingKey) -> Option<()> {
+    strong_rsa(key)?;
+    (jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER.verifier_factory)(&Algorithm::RS256, key)
+        .ok()
+        .map(|_| ())
+}
+
+/// Object members in order, duplicates kept so they can be rejected.
+struct Members(Vec<(String, Box<RawValue>)>);
+
+impl<'de> Deserialize<'de> for Members {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Visit;
+        impl<'de> serde::de::Visitor<'de> for Visit {
+            type Value = Members;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an object")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Members, A::Error> {
+                let mut members = Vec::new();
+                while let Some(member) = map.next_entry()? {
+                    members.push(member);
+                }
+                Ok(Members(members))
+            }
+        }
+        d.deserialize_map(Visit)
+    }
+}
+
+/// Follows the dotted path; absent is no roles, a repeated key on the way is ambiguous.
+fn roles(claims: &RawValue, path: &[String]) -> Result<Vec<String>, &'static str> {
+    let mut current = claims.to_owned();
+    for part in path {
+        let Members(members) = serde_json::from_str(current.get()).map_err(|_| "invalid_claims")?;
+        let mut found = members.into_iter().filter(|(key, _)| key == part);
+        match (found.next(), found.next()) {
+            (None, _) => return Ok(Vec::new()),
+            (Some((_, value)), None) => current = value,
+            _ => return Err("invalid_claims"),
+        }
+    }
+    serde_json::from_str(current.get()).map_err(|_| "invalid_claims")
+}
+
+enum Keys {
+    Local(DecodingKey),
+    Jwks(Box<Jwks>),
 }
 
 pub struct Verifier {
-    key: DecodingKey,
+    keys: Keys,
     validation: Validation,
+    roles_claim: Vec<String>,
 }
 
 impl Verifier {
-    pub fn new(pem: &[u8], issuer: &str, audience: &str) -> Result<Self, Error> {
-        let pem = pem.trim_ascii();
-        if issuer.trim().is_empty()
-            || audience.trim().is_empty()
-            || !(pem.starts_with(b"-----BEGIN PUBLIC KEY-----")
-                || pem.starts_with(b"-----BEGIN RSA PUBLIC KEY-----"))
-        {
+    fn with_keys(keys: Keys, issuer: &str, audience: &str) -> Result<Self, Error> {
+        if issuer.trim().is_empty() || audience.trim().is_empty() {
             return Err(Error::InvalidRequest);
         }
-        let key = DecodingKey::from_rsa_pem(pem).map_err(|_| Error::InvalidRequest)?;
-        strong_rsa(&key).ok_or(Error::InvalidRequest)?;
-        (jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER.verifier_factory)(&Algorithm::RS256, &key)
-            .map_err(|_| Error::InvalidRequest)?;
         let mut validation = Validation::new(Algorithm::RS256);
         validation.set_required_spec_claims(&["sub", "iss", "aud", "exp"]);
         validation.set_issuer(&[issuer]);
@@ -120,7 +170,37 @@ impl Verifier {
         validation.validate_nbf = true;
         validation.leeway = DEFAULT_LEEWAY_SECONDS;
         validation.reject_tokens_expiring_in_less_than = 1;
-        Ok(Self { key, validation })
+        Ok(Self {
+            keys,
+            validation,
+            roles_claim: vec!["roles".into()],
+        })
+    }
+
+    pub fn new(pem: &[u8], issuer: &str, audience: &str) -> Result<Self, Error> {
+        let pem = pem.trim_ascii();
+        if !(pem.starts_with(b"-----BEGIN PUBLIC KEY-----")
+            || pem.starts_with(b"-----BEGIN RSA PUBLIC KEY-----"))
+        {
+            return Err(Error::InvalidRequest);
+        }
+        let key = DecodingKey::from_rsa_pem(pem).map_err(|_| Error::InvalidRequest)?;
+        usable(&key).ok_or(Error::InvalidRequest)?;
+        Self::with_keys(Keys::Local(key), issuer, audience)
+    }
+
+    /// Trusts only the keys of the operator JWKS; `kid` selects within it.
+    pub fn from_jwks(jwks: Jwks, issuer: &str, audience: &str) -> Result<Self, Error> {
+        Self::with_keys(Keys::Jwks(Box::new(jwks)), issuer, audience)
+    }
+
+    /// Dotted path to the roles array, `roles` by default.
+    pub fn with_roles_claim(mut self, path: &str) -> Result<Self, Error> {
+        self.roles_claim = path.split('.').map(str::to_owned).collect();
+        if self.roles_claim.iter().any(String::is_empty) {
+            return Err(Error::InvalidRequest);
+        }
+        Ok(self)
     }
 
     /// Overrides the `exp`/`nbf` clock skew tolerance; range is enforced by configuration.
@@ -130,20 +210,34 @@ impl Verifier {
     }
 
     /// On failure returns a stable reason for logs; never the token or its claims.
-    pub fn verify(&self, token: &str) -> Result<Principal, &'static str> {
+    pub async fn verify(&self, token: &str) -> Result<Principal, &'static str> {
         // Bound decoding and signature work independently of future request body limits.
         if token.len() > 16384 {
             return Err("token_too_large");
         }
-        let claims = decode::<Claims>(token, &self.key, &self.validation)
+        let fetched;
+        let key = match &self.keys {
+            Keys::Local(key) => key,
+            Keys::Jwks(jwks) => {
+                let header = decode_header(token).map_err(|e| reason(e.kind()))?;
+                if header.alg != Algorithm::RS256 {
+                    return Err("invalid_algorithm");
+                }
+                fetched = jwks.key(&header.kid.ok_or("missing_kid")?).await?;
+                &fetched
+            }
+        };
+        let raw = decode::<Box<RawValue>>(token, key, &self.validation)
             .map_err(|e| reason(e.kind()))?
             .claims;
-        if claims.sub.trim().is_empty() || claims.roles.iter().any(|r| r.trim().is_empty()) {
+        let claims: Claims = serde_json::from_str(raw.get()).map_err(|_| "invalid_claims")?;
+        let roles = roles(&raw, &self.roles_claim)?;
+        if claims.sub.trim().is_empty() || roles.iter().any(|r| r.trim().is_empty()) {
             return Err("invalid_claims");
         }
         Ok(Principal {
             sub: Some(claims.sub),
-            roles: claims.roles,
+            roles,
         })
     }
 }

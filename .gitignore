@@ -24,6 +24,7 @@ rust/target/
 *.pem
 !rust/tests/fixtures/jwt-test-private.pem
 !rust/tests/fixtures/jwt-test-public.pem
+!rust/tests/fixtures/oidc-test-rotated.pem
 *.key
 *.p12
 *.pfx

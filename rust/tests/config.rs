@@ -120,19 +120,19 @@ fn pool_size_reserves_connections_beyond_data_operations() {
     }
 }
 
-#[test]
-fn jwt_trust_configuration_is_closed_and_local() {
+#[tokio::test]
+async fn jwt_trust_configuration_is_closed_and_local() {
     let text = "[auth]\npublic_key_file='tests/fixtures/jwt-test-public.pem'\nissuer='atlas-test'\naudience='atlas'";
     let config = Config::parse(text, None, None).unwrap();
     let auth = config.auth.unwrap();
     assert_eq!(auth.leeway_seconds, 30);
-    assert!(auth.verifier().is_ok());
+    assert!(auth.verifier().await.is_ok());
     for leeway in [0, 300] {
         let config =
             Config::parse(&format!("{text}\nleeway_seconds={leeway}"), None, None).unwrap();
         let auth = config.auth.unwrap();
         assert_eq!(auth.leeway_seconds, leeway);
-        assert!(auth.verifier().is_ok());
+        assert!(auth.verifier().await.is_ok());
     }
     for leeway in ["301", "-1", "1.5", "'30'", "99999999999"] {
         let text = format!("{text}\nleeway_seconds={leeway}");
@@ -140,7 +140,7 @@ fn jwt_trust_configuration_is_closed_and_local() {
     }
     let strong = text.replace("jwt-test-public.pem", "jwt-test-4096-public.pem");
     let config = Config::parse(&strong, None, None).unwrap();
-    assert!(config.auth.unwrap().verifier().is_ok());
+    assert!(config.auth.unwrap().verifier().await.is_ok());
     for invalid in [
         "[auth]",
         "[auth]\npublic_key_file='key.pem'",
@@ -166,7 +166,27 @@ fn jwt_trust_configuration_is_closed_and_local() {
     ] {
         let text = text.replace("tests/fixtures/jwt-test-public.pem", path);
         let config = Config::parse(&text, None, None).unwrap();
-        assert!(config.auth.unwrap().verifier().is_err());
+        assert!(config.auth.unwrap().verifier().await.is_err());
+    }
+}
+
+#[tokio::test]
+async fn jwks_trust_is_exclusive_and_fails_closed() {
+    let base = "[auth]\nissuer='i'\naudience='a'";
+    for invalid in [
+        format!("{base}\njwks_url=''"),
+        format!("{base}\njwks_url='https://idp.test/jwks'\npublic_key_file='k'"),
+        format!("{base}\njwks_url='https://idp.test/jwks'\nroles_claim='a..b'"),
+        format!("{base}\npublic_key_file='k'\nroles_claim=''"),
+    ] {
+        assert!(Config::parse(&invalid, None, None).is_err(), "{invalid}");
+    }
+    let config = Config::parse(&format!("{base}\npublic_key_file='k'"), None, None).unwrap();
+    assert_eq!(config.auth.unwrap().roles_claim, "roles");
+    for url in ["http://idp.example/jwks", "http://127.0.0.1:9/jwks"] {
+        let text = format!("{base}\njwks_url='{url}'\nroles_claim='realm_access.roles'");
+        let config = Config::parse(&text, None, None).unwrap();
+        assert!(config.auth.unwrap().verifier().await.is_err());
     }
 }
 

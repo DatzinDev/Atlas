@@ -110,7 +110,8 @@ Un anónimo en /admin, o en una descarga de un dataset público sin public_downl
 permission_denied sin `WWW-Authenticate`: es intencional, porque el acceso no depende solo de
 autenticarse (también hace falta el rol).
 Los roles se comparan de forma exacta y distinguiendo mayúsculas (`Admin` ≠ `admin`). Se leen
-del claim `roles` en la raíz del token; el mapeo configurable del claim se trata en #232.
+del claim que indica `auth.roles_claim` (`roles` por defecto; ruta con puntos como
+`realm_access.roles`); una llave repetida en esa ruta es 401.
 Catálogo filtra por view; detalle/items/tiles exigen view+query; export view+download.
 view_roles, query_roles y download_roles admiten hasta 1.000 roles cada una; cada rol tiene
 de 1 a 128 caracteres sin espacios (incluido U+FEFF) ni caracteres de control. Fuera de eso
