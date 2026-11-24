@@ -69,5 +69,7 @@ para `catalog` y `tilejson`, que no tienen equivalente y se informan como N/A. L
 traduce solo en el generador: `filter` a ECQL, `bbox` y polígonos en EPSG:4326, `properties` a
 `propertyName`, `sort` más el id como desempate final a `sortBy`, `limit`/`offset` a
 `count`/`startIndex`; `export` es WFS completo sin paginar. `mvt-tile` pide WMS GetMap MVT sin GWC
-sobre la envolvente XYZ: 256 px dan extent 4096 y `buffer=4` equivale a 64 unidades. La
+sobre la envolvente XYZ: 256 px dan extent 4096 y `buffer=4` equivale a 64 unidades. Medido con
+GeoServer 3.0.2: el extent MVT es 16 veces el ancho en píxeles (4096 px darían 65536) y el buffer
+WMS escala igual (`buffer=64` a 256 px agrega features fuera del margen de `ST_AsMVT`). La
 equivalencia de cuerpos llega después.
