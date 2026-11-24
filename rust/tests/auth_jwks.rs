@@ -222,7 +222,7 @@ async fn age_renewal_is_rate_limited_and_never_blocks_a_known_kid() {
 
 #[tokio::test]
 async fn verifies_tokens_with_mapped_roles() {
-    let (_, url) = start(first()).await;
+    let (provider, url) = start(first()).await;
     let jwks = || Jwks::load(&url, timing());
     for (issuer, audience) in [(" ", "atlas"), ("i", "")] {
         assert!(Verifier::from_jwks(jwks().await.unwrap(), issuer, audience).is_err());
@@ -268,6 +268,18 @@ async fn verifies_tokens_with_mapped_roles() {
         &EncodingKey::from_secret(b"first"),
     )
     .unwrap();
+    let hits = provider.hits.load(Ordering::SeqCst);
+    let unknown = encode(
+        &Header {
+            kid: Some("nope".into()),
+            ..Header::new(Algorithm::HS256)
+        },
+        &json!({}),
+        &EncodingKey::from_secret(b"first"),
+    )
+    .unwrap();
+    assert_eq!(oidc.verify(&unknown).await.err(), Some("invalid_algorithm"));
+    assert_eq!(provider.hits.load(Ordering::SeqCst), hits);
     for bad in [
         hs,
         token(FIRST, Some("first"), |c| {

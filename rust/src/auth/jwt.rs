@@ -220,6 +220,9 @@ impl Verifier {
             Keys::Local(key) => key,
             Keys::Jwks(jwks) => {
                 let header = decode_header(token).map_err(|e| reason(e.kind()))?;
+                if header.alg != Algorithm::RS256 {
+                    return Err("invalid_algorithm");
+                }
                 fetched = jwks.key(&header.kid.ok_or("missing_kid")?).await?;
                 &fetched
             }

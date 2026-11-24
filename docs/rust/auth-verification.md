@@ -45,7 +45,8 @@ preparar PostGIS descartable y `ATLAS_TEST_DATABASE_URL` como en
   log nunca incluye token, cabecera, `sub` ni roles.
 - JWKS (#232, `auth_jwks`): proveedor en loopback; solo JWK RSA de firma, con `kid` y fuertes;
   fallo cerrado al arrancar (5xx, redirección, timeout, > 64 KiB, sin claves); rotación por
-  `kid` con una sola descarga; caída tolerada hasta el vencimiento; leeway y `roles_claim`
+  `kid` con una sola descarga; un `kid` conocido no espera la renovación por antigüedad; algoritmo
+  distinto de RS256 rechazado antes de buscar el `kid`; caída tolerada hasta el vencimiento; leeway y `roles_claim`
   anidado. `roles_claim` aplica igual al modo PEM y rechaza llaves repetidas en la ruta.
 - Arranque real con TOML/PEM local, rechazo de clave inválida antes del listener,
   health/readiness y cierre limpio; respuestas/logs no incluyen el token de prueba.
