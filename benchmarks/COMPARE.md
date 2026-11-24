@@ -51,3 +51,36 @@ Repetir tres veces a c1/c4 con mismos datos/índices, propiedades, filtros, orde
 hardware y límites. Guardar junto al JSONL las expectativas, seed/hash de datos, configuración,
 versiones y comandos. Usar fixture pública sin tokens/secretos en URL/body. Python HTTP nuevo
 y Rust release son comparables entre sí; el informe histórico ASGI no lo es directamente.
+
+## Referencia GeoServer (#209)
+
+`benchmarks/geoserver/` fija GeoServer 3.0.2 por digest y la extensión vector-tiles de la misma
+versión por SHA-256 en el build. El servicio `geoserver` del perfil `bench` usa 2 CPU, 1 GiB y heap
+fijo de 640 MiB en loopback. `python3 -m benchmarks.geoserver.setup --database atlas_bench_... \
+--schema ... --layer nombre=tabla --output geoserver.json`, con `GEOSERVER_ADMIN_PASSWORD` y
+`ATLAS_BENCH_DB_PASSWORD` por entorno, rechaza bases fuera de `atlas_bench_*` y salidas existentes.
+Recrea solo el workspace `atlas_bench` (pool máximo 10, bbox exacto, capas EPSG:3857), quita la
+caché GWC de cada capa y espera a WFS. El manifiesto guarda versiones, hashes del Dockerfile y de la
+configuración, JDK, heap y cuotas, nunca contraseñas.
+
+`python3 -m benchmarks.geoserver.cases --case CASO --layer capa [--query query.json] [--tile z/x/y]`
+imprime una línea JSON con la URL para `compare.py --engine geoserver`, o `status: n/a` con motivo
+para `catalog` y `tilejson`, que no tienen equivalente y se informan como N/A. La Query de Atlas se
+traduce solo en el generador: `filter` a ECQL, `bbox` y polígonos en EPSG:4326, `properties` a
+`propertyName`, `sort` más el id como desempate final a `sortBy`, `limit`/`offset` a
+`count`/`startIndex`; `export` es WFS completo sin paginar. `mvt-tile` pide WMS GetMap MVT sin GWC
+sobre la envolvente XYZ: 256 px dan extent 4096 y `buffer=4` equivale a 64 unidades. Medido con
+GeoServer 3.0.2: el extent MVT es 16 veces el ancho en píxeles (4096 px darían 65536) y el buffer
+WMS escala igual (`buffer=64` a 256 px agrega features fuera del margen de `ST_AsMVT`).
+
+Conteo y precisión se alinean con Rust: cada capa lleva `skipNumberMatched` (sin COUNT, sin
+`numberMatched`) y `numDecimals=9`, como `ST_AsGeoJSON`. `equivalence.py` compara por contenido:
+`geojson()` quita la envoltura de GeoServer (`timeStamp`, `totalFeatures`, `crs`, `bbox`), toma el
+id de `capa.N` y quita el id repetido en properties; `difference()` nombra `count`, `ids`,
+`properties` o `geometry` (tolerancia 1.5e-9 grados: GeoTools y PROJ difieren en el último dígito y
+ese cuanto puede pasar de 1e-9 en flotante); `coverage()` compara capas, extent, número e ids de
+features de un MVT contra `ST_AsMVT` e informa aparte las geometrías cuantizadas distintas, que no
+hacen fallar la cobertura. Con `ATLAS_GEOSERVER_URL`, `GEOSERVER_ADMIN_PASSWORD` y
+`ATLAS_TEST_DATABASE_URL`, `test_geoserver.py` verifica contra GeoServer y PostGIS reales una página
+con bbox, sort y properties y la cobertura de una tesela no vacía; sin ellas se salta. `compare.py`
+no cambia: integrar estas normalizaciones a la medición es parte de #231.
