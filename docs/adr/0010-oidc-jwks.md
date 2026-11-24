@@ -42,7 +42,8 @@ Contrato del verificador. El modo JWKS es otra fuente de claves de `jwt::Verifie
 - Caché en memoria por proceso, solo de claves públicas: carga al arrancar, renovación al
   ver un `kid` desconocido con una sola descarga en curso y como máximo una por minuto, y
   renovación por antigüedad tras 1 h. Estos plazos son fijos, no configurables.
-  Límites: 64 KiB por respuesta, 32 claves, 5 s por descarga, sin redirecciones.
+  Límites: 64 KiB por respuesta, 32 claves, 5 s por descarga, sin redirecciones. Un JWKS con
+  más de 32 claves válidas o con un `kid` repetido entre ellas se rechaza entero, sin recortar.
 - Fallo cerrado: si la descarga falla, se conservan las claves vigentes hasta
   24 h; después, todo token es 401. Un `kid` desconocido sin renovación
   posible es 401. El arranque falla si la primera carga no da al menos una clave válida.
@@ -52,7 +53,7 @@ Contrato del verificador. El modo JWKS es otra fuente de claves de `jwt::Verifie
   `unknown_kid` (el JWKS vigente no lo tiene), `jwks_unavailable` (`kid` desconocido y la
   última descarga falló) y `jwks_expired` (claves con más de 24 h). Cada descarga fallida
   registra `jwks_refresh_failed` con un motivo (`request`, `status`, `body`, `timeout`,
-  `invalid`, `no_keys`), sin URL ni cuerpo.
+  `invalid`, `no_keys`, `too_many_keys`, `duplicate_kid`), sin URL ni cuerpo.
 - `/ready` no cambia: refleja la base de datos y no el proveedor. Con las claves vencidas
   los datos públicos se siguen sirviendo a anónimos; sacar la instancia del balanceador
   cortaría también ese acceso. El operador vigila `jwks_refresh_failed` y `jwks_expired`.
