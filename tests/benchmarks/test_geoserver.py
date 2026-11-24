@@ -176,6 +176,33 @@ def test_cli_reports_not_applicable_cases_instead_of_failing(capsys):
         cases.main(["--case", "mvt-tile", "--layer", "points"])
 
 
+def test_geojson_drops_the_geoserver_envelope_and_prefixed_ids():
+    body = json.dumps(
+        {
+            "type": "FeatureCollection",
+            "timeStamp": "2026-11-24T00:00:00Z",
+            "totalFeatures": 1,
+            "features": [
+                {"id": "eq.7", "geometry": None, "properties": {"id": 7, "label": "f0"}},
+                {"id": "eq.x", "geometry": None, "properties": {}},
+            ],
+        }
+    )
+    assert equivalence.geojson(body) == [(7, None, {"label": "f0"}), ("eq.x", None, {})]
+
+
+def test_difference_tolerates_one_quantum_of_nine_decimals():
+    point = {"type": "Point", "coordinates": [10.0, 20.0]}
+    one = {"type": "Point", "coordinates": [10.000000001, 20.0]}
+    two = {"type": "Point", "coordinates": [10.000000002, 20.0]}
+    assert abs(10.000000001 - 10.0) > 1e-9
+    assert equivalence.difference([(1, point, {})], [(1, one, {})]) is None
+    assert equivalence.difference([(1, point, {})], [(1, two, {})]) == "geometry"
+    assert equivalence.difference([(1, point, {})], [(2, point, {})]) == "ids"
+    assert equivalence.difference([(1, point, {"a": 1})], [(1, point, {})]) == "properties"
+    assert equivalence.difference([(1, point, {})], []) == "count"
+
+
 GEOSERVER = os.environ.get("ATLAS_GEOSERVER_URL")
 FIXTURE = """
 CREATE SCHEMA run_eq;
@@ -243,6 +270,7 @@ async def test_geoserver_bodies_match_postgis_oracles(bench_db, database_url):
         with urlopen(cases.tile(GEOSERVER, "eq", 8, 128, 127)) as response:
             report = equivalence.coverage(bytes(oracle_tile), response.read())
         assert report["eq"]["extent"] == [4096, 4096]
+        assert report["eq"]["features"][0] > 0
         assert report["eq"]["missing"] == [] and report["eq"]["extra"] == []
     finally:
         rest.call("DELETE", f"/rest/workspaces/{setup.WORKSPACE}?recurse=true", ok=(200, 404))

@@ -75,11 +75,12 @@ WMS escala igual (`buffer=64` a 256 px agrega features fuera del margen de `ST_A
 
 Conteo y precisión se alinean con Rust: cada capa lleva `skipNumberMatched` (sin COUNT, sin
 `numberMatched`) y `numDecimals=9`, como `ST_AsGeoJSON`. `equivalence.py` compara por contenido:
-`geojson()` quita la envoltura de GeoServer (`timeStamp`, `totalFeatures`, `crs`, `bbox`), toma el id
-de `capa.N` y quita el id repetido en properties; `difference()` nombra `count`, `ids`,
-`properties` o `geometry` (tolerancia 1e-9 grados, GeoTools y PROJ difieren en el último dígito);
-`coverage()` compara capas, extent e ids de un MVT contra `ST_AsMVT` e informa aparte las
-geometrías cuantizadas distintas, que no hacen fallar la cobertura. Con `ATLAS_GEOSERVER_URL`,
-`GEOSERVER_ADMIN_PASSWORD` y `ATLAS_TEST_DATABASE_URL`, `test_geoserver.py` verifica contra GeoServer
-y PostGIS reales una página con bbox, sort y properties y la cobertura de una tesela; sin ellas se
-salta. `compare.py` no cambia: integrar estas normalizaciones a la medición es parte de #231.
+`geojson()` quita la envoltura de GeoServer (`timeStamp`, `totalFeatures`, `crs`, `bbox`), toma el
+id de `capa.N` y quita el id repetido en properties; `difference()` nombra `count`, `ids`,
+`properties` o `geometry` (tolerancia 1.5e-9 grados: GeoTools y PROJ difieren en el último dígito y
+ese cuanto puede pasar de 1e-9 en flotante); `coverage()` compara capas, extent, número e ids de
+features de un MVT contra `ST_AsMVT` e informa aparte las geometrías cuantizadas distintas, que no
+hacen fallar la cobertura. Con `ATLAS_GEOSERVER_URL`, `GEOSERVER_ADMIN_PASSWORD` y
+`ATLAS_TEST_DATABASE_URL`, `test_geoserver.py` verifica contra GeoServer y PostGIS reales una página
+con bbox, sort y properties y la cobertura de una tesela no vacía; sin ellas se salta. `compare.py`
+no cambia: integrar estas normalizaciones a la medición es parte de #231.

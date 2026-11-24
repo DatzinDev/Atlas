@@ -30,8 +30,11 @@ def close(a, b, tolerance):
     return a == b
 
 
-def difference(expected, actual, tolerance=1e-9):
-    """The first kind of difference: count, ids, properties or geometry; None when equal."""
+def difference(expected, actual, tolerance=1.5e-9):
+    """The first kind of difference: count, ids, properties or geometry; None when equal.
+
+    Both sides round to 9 decimals, so one last-digit quantum must pass despite float error.
+    """
     if len(expected) != len(actual):
         return "count"
     if [f[0] for f in expected] != [f[0] for f in actual]:
@@ -60,6 +63,7 @@ def coverage(expected_tile, actual_tile):
         shapes_b = {f[0]: f[2] for f in features_b}
         report[name] = {
             "extent": [extent_a, extent_b],
+            "features": [len(ids_a), len(ids_b)],
             "missing": sorted(ids_a - ids_b),
             "extra": sorted(ids_b - ids_a),
             "geometry_differs": sorted(i for i in ids_a & ids_b if shapes_a[i] != shapes_b[i]),
