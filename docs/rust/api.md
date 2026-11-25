@@ -41,8 +41,11 @@ Todas las respuestas de datos dinámicas tienen Cache-Control: no-store; no hay 
 Los tiles de datasets públicos también van con no-store y sin compresión: es intencional en el MVP.
 Si se quiere gzip o caché, se configuran en el proxy y solo para datasets públicos.
 GeoJSON EPSG:4326; tiles XYZ/MVT EPSG:3857. TileJSON 3.0 incluye URL, source-layer,
-minzoom/maxzoom, bounds y attribution disponibles. Las URLs respetan el prefijo del despliegue
-configurado; no se confía en cabeceras forwarded arbitrarias. La plantilla de TileJSON repite
+minzoom/maxzoom y attribution disponible. TileJSON no incluye bounds porque `extent` es una
+estimación de publicación que puede dejar features fuera y los clientes no piden tiles fuera de
+bounds; para encuadrar la capa se usa `extent` del detalle del dataset. Las URLs respetan el
+prefijo del despliegue configurado; no se confía en cabeceras forwarded arbitrarias.
+La plantilla de TileJSON repite
 filter/properties como query (filter primero, codificado salvo no reservados de RFC 3986) y
 fields se limita a las propiedades pedidas. Sin public_url la URL es una ruta absoluta
 (/api/v1/...) y el binario lo avisa al arrancar con el evento public_url_missing; los clientes
