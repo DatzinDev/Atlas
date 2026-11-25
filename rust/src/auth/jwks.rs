@@ -58,7 +58,7 @@ pub struct Jwks {
 }
 
 /// HTTPS, or plain HTTP only towards loopback for tests.
-fn trusted_url(url: &str) -> Option<Uri> {
+pub fn trusted_url(url: &str) -> Option<Uri> {
     let uri: Uri = url.parse().ok()?;
     let loopback = matches!(uri.host()?, "localhost" | "127.0.0.1" | "[::1]");
     match uri.scheme_str()? {
@@ -69,8 +69,10 @@ fn trusted_url(url: &str) -> Option<Uri> {
 }
 
 /// Strong RSA signing keys with a `kid`; anything else in the set is ignored.
-fn signing_keys(set: JwkSet) -> HashMap<String, DecodingKey> {
-    set.keys
+/// More than `MAX_KEYS` usable keys or a repeated `kid` rejects the whole set.
+fn signing_keys(set: JwkSet) -> Result<HashMap<String, DecodingKey>, &'static str> {
+    let usable_keys: Vec<_> = set
+        .keys
         .iter()
         .filter(|jwk| matches!(jwk.algorithm, AlgorithmParameters::RSA(_)))
         .filter(|jwk| {
@@ -85,8 +87,16 @@ fn signing_keys(set: JwkSet) -> HashMap<String, DecodingKey> {
             usable(&key)?;
             Some((jwk.common.key_id.clone()?, key))
         })
-        .take(MAX_KEYS)
-        .collect()
+        .collect();
+    if usable_keys.len() > MAX_KEYS {
+        return Err("too_many_keys");
+    }
+    let count = usable_keys.len();
+    let keys: HashMap<_, _> = usable_keys.into_iter().collect();
+    if keys.len() < count {
+        return Err("duplicate_kid");
+    }
+    Some(keys).filter(|keys| !keys.is_empty()).ok_or("no_keys")
 }
 
 impl Jwks {
@@ -130,9 +140,7 @@ impl Jwks {
             .map_err(|_| "body")?
             .to_bytes();
         let set = serde_json::from_slice::<JwkSet>(&body).map_err(|_| "invalid")?;
-        Some(signing_keys(set))
-            .filter(|keys| !keys.is_empty())
-            .ok_or("no_keys")
+        signing_keys(set)
     }
 
     /// Logs a stable reason on failure; never the URL or the body.

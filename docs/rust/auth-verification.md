@@ -44,8 +44,9 @@ preparar PostGIS descartable y `ATLAS_TEST_DATABASE_URL` como en
   derivado de `ErrorKind`). La respuesta no cambia (401 `invalid_token`, `Bearer`) y el
   log nunca incluye token, cabecera, `sub` ni roles.
 - JWKS (#232, `auth_jwks`): proveedor en loopback; solo JWK RSA de firma, con `kid` y fuertes;
-  fallo cerrado al arrancar (5xx, redirección, timeout, > 64 KiB, sin claves); rotación por
-  `kid` con una sola descarga; un `kid` conocido no espera la renovación por antigüedad; algoritmo
+  fallo cerrado al arrancar (5xx, redirección, timeout, > 64 KiB, sin claves, > 32 claves, `kid`
+  repetido), y la renovación rechazada conserva las vigentes; rotación por `kid` con una sola
+  descarga; un `kid` conocido no espera la renovación por antigüedad; algoritmo
   distinto de RS256 rechazado antes de buscar el `kid`; caída tolerada hasta el vencimiento; leeway y `roles_claim`
   anidado. `roles_claim` aplica igual al modo PEM y rechaza llaves repetidas en la ruta.
 - Arranque real con TOML/PEM local, rechazo de clave inválida antes del listener,

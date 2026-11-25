@@ -1,6 +1,6 @@
 use atlas::{
     auth::{
-        jwks::{Jwks, MAX_JWKS_BYTES, Timing},
+        jwks::{Jwks, MAX_JWKS_BYTES, MAX_KEYS, Timing, trusted_url},
         jwt::Verifier,
     },
     domain::Error,
@@ -137,6 +137,41 @@ async fn loads_only_trusted_signing_keys_and_fails_closed_at_startup() {
             Jwks::load(untrusted, timing()).await,
             Err(Error::InvalidRequest)
         ));
+    }
+}
+
+#[tokio::test]
+async fn rejects_oversized_or_ambiguous_sets_and_keeps_current_keys() {
+    let many = |count: usize| {
+        set((0..count)
+            .map(|i| jwk(FIRST, &format!("k{i}"), None))
+            .collect())
+    };
+    let (provider, url) = start(many(MAX_KEYS)).await;
+    assert!(Jwks::load(&url, timing()).await.is_ok());
+    let duplicate = set(vec![jwk(FIRST, "first", None), jwk(ROTATED, "first", None)]);
+    for body in [many(MAX_KEYS + 1), duplicate] {
+        provider.set(200, body, 0);
+        assert!(matches!(
+            Jwks::load(&url, timing()).await,
+            Err(Error::InvalidRequest)
+        ));
+    }
+    provider.set(200, first(), 0);
+    let aged = Timing {
+        max_age: Duration::ZERO,
+        ..timing()
+    };
+    let jwks = Jwks::load(&url, aged).await.unwrap();
+    provider.set(200, many(MAX_KEYS + 1), 0);
+    assert_eq!(jwks.key("k0").await.err(), Some("jwks_unavailable"));
+    assert!(jwks.key("first").await.is_ok());
+    for (url, trusted) in [
+        ("http://[::1]:8080/jwks", true),
+        ("https://idp.example/jwks", true),
+        ("http://localhost.example/jwks", false),
+    ] {
+        assert_eq!(trusted_url(url).is_some(), trusted);
     }
 }
 
