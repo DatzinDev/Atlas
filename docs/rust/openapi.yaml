@@ -204,7 +204,7 @@ components:
     TileJson:
       type: object
       required: [tilejson, tiles, vector_layers, minzoom, maxzoom]
-      properties: {tilejson: {type: string, enum: ['3.0.0']}, tiles: {type: array, items: {type: string}}, minzoom: {type: integer}, maxzoom: {type: integer}, bounds: {$ref: '#/components/schemas/Bbox'}, attribution: {type: string}, vector_layers: {type: array, items: {type: object, required: [id, fields], properties: {id: {type: string}, fields: {type: object, additionalProperties: {type: string}}}}}}
+      properties: {tilejson: {type: string, enum: ['3.0.0']}, tiles: {type: array, items: {type: string}}, minzoom: {type: integer}, maxzoom: {type: integer}, attribution: {type: string}, vector_layers: {type: array, items: {type: object, required: [id, fields], properties: {id: {type: string}, fields: {type: object, additionalProperties: {type: string}}}}}}
     Source:
       type: object
       additionalProperties: false

@@ -38,6 +38,24 @@ async fn get(address: SocketAddr, target: &str, headers: &str) -> (String, Strin
     (head[9..12].to_owned(), head, response[split + 4..].to_vec())
 }
 
+async fn stored_extent(db: &Database, id: &str) -> serde_json::Value {
+    let mut tx = db.begin_catalog().await.unwrap();
+    let sql = "SELECT metadata->'extent' FROM atlas_catalog.datasets WHERE id = $1";
+    let extent: Option<serde_json::Value> = sqlx::query_scalar(sql)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    extent.unwrap_or(serde_json::Value::Null)
+}
+
+async fn tilejson_doc(address: SocketAddr, target: &str, headers: &str) -> serde_json::Value {
+    let (status, head, body) = get(address, target, headers).await;
+    assert_eq!(status, "200", "{target}: {head}");
+    serde_json::from_slice(&body).unwrap()
+}
+
 async fn server() -> (SocketAddr, Database) {
     let mut config = Config::parse(
         "",
@@ -57,6 +75,7 @@ async fn server() -> (SocketAddr, Database) {
         "INSERT INTO tiles_test.points VALUES (1,'a',1,'x',ST_SetSRID(ST_Point(10,10),4326)), (2,'b',2,'x',ST_SetSRID(ST_Point(10.1,10.1),4326)), (3,'a b',3,'x',ST_SetSRID(ST_Point(10.05,10.05),4326))",
         "CREATE TABLE tiles_test.polar(id integer PRIMARY KEY, name text, geom geometry(Geometry,4326))",
         "INSERT INTO tiles_test.polar VALUES (1,'antarctica',ST_GeomFromText('POLYGON((-180 -90,180 -90,180 -60,-180 -60,-180 -90))',4326)), (2,'pole',ST_GeomFromText('POLYGON((0 89,1 89,1 90,0 90,0 89))',4326))",
+        "CREATE TABLE tiles_test.empty(id integer PRIMARY KEY, name text, rank int4, geom geometry(Point,4326))",
         "CREATE TABLE tiles_test.doomed AS TABLE tiles_test.points",
         "ALTER TABLE tiles_test.doomed ADD PRIMARY KEY (id)",
         "DELETE FROM atlas_catalog.datasets WHERE config->'source'->>'schema' <> 'tiles_test' OR id LIKE 'tiles\\_%'",
@@ -68,6 +87,7 @@ async fn server() -> (SocketAddr, Database) {
     for (id, table, access) in [
         ("tiles_public", "points", r#"{"public":true}"#),
         ("tiles_doomed", "doomed", r#"{"public":true}"#),
+        ("tiles_empty", "empty", r#"{"public":true}"#),
         (
             "tiles_private",
             "points",
@@ -291,6 +311,50 @@ async fn vector_tiles_over_real_http() {
         assert!(Config::parse(&text, None, None).is_err(), "{url}");
     }
     assert!(Config::parse("public_url = 'http://localhost:8080/atlas'", None, None).is_ok());
+
+    // TileJSON never advertises bounds: the stored extent is an estimate that may hide features.
+    assert!(stored_extent(&db, "tiles_public").await.is_array());
+    assert!(stored_extent(&db, "tiles_empty").await.is_null());
+    let private = "/api/v1/datasets/tiles_private/tilejson.json";
+    for (target, headers) in [
+        (tilejson.to_owned(), ""),
+        (format!("{tilejson}?filter={wanted}&properties=name"), ""),
+        (format!("{tilejson}?properties=rank,name"), ""),
+        ("/api/v1/datasets/tiles_polar/tilejson.json".to_owned(), ""),
+        ("/api/v1/datasets/tiles_empty/tilejson.json".to_owned(), ""),
+        (private.to_owned(), viewer.as_str()),
+    ] {
+        let doc = tilejson_doc(a, &target, headers).await;
+        assert!(doc.get("bounds").is_none(), "{target}: {doc}");
+    }
+    let empty = tilejson_doc(a, "/api/v1/datasets/tiles_empty/tilejson.json", "").await;
+    assert_eq!(
+        (
+            empty["tilejson"].as_str(),
+            empty["minzoom"].as_u64(),
+            empty["maxzoom"].as_u64()
+        ),
+        (Some("3.0.0"), Some(0), Some(22))
+    );
+    assert!(
+        empty["tiles"][0]
+            .as_str()
+            .unwrap()
+            .ends_with("/tiles_empty/tiles/{z}/{x}/{y}.mvt")
+    );
+    assert_eq!(
+        empty["vector_layers"],
+        serde_json::json!([{"id": "tiles_empty", "fields": {"name": "String", "rank": "Number"}}])
+    );
+    let (status, _, body) = get(a, private, "").await;
+    let text = String::from_utf8_lossy(&body);
+    assert!(status == "404" && text.contains("dataset_not_found") && !text.contains("bounds"));
+    assert_eq!(
+        get(a, "/api/v1/datasets/tiles_public/tiles.json", "")
+            .await
+            .0,
+        "404"
+    );
 
     let doomed = "/api/v1/datasets/tiles_doomed/tiles/4/8/7.mvt";
     assert_eq!(get(a, doomed, "").await.0, "200");
