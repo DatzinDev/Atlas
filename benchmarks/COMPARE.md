@@ -107,3 +107,13 @@ plan con `engine`, `revision`, `dataset`, `concurrency`, `duration`, `seed`, `wa
 opcionales y `mix` (cada entrada con `case`, `url`, `expected`, `kind`, `body` y `weight`; 40/40/20
 para página, teselas y filtros). El caso de cada petición sale de la semilla y su número, así que
 la secuencia es reproducible. Cada muestra lleva su `case` y el resumen trae `by_case`.
+
+## Planes de #231
+
+`benchmarks/plans/` trae `matrix-{rust,geoserver}.json` (c1/c4/c16, tres repeticiones, 60 s por
+corrida) y `soak-{rust,geoserver}.json` (30 min a c16, 40% página, 40% teselas, 20% filtros,
+semilla 231). Cada `FILL:` se reemplaza antes de medir con el commit o digest, el SHA-256 de los
+datos, las URL (en GeoServer, la salida de `benchmarks.geoserver.cases`), las expectativas desde
+PostGIS y los cgroups. Se copian a `docs/rust/evidence/` con los valores y ahí se ejecutan
+(`benchmarks.matrix`, luego `benchmarks.soak`), un motor a la vez. `catalog` y `tilejson` no existen
+en GeoServer y se informan como N/A. El plan de Python queda fuera hasta fijar su SHA y sus rutas.
