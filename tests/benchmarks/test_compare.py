@@ -218,3 +218,28 @@ class ProbeTests(unittest.TestCase):
             server.shutdown()
             thread.join()
             server.server_close()
+
+
+class GeoServerKindsTest(unittest.TestCase):
+    def test_p99_needs_a_thousand_valid_samples(self):
+        few = [dict(outcome="valid", ms=i, bytes=1) for i in range(999)]
+        self.assertIsNone(summarize(few, 1)["p99_ms"])
+        many = [dict(outcome="valid", ms=i, bytes=1) for i in range(1000)]
+        self.assertEqual(summarize(many, 1)["p99_ms"], 989)
+
+    def test_geoserver_json_ignores_envelope_and_names_difference(self):
+        feature = (
+            '{"id":"t.7","geometry":{"type":"Point","coordinates":[1,2]},'
+            '"properties":{"id":7,"a":1}}'
+        )
+        want = normalize(b'{"features":[%s]}' % feature.encode(), "gs-json")
+        wrapped = b'{"totalFeatures":1,"features":[%s]}' % feature.encode()
+        self.assertEqual(normalize(wrapped, "gs-json"), want)
+        other = normalize(wrapped.replace(b'"a":1', b'"a":2'), "gs-json")
+        self.assertEqual(mismatch(want, other, "gs-json"), "properties")
+
+    def test_kind_must_match_engine(self):
+        base = dict(case="catalog", url="http://x", body=None)
+        self.assertIsNotNone(check_case(Namespace(engine="geoserver", kind="json", **base)))
+        self.assertIsNone(check_case(Namespace(engine="geoserver", kind="gs-json", **base)))
+        self.assertIsNotNone(check_case(Namespace(engine="python", kind="gs-mvt", **base)))

@@ -84,3 +84,16 @@ hacen fallar la cobertura. Con `ATLAS_GEOSERVER_URL`, `GEOSERVER_ADMIN_PASSWORD`
 `ATLAS_TEST_DATABASE_URL`, `test_geoserver.py` verifica contra GeoServer y PostGIS reales una página
 con bbox, sort y properties y la cobertura de una tesela no vacía; sin ellas se salta. `compare.py`
 no cambia: integrar estas normalizaciones a la medición es parte de #231.
+
+## Matriz y GeoServer (#231)
+
+`python3 -m benchmarks.matrix --plan plan.json --output-dir evidencia/` expande un plan
+(`engine`, `revision`, `dataset`, `concurrency`, `repetitions`, `options` comunes y `cases` con
+`case`, `url`, `expected` y `options` propias; cada opción es un flag de `compare.py`, y una lista
+repite el flag) en un JSONL por caso, concurrencia y repetición. Reanuda: salta las corridas con
+resumen `finished` y se detiene ante un archivo incompleto, que hay que apartar a mano. Sale con 1
+si alguna corrida falla.
+
+`--engine geoserver` exige `--kind gs-json` (contenido por `equivalence.geojson` y `difference`) o
+`gs-mvt` (cobertura de capas, extent e ids por `coverage`; la geometría cuantizada no invalida). El
+resumen incluye `p99_ms` solo con 1.000 o más muestras válidas; si no, `null`.
