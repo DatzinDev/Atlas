@@ -1,0 +1,56 @@
+{
+  "engine": "geoserver",
+  "revision": "FILL: commit o digest",
+  "dataset": "FILL: SHA-256 de los datos",
+  "concurrency": [
+    1,
+    4,
+    16
+  ],
+  "repetitions": 3,
+  "options": {
+    "duration": 60,
+    "warmup": 10,
+    "server-cgroup": "FILL: cgroup v2 del servidor",
+    "db-cgroup": "FILL: cgroup v2 de PostGIS",
+    "pin": [
+      "FILL: binario o imagen",
+      "FILL: configuraci\u00f3n"
+    ]
+  },
+  "cases": [
+    {
+      "case": "geojson-page",
+      "url": "FILL: salida de python3 -m benchmarks.geoserver.cases",
+      "expected": "FILL: evidence/expected/geojson-page.json",
+      "options": {
+        "kind": "gs-json"
+      }
+    },
+    {
+      "case": "geojson-query",
+      "url": "FILL: salida de python3 -m benchmarks.geoserver.cases",
+      "expected": "FILL: evidence/expected/geojson-query.json",
+      "options": {
+        "kind": "gs-json",
+        "body": "FILL: evidence/query.json"
+      }
+    },
+    {
+      "case": "mvt-tile",
+      "url": "FILL: salida de python3 -m benchmarks.geoserver.cases",
+      "expected": "FILL: evidence/expected/mvt-tile.mvt",
+      "options": {
+        "kind": "gs-mvt"
+      }
+    },
+    {
+      "case": "export",
+      "url": "FILL: salida de python3 -m benchmarks.geoserver.cases",
+      "expected": "FILL: evidence/expected/export.json",
+      "options": {
+        "kind": "gs-json"
+      }
+    }
+  ]
+}

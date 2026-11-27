@@ -1,0 +1,35 @@
+{
+  "engine": "geoserver",
+  "revision": "FILL: commit o digest",
+  "dataset": "FILL: SHA-256 de los datos",
+  "concurrency": 16,
+  "duration": 1800,
+  "seed": 231,
+  "warmup": 10,
+  "server_cgroup": "FILL: cgroup v2 del servidor",
+  "db_cgroup": "FILL: cgroup v2 de PostGIS",
+  "mix": [
+    {
+      "case": "geojson-page",
+      "url": "FILL: salida de python3 -m benchmarks.geoserver.cases",
+      "expected": "FILL: evidence/expected/geojson-page.json",
+      "kind": "gs-json",
+      "weight": 40
+    },
+    {
+      "case": "mvt-tile",
+      "url": "FILL: salida de python3 -m benchmarks.geoserver.cases",
+      "expected": "FILL: evidence/expected/mvt-tile.mvt",
+      "kind": "gs-mvt",
+      "weight": 40
+    },
+    {
+      "case": "geojson-query",
+      "url": "FILL: salida de python3 -m benchmarks.geoserver.cases",
+      "expected": "FILL: evidence/expected/geojson-query.json",
+      "kind": "gs-json",
+      "body": "FILL: evidence/query.json",
+      "weight": 20
+    }
+  ]
+}
