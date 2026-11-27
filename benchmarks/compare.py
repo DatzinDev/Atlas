@@ -107,11 +107,33 @@ def mvt(payload):
     return sorted(layers, key=repr)
 
 
+def same(expected, actual, kind):
+    if kind == "gs-json":
+        from benchmarks.geoserver.equivalence import difference
+
+        return difference(expected, actual) is None
+    if kind == "gs-mvt":
+        from benchmarks.geoserver.equivalence import coverage
+
+        report = coverage(expected, actual)
+        return all(
+            not (r["missing"] or r["extra"]) and r["extent"][0] == r["extent"][1]
+            for r in report.values()
+        )
+    return actual == expected
+
+
 def normalize(payload, kind):
     if kind == "bytes":
         return payload
     if kind == "mvt":
         return mvt(payload)
+    if kind == "gs-mvt":
+        return payload
+    if kind == "gs-json":
+        from benchmarks.geoserver.equivalence import geojson
+
+        return geojson(payload)
     # Preserve numeric spelling/precision and distinguish numbers from strings and booleans.
     return json.loads(payload, parse_int=lambda n: ("int", n), parse_float=lambda n: ("float", n))
 
@@ -127,6 +149,12 @@ def mismatch(expected, actual, kind):
             return sorted(repr(f.get("id") if isinstance(f, dict) else f) for f in features)
         return None
 
+    if kind == "gs-json":
+        from benchmarks.geoserver.equivalence import difference
+
+        return difference(expected, actual) or "content"
+    if kind == "gs-mvt":
+        return "coverage"
     want, got = ids(expected), ids(actual)
     if want is None or got is None:
         return "content"
@@ -156,7 +184,7 @@ def request_sample(url, expected, kind, timeout, body=None):
         elif response.code == 200:
             sample["outcome"] = "invalid"
             actual = normalize(payload, kind)
-            if actual == expected:
+            if same(expected, actual, kind):
                 sample["outcome"] = "valid"
             else:
                 sample["mismatch"] = mismatch(expected, actual, kind)
@@ -180,6 +208,12 @@ def cgroup(path):
 
 
 def check_case(args):
+    if args.engine == "geoserver":
+        if args.kind not in ("gs-json", "gs-mvt"):
+            return "geoserver requires --kind gs-json or gs-mvt"
+        return None
+    if args.kind.startswith("gs-"):
+        return "gs kinds are only for --engine geoserver"
     if args.engine != "rust":
         return None
     method, kind, suffix = RUST_CASES.get(args.case, (None, None, None))
@@ -202,6 +236,7 @@ def summarize(samples, elapsed):
         },
         p50_ms=times[math.ceil(len(times) * 0.50) - 1] if times else None,
         p95_ms=times[math.ceil(len(times) * 0.95) - 1] if times else None,
+        p99_ms=times[math.ceil(len(times) * 0.99) - 1] if len(times) >= 1000 else None,
         valid_requests_per_second=len(valid) / elapsed if elapsed else 0,
         valid_bytes=sum(s["bytes"] for s in valid),
         wall_seconds=elapsed,
@@ -215,7 +250,9 @@ def main(argv=None):
     parser.add_argument("--expected", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--body", type=Path, help="JSON file; enables POST instead of GET")
-    parser.add_argument("--kind", choices=("json", "bytes", "mvt"), default="json")
+    parser.add_argument(
+        "--kind", choices=("json", "bytes", "mvt", "gs-json", "gs-mvt"), default="json"
+    )
     parser.add_argument("--pin", type=Path, action="append", default=[], help="file to hash")
     for name in ("server", "db"):
         parser.add_argument(f"--{name}-cgroup", type=Path, help="cgroup v2 directory")
