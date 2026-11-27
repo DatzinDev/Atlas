@@ -10,7 +10,9 @@ import re
 import struct
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from itertools import count
 from pathlib import Path
+from threading import Lock
 from time import perf_counter
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -226,6 +228,24 @@ def check_case(args):
     return None
 
 
+def drive(call, concurrency, samples, duration, collect):
+    """Closed-loop load: a fixed sample count, or workers looping until the duration ends."""
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        if duration is None:
+            for sample in pool.map(call, range(samples)):
+                collect(sample)
+            return
+        deadline, lock, counter = perf_counter() + duration, Lock(), count()
+
+        def worker(_):
+            while perf_counter() < deadline:
+                sample = call(next(counter))
+                with lock:
+                    collect(sample)
+
+        list(pool.map(worker, range(concurrency)))
+
+
 def summarize(samples, elapsed):
     valid = [s for s in samples if s["outcome"] == "valid"]
     times = sorted(s["ms"] for s in valid)
@@ -260,6 +280,7 @@ def main(argv=None):
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=30)
+    parser.add_argument("--duration", type=float, help="seconds of load; replaces --samples")
     args = parser.parse_args(argv)
     url = urlsplit(args.url)
     if url.scheme not in ("http", "https") or not url.hostname or url.username or url.password:
@@ -269,6 +290,7 @@ def main(argv=None):
         and 0 <= args.warmup <= 10000
         and 1 <= args.concurrency <= 32
         and 0 < args.timeout <= 300
+        and (args.duration is None or 0 < args.duration <= 7200)
     ):
         parser.error("invalid load budget")
     if problem := check_case(args):
@@ -310,6 +332,10 @@ def main(argv=None):
         def call(_):
             return request_sample(args.url, expected, args.kind, args.timeout, body)
 
+        def collect(sample):
+            samples.append(sample)
+            record(dict(type="sample", **sample))
+
         record(dict(type="metadata", **metadata))
         try:
             for i in range(args.warmup):
@@ -318,10 +344,7 @@ def main(argv=None):
                 if sample["outcome"] != "valid":
                     return 1
             start = perf_counter()
-            with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
-                for sample in pool.map(call, range(args.samples)):
-                    samples.append(sample)
-                    record(dict(type="sample", **sample))
+            drive(call, args.concurrency, args.samples, args.duration, collect)
             finished = True
         finally:
             summary = summarize(samples, perf_counter() - start if start is not None else 0)
@@ -330,7 +353,7 @@ def main(argv=None):
             except OSError:  # a cgroup vanished (e.g. container stopped): still write the summary
                 summary["resources"] = None
             record(dict(type="summary", finished=finished, samples=len(samples), **summary))
-    return 0 if finished and summary["counts"]["valid"] == args.samples else 1
+    return 0 if finished and summary["counts"]["valid"] == len(samples) else 1
 
 
 if __name__ == "__main__":

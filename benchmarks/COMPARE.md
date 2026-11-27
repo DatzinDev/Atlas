@@ -97,3 +97,13 @@ si alguna corrida falla.
 `--engine geoserver` exige `--kind gs-json` (contenido por `equivalence.geojson` y `difference`) o
 `gs-mvt` (cobertura de capas, extent e ids por `coverage`; la geometría cuantizada no invalida). El
 resumen incluye `p99_ms` solo con 1.000 o más muestras válidas; si no, `null`.
+
+`compare.py --duration SEGUNDOS` (hasta 7200) reemplaza `--samples`: los trabajadores repiten
+peticiones hasta el plazo y la corrida es válida si todas las muestras lo son. La matriz lo usa
+para las corridas de 60 s (`options: {"duration": 60}`).
+
+`python3 -m benchmarks.soak --plan soak.json --output soak.jsonl` ejecuta la mezcla del soak:
+plan con `engine`, `revision`, `dataset`, `concurrency`, `duration`, `seed`, `warmup`, cgroups
+opcionales y `mix` (cada entrada con `case`, `url`, `expected`, `kind`, `body` y `weight`; 40/40/20
+para página, teselas y filtros). El caso de cada petición sale de la semilla y su número, así que
+la secuencia es reproducible. Cada muestra lleva su `case` y el resumen trae `by_case`.

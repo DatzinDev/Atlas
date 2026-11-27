@@ -102,6 +102,12 @@ class ProbeTests(unittest.TestCase):
                 with self.assertRaises(FileExistsError):
                     main(args)
                 output.unlink()
+                timed = [*args[:-4], "--duration", "0.3", "--concurrency", "2"]
+                self.assertEqual(main(timed), 0)
+                rows = [json.loads(line) for line in output.read_text().splitlines()]
+                self.assertEqual(rows[-1]["counts"]["valid"], rows[-1]["samples"])
+                self.assertGreater(rows[-1]["samples"], 2)
+                output.unlink()
                 with (
                     patch("benchmarks.compare.request_sample", side_effect=KeyboardInterrupt),
                     self.assertRaises(KeyboardInterrupt),
